@@ -1,0 +1,62 @@
+{
+	"$schema": "./node_modules/wrangler/config-schema.json",
+	"name": "bdi-test-report",
+	"main": "worker/index.ts",
+	"compatibility_date": "2026-09-28",
+	"compatibility_flags": [
+		"nodejs_compat"
+	],
+	"assets": {
+		"not_found_handling": "single-page-application",
+		"run_worker_first": [
+			"/api/*"
+		]
+	},
+	"vars": {
+		"APP_ENV": "development"
+	},
+	"d1_databases": [
+		{
+			"binding": "DB",
+			"database_name": "bdi-test-db",
+			"database_id": "00000000-0000-0000-0000-000000000001",
+			"migrations_dir": "../../migrations"
+		}
+	],
+	"r2_buckets": [
+		{
+			"binding": "QUESTION_IMAGES",
+			"bucket_name": "bdi-test-images-dev"
+		}
+	],
+	"observability": {
+		"enabled": true,
+		"head_sampling_rate": 1
+	},
+	"env": {
+		"production": {
+			"name": "bdi-test-report-production",
+			"vars": {
+				"APP_ENV": "production"
+			},
+			"d1_databases": [
+				{
+					"binding": "DB",
+					"database_name": "bdi-test-db-production",
+					"database_id": "4aba574a-3f23-4e94-afb1-5d94bee054cc",
+					"migrations_dir": "migrations"
+				}
+			],
+			"r2_buckets": [
+				{
+					"binding": "QUESTION_IMAGES",
+					"bucket_name": "bdi-test-images-production"
+				}
+			],
+			"observability": {
+				"enabled": true,
+				"head_sampling_rate": 1
+			}
+		}
+	}
+}

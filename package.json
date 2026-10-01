@@ -1,0 +1,46 @@
+{
+  "name": "bdi-test-report",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "typecheck": "tsc -b --pretty false",
+    "test": "vitest run",
+    "types": "wrangler types",
+    "db:migrate": "wrangler d1 migrations apply bdi-test-db --local",
+    "db:migrate:remote": "wrangler d1 migrations apply bdi-test-db --remote --env production",
+    "admin:create": "node scripts/create-admin.mjs",
+    "deploy": "npm run build && wrangler deploy --env production",
+    "check:startup": "wrangler check startup",
+    "test:load": "node scripts/load-test.mjs"
+  },
+  "dependencies": {
+    "@fontsource/inter": "^5.3.0",
+    "@pdf-lib/fontkit": "^1.1.1",
+    "docx": "^9.8.0",
+    "fflate": "^0.8.3",
+    "hono": "^4.13.9",
+    "lucide-react": "^1.48.0",
+    "mammoth": "^1.13.0",
+    "pdf-lib": "^1.17.1",
+    "react": "^19.3.0",
+    "react-dom": "^19.3.0",
+    "react-router-dom": "^7.18.4",
+    "xlsx": "^0.18.5",
+    "zod": "^4.6.5"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.61.0",
+    "@cloudflare/workers-types": "^5.20260928.1",
+    "@types/node": "^26.6.3",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.1.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.1",
+    "vitest": "^5.0.2",
+    "wrangler": "^4.142.0"
+  }
+}
