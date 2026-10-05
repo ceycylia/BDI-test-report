@@ -33,7 +33,7 @@ export type QuestionBankSummaryRecord = QuestionBankRecord & {
 };
 
 export async function listQuestionBanks(
-  database: D1Database,
+  database: D1Database
 ): Promise<QuestionBankSummaryRecord[]> {
   const result = await database
     .prepare(
@@ -49,7 +49,7 @@ export async function listQuestionBanks(
          LEFT JOIN training_materials materials ON materials.id = banks.material_id
          LEFT JOIN trainings ON trainings.id = materials.training_id
         GROUP BY banks.id
-        ORDER BY banks.updated_at DESC, banks.name COLLATE NOCASE ASC`,
+        ORDER BY banks.updated_at DESC, banks.name COLLATE NOCASE ASC`
     )
     .all<QuestionBankSummaryRecord>();
 
@@ -58,7 +58,7 @@ export async function listQuestionBanks(
 
 export async function findQuestionBank(
   database: D1Database,
-  bankId: string,
+  bankId: string
 ): Promise<QuestionBankRecord | null> {
   return database
     .prepare(
@@ -66,7 +66,7 @@ export async function findQuestionBank(
               banks.material_id, materials.name material_name, materials.training_id, trainings.name training_name
          FROM question_banks banks LEFT JOIN training_materials materials ON materials.id=banks.material_id
          LEFT JOIN trainings ON trainings.id=materials.training_id WHERE banks.id = ?
-        LIMIT 1`,
+        LIMIT 1`
     )
     .bind(bankId)
     .first<QuestionBankRecord>();
@@ -74,14 +74,18 @@ export async function findQuestionBank(
 
 export async function createQuestionBank(
   database: D1Database,
-  input: { id: string; name: string; description: string | null; materialId: string },
+  input: {
+    id: string;
+    name: string;
+    materialId: string;
+  }
 ): Promise<void> {
   await database
     .prepare(
-      `INSERT INTO question_banks (id, name, description, material_id)
-       VALUES (?, ?, ?, ?)`,
+      `INSERT INTO question_banks (id, name, material_id)
+      VALUES (?, ?, ?)`
     )
-    .bind(input.id, input.name, input.description, input.materialId)
+    .bind(input.id, input.name, input.materialId)
     .run();
 }
 
@@ -89,30 +93,29 @@ export async function updateQuestionBank(
   database: D1Database,
   input: {
     id: string;
-    name: string;
-    description: string | null;
     isActive: boolean;
-  },
+  }
 ): Promise<void> {
   await database
     .prepare(
       `UPDATE question_banks
-          SET name = ?, description = ?, is_active = ?, updated_at = CURRENT_TIMESTAMP
-        WHERE id = ?`,
+          SET is_active = ?,
+              updated_at = CURRENT_TIMESTAMP
+        WHERE id = ?`
     )
-    .bind(input.name, input.description, input.isActive ? 1 : 0, input.id)
+    .bind(input.isActive ? 1 : 0, input.id)
     .run();
 }
 
 export async function getQuestionBankDependencyCounts(
   database: D1Database,
-  bankId: string,
+  bankId: string
 ): Promise<{ questions: number; trainingSessions: number }> {
   const record = await database
     .prepare(
       `SELECT
          (SELECT COUNT(*) FROM questions WHERE bank_id = ?) AS questions,
-         (SELECT COUNT(*) FROM training_sessions WHERE bank_id = ?) AS training_sessions`,
+         (SELECT COUNT(*) FROM training_sessions WHERE bank_id = ?) AS training_sessions`
     )
     .bind(bankId, bankId)
     .first<{ questions: number; training_sessions: number }>();
@@ -125,14 +128,17 @@ export async function getQuestionBankDependencyCounts(
 
 export async function deleteQuestionBank(
   database: D1Database,
-  bankId: string,
+  bankId: string
 ): Promise<void> {
-  await database.prepare("DELETE FROM question_banks WHERE id = ?").bind(bankId).run();
+  await database
+    .prepare("DELETE FROM question_banks WHERE id = ?")
+    .bind(bankId)
+    .run();
 }
 
 export async function listQuestions(
   database: D1Database,
-  bankId: string,
+  bankId: string
 ): Promise<QuestionRecord[]> {
   const result = await database
     .prepare(
@@ -141,7 +147,7 @@ export async function listQuestions(
               is_active, times_assigned, created_at, updated_at
          FROM questions
         WHERE bank_id = ?
-        ORDER BY created_at ASC, id ASC`,
+        ORDER BY created_at ASC, id ASC`
     )
     .bind(bankId)
     .all<QuestionRecord>();
@@ -152,7 +158,7 @@ export async function listQuestions(
 export async function findQuestion(
   database: D1Database,
   bankId: string,
-  questionId: string,
+  questionId: string
 ): Promise<QuestionRecord | null> {
   return database
     .prepare(
@@ -161,7 +167,7 @@ export async function findQuestion(
               is_active, times_assigned, created_at, updated_at
          FROM questions
         WHERE id = ? AND bank_id = ?
-        LIMIT 1`,
+        LIMIT 1`
     )
     .bind(questionId, bankId)
     .first<QuestionRecord>();
@@ -179,14 +185,14 @@ export async function createQuestion(
     optionC: string;
     optionD: string;
     correctOptionKey: "A" | "B" | "C" | "D";
-  },
+  }
 ): Promise<void> {
   await database
     .prepare(
       `INSERT INTO questions (
          id, bank_id, question_text, image_key,
          option_a, option_b, option_c, option_d, correct_option_key
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
     )
     .bind(
       input.id,
@@ -197,7 +203,7 @@ export async function createQuestion(
       input.optionB,
       input.optionC,
       input.optionD,
-      input.correctOptionKey,
+      input.correctOptionKey
     )
     .run();
 }
@@ -214,7 +220,7 @@ export async function bulkCreateQuestions(
     optionC: string;
     optionD: string;
     correctOptionKey: "A" | "B" | "C" | "D";
-  }>,
+  }>
 ): Promise<void> {
   const encoded = JSON.stringify(questions);
   await database
@@ -233,7 +239,7 @@ export async function bulkCreateQuestions(
          json_extract(value, '$.optionC'),
          json_extract(value, '$.optionD'),
          json_extract(value, '$.correctOptionKey')
-       FROM json_each(?)`,
+       FROM json_each(?)`
     )
     .bind(bankId, encoded)
     .run();
@@ -252,7 +258,7 @@ export async function updateQuestion(
     optionD: string;
     correctOptionKey: "A" | "B" | "C" | "D";
     isActive: boolean;
-  },
+  }
 ): Promise<void> {
   await database
     .prepare(
@@ -260,7 +266,7 @@ export async function updateQuestion(
           SET question_text = ?, image_key = ?, option_a = ?, option_b = ?,
               option_c = ?, option_d = ?, correct_option_key = ?, is_active = ?,
               updated_at = CURRENT_TIMESTAMP
-        WHERE id = ? AND bank_id = ?`,
+        WHERE id = ? AND bank_id = ?`
     )
     .bind(
       input.questionText,
@@ -272,14 +278,14 @@ export async function updateQuestion(
       input.correctOptionKey,
       input.isActive ? 1 : 0,
       input.id,
-      input.bankId,
+      input.bankId
     )
     .run();
 }
 
 export async function questionHasDependencies(
   database: D1Database,
-  questionId: string,
+  questionId: string
 ): Promise<boolean> {
   const record = await database
     .prepare(
@@ -287,7 +293,7 @@ export async function questionHasDependencies(
          EXISTS(SELECT 1 FROM batch_questions WHERE question_id = ?)
          OR EXISTS(SELECT 1 FROM attempt_question_snapshots WHERE question_id = ?)
          OR EXISTS(SELECT 1 FROM attempt_answers WHERE question_id = ?)
-           AS has_dependencies`,
+           AS has_dependencies`
     )
     .bind(questionId, questionId, questionId)
     .first<{ has_dependencies: number }>();
@@ -298,7 +304,7 @@ export async function questionHasDependencies(
 export async function deleteQuestion(
   database: D1Database,
   bankId: string,
-  questionId: string,
+  questionId: string
 ): Promise<void> {
   await database
     .prepare("DELETE FROM questions WHERE id = ? AND bank_id = ?")

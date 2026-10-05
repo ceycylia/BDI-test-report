@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { BarChart3, BookOpenText, ChevronDown, ClipboardCheck, GraduationCap, LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, UserCog, Users, X } from "lucide-react";
+import { BookOpenText, ChevronDown, ClipboardCheck, GraduationCap, LayoutDashboard, LogOut, Menu, PanelLeftClose, PanelLeftOpen, UserCog, Users, X } from "lucide-react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppMark } from "../components/ui/AppMark";
 import { useAdminAuth } from "../features/admin-auth/AuthProvider";
@@ -7,9 +7,10 @@ import { useAdminAuth } from "../features/admin-auth/AuthProvider";
 const primaryNavigation = [
   { label: "Dashboard", to: "/admin", end: true, icon: LayoutDashboard },
   { label: "Bank Soal", to: "/admin/bank-soal", icon: BookOpenText },
-  { label: "Pelatihan/Test", to: "/admin/pelatihan", icon: GraduationCap },
+  { label: "Pelatihan & Materi", to: "/admin/master-pelatihan", icon: GraduationCap },
+  { label: "Tes & Hasil", to: "/admin/pelatihan", icon: ClipboardCheck },
   { label: "Peserta", to: "/admin/peserta", icon: Users },
-  { label: "Hasil", to: "/admin/hasil", icon: BarChart3 },
+  { label: "Pengaturan", to: "/admin/akun", icon: UserCog },
 ];
 
 export function AdminLayout() {
@@ -28,9 +29,7 @@ export function AdminLayout() {
     navigate("/admin/login", { replace: true });
   };
 
-  const navItems = admin?.role === "SUPERADMIN"
-    ? [...primaryNavigation, { label: "Kelola Admin", to: "/admin/admins", icon: Users }]
-    : primaryNavigation;
+  const navItems = primaryNavigation;
 
   return (
     <div className={`admin-shell${collapsed ? " is-collapsed" : ""}`}>
@@ -45,7 +44,6 @@ export function AdminLayout() {
             const Icon = item.icon;
             return <NavLink className={({ isActive }) => isActive ? "admin-nav-link is-active" : "admin-nav-link"} end={item.end} key={item.to} to={item.to} title={collapsed ? item.label : undefined}><Icon aria-hidden="true" /><span>{item.label}</span></NavLink>;
           })}
-          <NavLink className={({ isActive }) => isActive ? "admin-nav-link is-active" : "admin-nav-link"} to="/admin/akun" title={collapsed ? "Akun Saya" : undefined}><UserCog aria-hidden="true" /><span>Akun Saya</span></NavLink>
         </nav>
         <div className="admin-sidebar__footer">
           <button className="admin-nav-link admin-logout" type="button" onClick={() => void handleLogout()} title={collapsed ? "Logout" : undefined}><LogOut aria-hidden="true" /><span>Logout</span></button>
@@ -62,7 +60,7 @@ export function AdminLayout() {
               <span className="admin-user-copy"><strong>{admin?.name}</strong><small>{admin?.role === "SUPERADMIN" ? "Superadmin" : "Admin"}</small></span>
               <ChevronDown aria-hidden="true" />
             </button>
-            {accountOpen && <div className="admin-user-popover"><button onClick={() => { setAccountOpen(false); navigate("/admin/akun"); }}><UserCog /> Akun Saya</button><button onClick={() => void handleLogout()}><LogOut /> Logout</button></div>}
+            {accountOpen && <div className="admin-user-popover"><button onClick={() => { setAccountOpen(false); navigate("/admin/akun"); }}><UserCog /> Pengaturan</button><button onClick={() => void handleLogout()}><LogOut /> Logout</button></div>}
           </div>
         </header>
         <main className="admin-content"><Outlet /></main>

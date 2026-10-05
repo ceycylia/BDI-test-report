@@ -1,5 +1,6 @@
 import { KeyRound, ShieldCheck, UserRound } from "lucide-react";
 import { useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { adminMutation, AdminApiError } from "../../features/admin-auth/admin-api";
 import { useAdminAuth } from "../../features/admin-auth/AuthProvider";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
@@ -38,7 +39,7 @@ export function AdminAccountPage() {
   }
 
   return <>
-    <header className="admin-page-header"><div><p className="section-label">Akun Saya</p><h1>Pengaturan akun</h1><p className="page-description">Kelola identitas dan keamanan akun yang sedang digunakan.</p></div></header>
+    <header className="admin-page-header"><div><p className="section-label">Pengaturan</p><h1>Akun & keamanan</h1><p className="page-description">Kelola identitas dan keamanan akun yang sedang digunakan.</p></div>{admin?.role === "SUPERADMIN" && <div className="page-header-actions"><Link className="button button--secondary" to="/admin/admins">Kelola Admin</Link></div>}</header>
     {message && <p className="form-message is-success">{message}</p>}
     {error && <p className="form-message is-error" role="alert">{error}</p>}
     <section className="account-summary panel"><span className="account-summary__avatar">{admin?.name.charAt(0).toUpperCase()}</span><div><h2>{admin?.name}</h2><p>@{admin?.username}</p></div><dl><div><dt>Role</dt><dd><ShieldCheck /> {admin?.role === "SUPERADMIN" ? "Superadmin" : "Admin"}</dd></div><div><dt>Status</dt><dd><span className="status-dot" /> Aktif</dd></div></dl></section>

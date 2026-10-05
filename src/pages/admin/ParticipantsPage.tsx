@@ -7,7 +7,7 @@ import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { DateInput } from "../../components/ui/DateInput";
 import { formatDateForDisplay } from "../../features/dates/date-format";
 
-type Training = { id: string; name: string; description: string | null; is_active: number; material_count: number; total_jp: number };
+type Training = { id: string; name: string; is_active: number; material_count: number; total_jp: number };
 type Material = { id: string; training_id: string; training_name: string; name: string; jp: number; sort_order: number; bank_id: string | null; bank_name: string | null };
 type Cohort = { id: string; training_id: string; training_name: string; name: string; start_date: string; end_date: string; status: string; participant_count: number };
 type Participant = { id: string; training_id: string; cohort_id: string; name: string; nik_masked: string; birth_place: string; birth_date: string; photo_key: string | null; is_active: number; training_name: string; cohort_name: string };
@@ -18,13 +18,14 @@ type CertificateSettings = { certificate_prefix: string; signer_name: string; si
 
 const tabs = [
   { id: "data", label: "Data Peserta", icon: Users },
-  { id: "master", label: "Pelatihan & Materi", icon: BookOpenText },
   { id: "cohorts", label: "Angkatan", icon: Layers3 },
   { id: "certificate-workspace", label: "Sertifikat", icon: Award },
 ] as const;
 
 export function ParticipantsPage() {
-  const [tab, setTab] = useState<(typeof tabs)[number]["id"] | "certificates">("data");
+  // "master" is retained only while this legacy in-file section is phased out;
+  // it is no longer reachable from the participant navigation.
+  const [tab, setTab] = useState<(typeof tabs)[number]["id"] | "certificates" | "master">("data");
   const [catalog, setCatalog] = useState<Catalog>({ trainings: [], materials: [], cohorts: [] });
   const [participants, setParticipants] = useState<Participant[]>([]);
   const [certificates, setCertificates] = useState<Certificate[]>([]);
@@ -46,6 +47,8 @@ export function ParticipantsPage() {
   const [importing, setImporting] = useState(false);
   const importFileRef = useRef<HTMLInputElement>(null);
   const [selectedParticipant, setSelectedParticipant] = useState<string | null>(null);
+  const [participantCreateOpen, setParticipantCreateOpen] = useState(false);
+  const [participantImportOpen, setParticipantImportOpen] = useState(false);
   const [certificateTrainingId, setCertificateTrainingId] = useState("");
   const [certificateCohort, setCertificateCohort] = useState("");
   const [certificateStatus, setCertificateStatus] = useState("");
@@ -106,15 +109,14 @@ export function ParticipantsPage() {
 
   async function createTraining(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement);
-    const description = String(form.get("description") ?? "").trim();
-    try { await adminMutation("/api/admin/participants/trainings", { method: "POST", body: JSON.stringify({ name: form.get("name"), description: description || null, isActive: true }) }); formElement.reset(); report("Pelatihan ditambahkan."); } catch (processError) { fail(processError); }
+    try { await adminMutation("/api/admin/participants/trainings", { method: "POST", body: JSON.stringify({ name: form.get("name"), isActive: true }) }); formElement.reset(); report("Pelatihan ditambahkan."); } catch (processError) { fail(processError); }
   }
   async function createMaterial(event: FormEvent<HTMLFormElement>) {
     event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement);
     try { await adminMutation("/api/admin/participants/materials", { method: "POST", body: JSON.stringify({ trainingId: form.get("trainingId"), name: form.get("name"), jp: Number(form.get("jp")), sortOrder: Number(form.get("sortOrder")) }) }); formElement.reset(); report("Materi ditambahkan.", "material"); } catch (processError) { fail(processError, "material"); }
   }
   async function toggleTraining(training: Training) {
-    try { await adminMutation(`/api/admin/participants/trainings/${training.id}`, { method: "PUT", body: JSON.stringify({ name: training.name, description: training.description, isActive: !training.is_active }) }); report("Status pelatihan diperbarui."); } catch (processError) { fail(processError); }
+    try { await adminMutation(`/api/admin/participants/trainings/${training.id}`, { method: "PUT", body: JSON.stringify({ name: training.name, isActive: !training.is_active }) }); report("Status pelatihan diperbarui."); } catch (processError) { fail(processError); }
   }
   async function deleteTraining(training: Training) {
     const confirmed = window.confirm(`Hapus pelatihan “${training.name}” dari master data?\n\nData peserta, angkatan, materi, hasil tes, dan sertifikat yang pernah menggunakan pelatihan ini tetap disimpan.`);
@@ -126,8 +128,7 @@ export function ParticipantsPage() {
   }
   async function editTraining(training: Training) {
     const name = window.prompt("Nama pelatihan", training.name)?.trim(); if (!name) return;
-    const description = window.prompt("Deskripsi", training.description ?? "");
-    try { await adminMutation(`/api/admin/participants/trainings/${training.id}`, { method: "PUT", body: JSON.stringify({ name, description, isActive: Boolean(training.is_active) }) }); report("Pelatihan diperbarui."); } catch (processError) { fail(processError); }
+    try { await adminMutation(`/api/admin/participants/trainings/${training.id}`, { method: "PUT", body: JSON.stringify({ name, isActive: Boolean(training.is_active) }) }); report("Pelatihan diperbarui."); } catch (processError) { fail(processError); }
   }
   async function editMaterial(material: Material) {
     const name = window.prompt("Nama materi", material.name)?.trim(); if (!name) return;
@@ -191,12 +192,15 @@ export function ParticipantsPage() {
     try {
       const participant = await adminMutation<{ id: string }>("/api/admin/participants/participants", { method: "POST", body: JSON.stringify({ trainingId: form.get("trainingId"), cohortId: form.get("cohortId"), name: form.get("name"), nik: form.get("nik"), birthPlace: form.get("birthPlace"), birthDate: form.get("birthDate"), isActive: true }) });
       const photo = form.get("photo"); if (photo instanceof File && photo.size) { const upload = new FormData(); upload.set("photo", photo); await adminUpload(`/api/admin/participants/participants/${participant.id}/photo`, upload); }
-      formElement.reset(); report("Peserta terdaftar.");
+      formElement.reset(); setParticipantCreateOpen(false); report("Peserta terdaftar.");
     } catch (processError) { fail(processError); }
   }
   function resetImportPreview() {
     setPreview([]);
     setPreviewReady(false);
+  }
+  function closeParticipantImport() {
+    setParticipantImportOpen(false); setTrainingId(""); setCohortId(""); setImportFile(null); resetImportPreview();
   }
   function selectImportFile(file: File | null) {
     setImportFile(file);
@@ -220,8 +224,8 @@ export function ParticipantsPage() {
     setImporting(true);
     try {
       const result = await adminMutation<{ imported: number }>("/api/admin/participants/participants/import", { method: "POST", body: JSON.stringify({ trainingId, cohortId, rows: preview }) });
-      setPreview([]); setPreviewReady(false); setImportFile(null); if (importFileRef.current) importFileRef.current.value = "";
-      report(`${result.imported} peserta berhasil diimport.`);
+      if (importFileRef.current) importFileRef.current.value = "";
+      closeParticipantImport(); report(`${result.imported} peserta berhasil diimport.`);
     } catch (processError) { fail(processError); }
     finally { setImporting(false); }
   }
@@ -274,7 +278,7 @@ export function ParticipantsPage() {
   return <>
     <header className="admin-page-header participant-page-header">
       <div><p className="section-label">Peserta</p><h1>Pengelolaan peserta & sertifikat</h1></div>
-      {tab === "data" && <div className="page-header-actions"><a className="button" href="#participant-create"><Plus /> Tambah Peserta</a><a className="button button--secondary" href="#participant-import"><FileSpreadsheet /> Import Excel</a></div>}
+      {tab === "data" && <div className="page-header-actions"><button type="button" className="button" onClick={() => setParticipantCreateOpen(true)}><Plus /> Tambah Peserta</button><button type="button" className="button button--secondary" onClick={() => setParticipantImportOpen(true)}><FileSpreadsheet /> Upload Peserta</button></div>}
     </header>
     <nav className="participant-tabs" aria-label="Menu peserta">{tabs.map((item) => { const Icon = item.icon; return <button type="button" key={item.id} className={tab === item.id ? "is-active" : ""} onClick={() => setTab(item.id)}><Icon />{item.label}</button>; })}</nav>
     {noticeTarget === "global" && message && <p className="form-message is-success">{message}</p>}{noticeTarget === "global" && error && <p className="form-message is-error">{error}</p>}
@@ -292,12 +296,13 @@ export function ParticipantsPage() {
         <p className="table-summary">Menampilkan {filteredParticipants.length} dari {participants.length} peserta</p>
       </section>
       {selectedParticipant && <ParticipantEditor id={selectedParticipant} catalog={catalog} onCancel={() => setSelectedParticipant(null)} onSaved={() => { setSelectedParticipant(null); report("Data peserta diperbarui."); }} onError={fail} />}
-      <section id="participant-create" className="panel participant-create-panel">
-        <div className="panel-heading"><div className="panel-title-with-icon"><span className="heading-icon"><UserPlus /></span><div><p className="section-label">Peserta baru</p><h2>Tambah Peserta</h2></div></div></div>
-        <form className="form-stack participant-create-form" onSubmit={(event) => void createParticipant(event)}><div className="participant-form-grid"><label>Nama Lengkap<input name="name" required /></label><TrainingCohortFields catalog={catalog} /><label>NIK<input name="nik" required inputMode="numeric" /></label><label>Tempat Lahir<input name="birthPlace" required /></label><label>Tanggal Lahir<DateInput name="birthDate" required /></label><label>Status<select value="active" disabled><option value="active">Aktif</option></select></label><label className="participant-photo-field">Foto Peserta<span className="file-field"><Image /><input name="photo" type="file" accept="image/jpeg,image/png" /></span></label></div><div className="form-actions participant-form-actions"><button type="reset" className="button button--secondary">Batal</button><button className="button"><UserPlus /> Simpan Peserta</button></div></form>
-      </section>
-      <section id="participant-import" className="panel import-panel">
-        <div className="panel-heading"><div className="panel-title-with-icon"><span className="heading-icon"><FileSpreadsheet /></span><div><p className="section-label">Import Excel</p><h2>Import banyak peserta</h2></div></div><a className="button button--secondary" href="/api/admin/participants/participants-template"><Download /> Download template</a></div>
+      {participantCreateOpen && <div className="modal-backdrop participant-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setParticipantCreateOpen(false); }}><section className="participant-modal" role="dialog" aria-modal="true" aria-labelledby="add-participant-title">
+        <header className="participant-modal__header"><div><p className="section-label">Peserta baru</p><h2 id="add-participant-title">Tambah Peserta</h2><p>Isi data peserta untuk pelatihan dan angkatan yang dipilih.</p></div><button type="button" className="participant-modal__close" aria-label="Tutup tambah peserta" onClick={() => setParticipantCreateOpen(false)}><X /></button></header>
+        <form className="participant-modal__form form-stack" onSubmit={(event) => void createParticipant(event)}><div className="participant-modal__grid"><label>Nama Lengkap<input name="name" required autoFocus /></label><TrainingCohortFields catalog={catalog} /><label>NIK<input name="nik" required inputMode="numeric" /></label><label>Tempat Lahir<input name="birthPlace" required /></label><label>Tanggal Lahir<DateInput name="birthDate" required /></label><label>Status<select value="active" disabled><option value="active">Aktif</option></select></label><label className="participant-modal__photo">Foto Peserta<span className="file-field"><Image /><input name="photo" type="file" accept="image/jpeg,image/png" /></span></label></div><footer className="participant-modal__actions"><button type="button" className="button button--secondary" onClick={() => setParticipantCreateOpen(false)}>Batal</button><button className="button"><UserPlus /> Simpan Peserta</button></footer></form>
+      </section></div>}
+      {participantImportOpen && <div className="modal-backdrop participant-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) closeParticipantImport(); }}><section className="participant-modal certificate-modal" role="dialog" aria-modal="true" aria-labelledby="import-participant-title">
+        <header className="participant-modal__header"><div><p className="section-label">Import Excel</p><h2 id="import-participant-title">Upload Peserta</h2><p>Unggah file Excel lalu periksa data pada preview sebelum diimpor.</p></div><button type="button" className="participant-modal__close" aria-label="Tutup upload peserta" onClick={closeParticipantImport}><X /></button></header>
+        <div className="participant-modal__form form-stack"><div className="panel-heading"><div className="panel-title-with-icon"><span className="heading-icon"><FileSpreadsheet /></span><div><p className="section-label">Template</p><h3>Siapkan file peserta</h3></div></div><a className="button button--secondary button--small" href="/api/admin/participants/participants-template"><Download /> Download template</a></div>
         <div className="import-step-grid">
           <label><span>1. Pilih Pelatihan</span><select value={trainingId} onChange={(event) => { setTrainingId(event.target.value); setCohortId(""); resetImportPreview(); }}><option value="">Pilih pelatihan</option>{catalog.trainings.map((training) => <option value={training.id} key={training.id}>{training.name}</option>)}</select></label>
           <label><span>2. Pilih Angkatan</span><select value={cohortId} disabled={!trainingId} onChange={(event) => { setCohortId(event.target.value); resetImportPreview(); }}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label>
@@ -313,11 +318,11 @@ export function ParticipantsPage() {
         </div>
         <div className="import-preview-action"><button type="button" className="button" disabled={!trainingId || !cohortId || !importFile || previewing} onClick={() => void previewImport()}><Eye /> {previewing ? "Membaca Data..." : "Preview Data"}</button></div>
         {previewReady && <section className="import-preview-section"><div className="import-preview-heading"><div><p className="section-label">Hasil Preview</p><h3>{preview.length} data peserta ditemukan</h3></div><span className={preview.some((row) => row.errors.length) ? "status-badge is-danger" : "status-badge is-active"}>{preview.filter((row) => row.errors.length).length ? `${preview.filter((row) => row.errors.length).length} data perlu diperbaiki` : "Seluruh data valid"}</span></div><div className="data-table-wrap"><table className="clean-table import-preview-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Tempat Lahir</th><th>Tanggal Lahir</th><th>Status Validasi</th></tr></thead><tbody>{preview.map((row, index) => <tr key={row.row} className={row.errors.length ? "is-invalid" : ""}><td>{index + 1}</td><td>{row.name || "—"}</td><td>{row.nik || "—"}</td><td>{row.birthPlace || "—"}</td><td>{formatDateForDisplay(row.birthDate)}</td><td>{row.errors.length ? <span className="validation-errors">{row.errors.map((rowError) => <span key={rowError}>{rowError}</span>)}</span> : <span className="status-badge is-active">Valid</span>}</td></tr>)}</tbody></table></div><div className="import-submit-row"><p>Foto peserta dapat diunggah terpisah setelah proses import selesai.</p><button type="button" className="button" disabled={!preview.length || preview.some((row) => row.errors.length) || importing} onClick={() => void importRows()}><Upload /> {importing ? "Mengimpor..." : `Import Peserta (${preview.length})`}</button></div></section>}
-      </section>
+        </div></section></div>}
     </>}
 
     {tab === "master" && <div className="master-catalog-layout">
-      <section className="panel master-training-panel"><div className="panel-heading"><div><h2>Nama Pelatihan</h2></div></div><form className="form-stack inline-create" onSubmit={(event) => void createTraining(event)}><label>Nama<input name="name" required /></label><label>Deskripsi <small>(opsional)</small><textarea name="description" rows={2} placeholder="Boleh dikosongkan" /></label><button className="button"><Plus /> Tambah Pelatihan</button></form><div className="training-master-list">{catalog.trainings.map((training) => <article key={training.id} className="training-master-card"><span className="training-master-icon"><GraduationCap /></span><div className="training-master-copy"><strong>{training.name}</strong><small>{training.material_count} materi · {training.total_jp} JP</small></div><span className={training.is_active ? "status-badge is-active" : "status-badge"}>{training.is_active ? "Aktif" : "Nonaktif"}</span><div className="row-actions"><button type="button" className="button button--secondary button--small" onClick={() => void editTraining(training)}><Pencil /> Edit</button><button type="button" className="text-button" onClick={() => void toggleTraining(training)}>{training.is_active ? "Nonaktifkan" : "Aktifkan"}</button><button type="button" className="text-button is-danger" onClick={() => void deleteTraining(training)}><Trash2 /> Hapus</button></div></article>)}</div></section>
+      <section className="panel master-training-panel"><div className="panel-heading"><div><h2>Nama Pelatihan</h2></div></div><form className="form-stack inline-create" onSubmit={(event) => void createTraining(event)}><label>Nama<input name="name" required /></label><button className="button"><Plus /> Tambah Pelatihan</button></form><div className="training-master-list">{catalog.trainings.map((training) => <article key={training.id} className="training-master-card"><span className="training-master-icon"><GraduationCap /></span><div className="training-master-copy"><strong>{training.name}</strong><small>{training.material_count} materi · {training.total_jp} JP</small></div><span className={training.is_active ? "status-badge is-active" : "status-badge"}>{training.is_active ? "Aktif" : "Nonaktif"}</span><div className="row-actions"><button type="button" className="button button--secondary button--small" onClick={() => void editTraining(training)}><Pencil /> Edit</button><button type="button" className="text-button" onClick={() => void toggleTraining(training)}>{training.is_active ? "Nonaktifkan" : "Aktifkan"}</button><button type="button" className="text-button is-danger" onClick={() => void deleteTraining(training)}><Trash2 /> Hapus</button></div></article>)}</div></section>
       {noticeTarget === "material" && message && <p className="form-message is-success material-notice">{message}</p>}{noticeTarget === "material" && error && <p className="form-message is-error material-notice">{error}</p>}
       <section className="panel master-material-panel"><div className="panel-heading"><div><p className="section-label">Kurikulum</p><h2>Materi Pelatihan</h2></div></div><form className="form-stack material-create-form" onSubmit={(event) => void createMaterial(event)}><label>Pelatihan<TrainingSelect name="trainingId" trainings={catalog.trainings} /></label><label>Nama Materi<input name="name" required /></label><div className="form-grid"><label>Jumlah JP<input name="jp" type="number" min="1" required /></label><label>Urutan<input name="sortOrder" type="number" min="1" required /></label></div><button className="button"><Plus /> Tambah Materi</button></form><label className="material-training-filter">Filter Pelatihan<select value={materialTrainingId} onChange={(event) => setMaterialTrainingId(event.target.value)}><option value="">Semua Pelatihan</option>{catalog.trainings.map((training) => <option value={training.id} key={training.id}>{training.name}</option>)}</select></label><div className="data-table-wrap material-table-wrap"><table className="clean-table"><thead><tr><th>No</th><th>Nama Materi</th><th>JP</th><th>Urutan</th><th>Aksi</th></tr></thead><tbody>{filteredMaterials.map((material, index) => <tr key={material.id}><td>{index + 1}</td><td><strong>{material.name}</strong><small>{material.training_name}{material.bank_name ? ` · Bank: ${material.bank_name}` : ""}</small></td><td>{material.jp}</td><td>{material.sort_order}</td><td><div className="row-actions"><button type="button" className="text-button" onClick={() => void editMaterial(material)}>Edit</button>{!material.bank_id && <button type="button" className="text-button is-danger" onClick={() => void deleteMaterial(material)}>Hapus</button>}</div></td></tr>)}</tbody></table>{!filteredMaterials.length && <div className="empty-state">Belum ada materi untuk pelatihan ini.</div>}</div></section>
     </div>}

@@ -19,9 +19,10 @@ export function TrainingListPage() {
   return (
     <>
       <header className="admin-page-header">
-        <div><p className="section-label">Pelatihan/Test</p><h1>Pelaksanaan Pelatihan</h1></div>
-        <Link className="button" to="/admin/pelatihan/baru">+ Buat Test</Link>
+        <div><p className="section-label">Tes & Hasil</p><h1>Pelaksanaan Tes</h1></div>
+        <div className="page-header-actions"><Link className="button" to="/admin/pelatihan/baru">+ Buat Test</Link></div>
       </header>
+      <nav className="catalog-tabs test-result-tabs" aria-label="Bagian tes dan hasil"><Link className="is-active" to="/admin/pelatihan" aria-current="page">Pelaksanaan Tes</Link><Link to="/admin/hasil">Lihat Hasil</Link></nav>
       {error && <p className="form-message is-error">{error}</p>}
       {loading && <p className="muted">Memuat pelatihan…</p>}
       {!loading && sessions.length === 0 && (

@@ -1,5 +1,6 @@
 import { KeyRound, Pencil, Plus, ShieldCheck, UserCheck, UserX, Users } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
+import { Link } from "react-router-dom";
 import { adminMutation, adminQuery, AdminApiError } from "../../features/admin-auth/admin-api";
 import { useAdminAuth } from "../../features/admin-auth/AuthProvider";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
@@ -75,7 +76,7 @@ export function AdminManagementPage() {
   if (admin?.role !== "SUPERADMIN") return <section className="panel access-denied"><ShieldCheck /><h1>Akses terbatas</h1><p>Halaman Kelola Admin hanya tersedia untuk Superadmin.</p></section>;
 
   return <>
-    <header className="admin-page-header"><div><p className="section-label">Kelola Admin</p><h1>Pengguna administrasi</h1><p className="page-description">Tambah dan kelola akun tanpa menghapus riwayat audit.</p></div><span className="header-icon"><Users /></span></header>
+    <header className="admin-page-header"><div><p className="section-label">Pengaturan</p><h1>Kelola Admin</h1><p className="page-description">Tambah dan kelola akun tanpa menghapus riwayat audit.</p></div><div className="page-header-actions"><Link className="button button--secondary" to="/admin/akun">Akun Saya</Link></div></header>
     {message && <p className="form-message is-success">{message}</p>}{error && <p className="form-message is-error" role="alert">{error}</p>}
     <div className="admin-management-grid">
       <section className="panel"><div className="panel-heading"><Users /><div><h2>Daftar admin</h2><p>{admins.length} akun terdaftar</p></div></div>

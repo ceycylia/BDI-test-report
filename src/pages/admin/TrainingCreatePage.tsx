@@ -82,19 +82,19 @@ export function TrainingCreatePage() {
     <header className="admin-page-header"><div><Link className="back-link" to="/admin/pelatihan">← Pelatihan/Test</Link><h1>Buat Test</h1><p>Pilih materi dan angkatan, kemudian tentukan jadwal link Pre-Test dan Post-Test.</p></div></header>
     {error && <p className="form-message is-error" role="alert">{error}</p>}
     <form className="panel training-form test-create-form" onSubmit={(event) => void submit(event)}>
-      <fieldset><legend>Informasi Test</legend><div className="form-grid">
+      <fieldset className="test-create-section"><legend><span>01</span> Informasi Test</legend><p className="test-create-section__hint">Pilih pelatihan, materi yang memiliki bank soal aktif, serta angkatan peserta.</p><div className="form-grid test-create-form__grid">
         <label>Pelatihan<select required value={draft.trainingId} onChange={(event) => setDraft((current) => ({ ...current, trainingId: event.target.value, materialId: "", cohortId: "" }))}><option value="">Pilih pelatihan</option>{catalog.trainings.map((training) => <option key={training.id} value={training.id}>{training.name}</option>)}</select></label>
         <label>Materi<select required disabled={!draft.trainingId} value={draft.materialId} onChange={(event) => update("materialId", event.target.value)}><option value="">Pilih materi</option>{materials.map((bank) => <option key={bank.materialId!} value={bank.materialId!}>{bank.materialName} ({bank.activeQuestionCount} soal)</option>)}</select></label>
         <label>Angkatan<select required disabled={!draft.trainingId} value={draft.cohortId} onChange={(event) => update("cohortId", event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>
         <label>Passing Grade<input type="number" min={0} max={100} step="0.01" required value={draft.passingScore} onChange={(event) => update("passingScore", Number(event.target.value))} /></label>
       </div>{draft.trainingId && !materials.length && <p className="form-message is-error">Pelatihan ini belum mempunyai materi dengan Bank Soal aktif.</p>}{draft.trainingId && !cohorts.length && <p className="form-message is-error">Pelatihan ini belum mempunyai angkatan aktif.</p>}</fieldset>
-      <div className="fixed-test-rule"><Clock3 /><div><strong>Durasi pengerjaan otomatis</strong><span>15 menit. Remedial maksimal 3 kali.</span></div></div>
-      <div className="test-schedule-grid">
-        <fieldset><legend><CalendarClock /> Pre-Test</legend><label>Tanggal/Jam Buka<DateTimeInput required value={draft.preStartAt} onValueChange={(value) => update("preStartAt", value)} /></label><label>Tanggal/Jam Tutup<DateTimeInput required value={draft.preEndAt} onValueChange={(value) => update("preEndAt", value)} /></label></fieldset>
-        <fieldset><legend><CalendarClock /> Post-Test</legend><label>Tanggal/Jam Buka<DateTimeInput required value={draft.postStartAt} onValueChange={(value) => update("postStartAt", value)} /></label><label>Tanggal/Jam Tutup<DateTimeInput required value={draft.postEndAt} onValueChange={(value) => update("postEndAt", value)} /></label></fieldset>
-      </div>
+      <div className="fixed-test-rule"><Clock3 /><div><strong>Durasi pengerjaan otomatis</strong><span>15 menit untuk setiap tes. Remedial maksimal 3 kali.</span></div></div>
+      <section className="test-schedule-section" aria-labelledby="test-schedule-title"><div className="test-schedule-section__heading"><span>02</span><div><h2 id="test-schedule-title">Jadwal Pelaksanaan</h2><p>Tentukan waktu akses Pre-Test dan Post-Test.</p></div></div><div className="test-schedule-grid">
+        <fieldset><legend><CalendarClock /> Pre-Test</legend><label>Tanggal dan jam buka<DateTimeInput required value={draft.preStartAt} onValueChange={(value) => update("preStartAt", value)} /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.preEndAt} onValueChange={(value) => update("preEndAt", value)} /></label></fieldset>
+        <fieldset><legend><CalendarClock /> Post-Test</legend><label>Tanggal dan jam buka<DateTimeInput required value={draft.postStartAt} onValueChange={(value) => update("postStartAt", value)} /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.postEndAt} onValueChange={(value) => update("postEndAt", value)} /></label></fieldset>
+      </div></section>
       {selectedMaterial && <p className="test-bank-note">Bank Soal mengikuti materi <strong>{selectedMaterial.materialName}</strong> dan menggunakan {selectedMaterial.activeQuestionCount} soal aktif.</p>}
-      <div className="form-actions"><Link className="button button--secondary" to="/admin/pelatihan">Batal</Link><button className="button" type="submit" disabled={submitting || !draft.trainingId || !draft.materialId || !draft.cohortId}>{submitting ? "Menyimpan…" : "Simpan Test"}</button></div>
+      <div className="form-actions test-create-form__actions"><Link className="button button--secondary" to="/admin/pelatihan">Batal</Link><button className="button" type="submit" disabled={submitting || !draft.trainingId || !draft.materialId || !draft.cohortId}>{submitting ? "Menyimpan…" : "Simpan Test"}</button></div>
     </form>
   </>;
 }

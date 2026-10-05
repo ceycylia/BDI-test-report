@@ -1,0 +1,1198 @@
+import { useEffect, useMemo, useState, type FormEvent } from "react";
+import {
+  BookOpenText,
+  ChevronLeft,
+  ChevronRight,
+  Download,
+  FileSpreadsheet,
+  GraduationCap,
+  Pencil,
+  Plus,
+  SlidersHorizontal,
+  Trash2,
+  Upload,
+} from "lucide-react";
+import {
+  adminMutation,
+  adminQuery,
+  adminUpload,
+  AdminApiError,
+} from "../../features/admin-auth/admin-api";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
+import { createPortal } from "react-dom";
+
+type Training = {
+  id: string;
+  name: string;
+  is_active: number;
+  material_count: number;
+  total_jp: number;
+};
+
+type Material = {
+  id: string;
+  training_id: string;
+  training_name: string;
+  name: string;
+  jp: number;
+  sort_order: number;
+  bank_id: string | null;
+  bank_name: string | null;
+};
+
+type Catalog = {
+  trainings: Training[];
+  materials: Material[];
+  cohorts: unknown[];
+};
+type MaterialImportRow = {
+  row: number;
+  name: string;
+  jp: number;
+  sortOrder: number;
+  errors: string[];
+};
+const MATERIALS_PER_PAGE = 10;
+const TRAININGS_PER_PAGE = 5;
+
+export function TrainingCatalogPage() {
+  const [catalog, setCatalog] = useState<Catalog>({
+    trainings: [],
+    materials: [],
+    cohorts: [],
+  });
+  const [catalogTab, setCatalogTab] = useState<"trainings" | "materials">(
+    "trainings"
+  );
+  const [materialTrainingQuery, setMaterialTrainingQuery] = useState("");
+  const [trainingPage, setTrainingPage] = useState(1);
+  const [trainingNameQuery, setTrainingNameQuery] = useState("");
+  const [trainingStatus, setTrainingStatus] = useState("");
+  const [materialPage, setMaterialPage] = useState(1);
+  const [trainingModalOpen, setTrainingModalOpen] = useState(false);
+  const [materialModalOpen, setMaterialModalOpen] = useState(false);
+  const [editingTraining, setEditingTraining] = useState<Training | null>(null);
+  const [editingMaterial, setEditingMaterial] = useState<Material | null>(null);
+  const [materialImportOpen, setMaterialImportOpen] = useState(false);
+  const [materialImportTrainingId, setMaterialImportTrainingId] = useState("");
+  const [materialImportTrainingQuery, setMaterialImportTrainingQuery] =
+    useState("");
+  const [materialImportFile, setMaterialImportFile] = useState<File | null>(
+    null
+  );
+  const [materialImportRows, setMaterialImportRows] = useState<
+    MaterialImportRow[]
+  >([]);
+  const [importBusy, setImportBusy] = useState(false);
+  const [message, setMessage] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(message, setMessage);
+
+  const load = async () => {
+    const result = await adminQuery<Catalog>("/api/admin/participants/catalog");
+    setCatalog(result);
+  };
+
+  useEffect(() => {
+    void load().catch((reason: unknown) =>
+      setError(
+        reason instanceof AdminApiError
+          ? reason.message
+          : "Data master tidak dapat dimuat."
+      )
+    );
+  }, []);
+
+  const materials = useMemo(
+    () =>
+      catalog.materials.filter(
+        (item) =>
+          !materialTrainingQuery.trim() ||
+          item.training_name
+            .toLocaleLowerCase("id")
+            .includes(materialTrainingQuery.trim().toLocaleLowerCase("id"))
+      ),
+    [catalog.materials, materialTrainingQuery]
+  );
+  const filteredTrainings = useMemo(
+    () =>
+      catalog.trainings.filter(
+        (training) =>
+          (!trainingNameQuery.trim() ||
+            training.name
+              .toLocaleLowerCase("id")
+              .includes(trainingNameQuery.trim().toLocaleLowerCase("id"))) &&
+          (!trainingStatus ||
+            String(Boolean(training.is_active)) === trainingStatus)
+      ),
+    [catalog.trainings, trainingNameQuery, trainingStatus]
+  );
+  const trainingPageCount = Math.max(
+    1,
+    Math.ceil(filteredTrainings.length / TRAININGS_PER_PAGE)
+  );
+  const activeTrainingPage = Math.min(trainingPage, trainingPageCount);
+  const displayedTrainings = filteredTrainings.slice(
+    (activeTrainingPage - 1) * TRAININGS_PER_PAGE,
+    activeTrainingPage * TRAININGS_PER_PAGE
+  );
+  const materialPageCount = Math.max(
+    1,
+    Math.ceil(materials.length / MATERIALS_PER_PAGE)
+  );
+  const activeMaterialPage = Math.min(materialPage, materialPageCount);
+  const displayedMaterials = materials.slice(
+    (activeMaterialPage - 1) * MATERIALS_PER_PAGE,
+    activeMaterialPage * MATERIALS_PER_PAGE
+  );
+
+  const complete = (text: string) => {
+    setMessage(text);
+    setError(null);
+    void load().catch((reason: unknown) =>
+      setError(
+        reason instanceof AdminApiError
+          ? reason.message
+          : "Data master tidak dapat dimuat."
+      )
+    );
+  };
+
+  const fail = (reason: unknown) => {
+    setMessage(null);
+    setError(
+      reason instanceof AdminApiError
+        ? reason.message
+        : "Data tidak dapat diproses."
+    );
+  };
+
+  async function createTraining(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      await adminMutation("/api/admin/participants/trainings", {
+        method: "POST",
+        body: JSON.stringify({ name: form.get("name"), isActive: true }),
+      });
+      formElement.reset();
+      setTrainingModalOpen(false);
+      complete("Pelatihan ditambahkan.");
+    } catch (reason) {
+      fail(reason);
+    }
+  }
+
+  async function createMaterial(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const formElement = event.currentTarget;
+    const form = new FormData(formElement);
+    try {
+      await adminMutation("/api/admin/participants/materials", {
+        method: "POST",
+        body: JSON.stringify({
+          trainingId: form.get("trainingId"),
+          name: form.get("name"),
+          jp: Number(form.get("jp")),
+          sortOrder: Number(form.get("sortOrder")),
+        }),
+      });
+      formElement.reset();
+      setMaterialModalOpen(false);
+      complete("Materi ditambahkan.");
+    } catch (reason) {
+      fail(reason);
+    }
+  }
+
+  async function updateTraining(
+    training: Training,
+    change: Partial<Pick<Training, "name" | "is_active">>
+  ) {
+    try {
+      await adminMutation(`/api/admin/participants/trainings/${training.id}`, {
+        method: "PUT",
+        body: JSON.stringify({
+          name: change.name ?? training.name,
+          isActive:
+            change.is_active === undefined
+              ? Boolean(training.is_active)
+              : Boolean(change.is_active),
+        }),
+      });
+      complete("Pelatihan diperbarui.");
+    } catch (reason) {
+      fail(reason);
+    }
+  }
+
+  async function saveTrainingEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingTraining) return;
+    const form = new FormData(event.currentTarget);
+    try {
+      await adminMutation(
+        `/api/admin/participants/trainings/${editingTraining.id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            name: String(form.get("name") ?? "").trim(),
+            isActive: form.get("isActive") === "on",
+          }),
+        }
+      );
+      setEditingTraining(null);
+      complete("Pelatihan diperbarui.");
+    } catch (reason) {
+      fail(reason);
+    }
+  }
+
+  async function deleteTraining(training: Training) {
+    if (
+      !window.confirm(
+        `Hapus pelatihan “${training.name}” dari master data? Data historis tetap disimpan.`
+      )
+    )
+      return;
+    try {
+      await adminMutation(`/api/admin/participants/trainings/${training.id}`, {
+        method: "DELETE",
+        body: "{}",
+      });
+      complete("Pelatihan dihapus. Data historis tetap disimpan.");
+    } catch (reason) {
+      fail(reason);
+    }
+  }
+
+  async function saveMaterialEdit(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!editingMaterial) return;
+    const form = new FormData(event.currentTarget);
+    try {
+      await adminMutation(
+        `/api/admin/participants/materials/${editingMaterial.id}`,
+        {
+          method: "PUT",
+          body: JSON.stringify({
+            trainingId: form.get("trainingId"),
+            name: form.get("name"),
+            jp: Number(form.get("jp")),
+            sortOrder: Number(form.get("sortOrder")),
+          }),
+        }
+      );
+      setEditingMaterial(null);
+      complete("Materi diperbarui.");
+    } catch (reason) {
+      fail(reason);
+    }
+  }
+
+  async function deleteMaterial(material: Material) {
+    if (!window.confirm(`Hapus materi “${material.name}”?`)) return;
+    try {
+      await adminMutation(`/api/admin/participants/materials/${material.id}`, {
+        method: "DELETE",
+        body: "{}",
+      });
+      complete("Materi dihapus.");
+    } catch (reason) {
+      fail(reason);
+    }
+  }
+
+  function closeMaterialImport() {
+    setMaterialImportOpen(false);
+    setMaterialImportTrainingId("");
+    setMaterialImportTrainingQuery("");
+    setMaterialImportFile(null);
+    setMaterialImportRows([]);
+  }
+  async function previewMaterialImport() {
+    if (!materialImportTrainingId || !materialImportFile)
+      return setError("Pilih pelatihan dan file template terlebih dahulu.");
+    const form = new FormData();
+    form.set("trainingId", materialImportTrainingId);
+    form.set("file", materialImportFile);
+    setImportBusy(true);
+    setError(null);
+    try {
+      const result = await adminUpload<{ rows: MaterialImportRow[] }>(
+        "/api/admin/participants/materials/import-preview",
+        form
+      );
+      setMaterialImportRows(result.rows);
+    } catch (reason) {
+      fail(reason);
+    } finally {
+      setImportBusy(false);
+    }
+  }
+  async function saveMaterialImport() {
+    if (
+      !materialImportRows.length ||
+      materialImportRows.some((row) => row.errors.length)
+    )
+      return;
+    setImportBusy(true);
+    try {
+      const result = await adminMutation<{ imported: number }>(
+        "/api/admin/participants/materials/import",
+        {
+          method: "POST",
+          body: JSON.stringify({
+            trainingId: materialImportTrainingId,
+            rows: materialImportRows,
+          }),
+        }
+      );
+      closeMaterialImport();
+      complete(`${result.imported} materi berhasil diimpor.`);
+    } catch (reason) {
+      fail(reason);
+    } finally {
+      setImportBusy(false);
+    }
+  }
+
+  return (
+    <>
+      <header className="admin-page-header">
+        <div>
+          <p className="section-label">Master data</p>
+          <h1>Pelatihan & Materi</h1>
+          <p className="page-description">
+            Kelola struktur pelatihan dan materi sebelum membuat angkatan,
+            peserta, atau pelaksanaan tes.
+          </p>
+        </div>
+      </header>
+      {message && <p className="form-message is-success">{message}</p>}
+      {error && (
+        <p className="form-message is-error" role="alert">
+          {error}
+        </p>
+      )}
+      <nav className="catalog-tabs" aria-label="Bagian master data">
+        <button
+          type="button"
+          className={catalogTab === "trainings" ? "is-active" : ""}
+          onClick={() => setCatalogTab("trainings")}
+        >
+          <GraduationCap /> Pelatihan <span>{catalog.trainings.length}</span>
+        </button>
+        <button
+          type="button"
+          className={catalogTab === "materials" ? "is-active" : ""}
+          onClick={() => setCatalogTab("materials")}
+        >
+          <BookOpenText /> Kurikulum & Materi{" "}
+          <span>{catalog.materials.length}</span>
+        </button>
+      </nav>
+      <div className="master-catalog-layout">
+        {catalogTab === "trainings" && (
+          <section className="panel master-training-panel">
+            <div className="panel-heading">
+              <GraduationCap />
+              <div>
+                <p className="section-label">Master</p>
+                <h2>Pelatihan</h2>
+              </div>
+              <button
+                type="button"
+                className="button button--small"
+                onClick={() => setTrainingModalOpen(true)}
+              >
+                <Plus /> Tambah Pelatihan
+              </button>
+            </div>
+            <div className="training-filter-bar">
+              <div className="training-filter-bar__intro">
+                <SlidersHorizontal />
+                <div>
+                  <strong>Filter pelatihan</strong>
+                  <span>Temukan pelatihan berdasarkan nama atau status.</span>
+                </div>
+              </div>
+              <div className="training-filter-bar__controls">
+                <label className="training-status-filter">
+                  <span>Nama Pelatihan</span>
+                  <input
+                    list="training-name-options"
+                    value={trainingNameQuery}
+                    onChange={(event) => {
+                      setTrainingNameQuery(event.target.value);
+                      setTrainingPage(1);
+                    }}
+                    placeholder="Ketik atau pilih pelatihan"
+                  />
+                  <datalist id="training-name-options">
+                    {catalog.trainings.map((training) => (
+                      <option value={training.name} key={training.id} />
+                    ))}
+                  </datalist>
+                </label>
+                <label className="training-status-filter">
+                  <span>Status</span>
+                  <select
+                    value={trainingStatus}
+                    onChange={(event) => {
+                      setTrainingStatus(event.target.value);
+                      setTrainingPage(1);
+                    }}
+                  >
+                    <option value="">Semua status</option>
+                    <option value="true">Aktif</option>
+                    <option value="false">Nonaktif</option>
+                  </select>
+                </label>
+              </div>
+            </div>
+            <div className="training-master-list">
+              {displayedTrainings.map((training) => (
+                <article key={training.id} className="training-master-card">
+                  <span className="training-master-icon">
+                    <GraduationCap />
+                  </span>
+                  <div className="training-master-copy">
+                    <strong>{training.name}</strong>
+                    <small>
+                      {training.material_count} materi · {training.total_jp} JP
+                    </small>
+                  </div>
+                  <span
+                    className={
+                      training.is_active
+                        ? "status-badge is-active"
+                        : "status-badge"
+                    }
+                  >
+                    {training.is_active ? "Aktif" : "Nonaktif"}
+                  </span>
+                  <div className="row-actions">
+                    <button
+                      type="button"
+                      className="button button--secondary button--small"
+                      onClick={() => setEditingTraining(training)}
+                    >
+                      <Pencil /> Edit
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button"
+                      onClick={() =>
+                        void updateTraining(training, {
+                          is_active: training.is_active ? 0 : 1,
+                        })
+                      }
+                    >
+                      {training.is_active ? "Nonaktifkan" : "Aktifkan"}
+                    </button>
+                    <button
+                      type="button"
+                      className="text-button is-danger"
+                      onClick={() => void deleteTraining(training)}
+                    >
+                      <Trash2 /> Hapus
+                    </button>
+                  </div>
+                </article>
+              ))}
+              {!filteredTrainings.length && (
+                <p className="empty-state">
+                  {catalog.trainings.length
+                    ? "Tidak ada pelatihan yang sesuai filter."
+                    : "Belum ada pelatihan."}
+                </p>
+              )}
+            </div>
+            {filteredTrainings.length > TRAININGS_PER_PAGE && (
+              <footer className="table-pagination training-pagination">
+                <span>
+                  Menampilkan{" "}
+                  {(activeTrainingPage - 1) * TRAININGS_PER_PAGE + 1}–
+                  {Math.min(
+                    activeTrainingPage * TRAININGS_PER_PAGE,
+                    filteredTrainings.length
+                  )}{" "}
+                  dari {filteredTrainings.length} pelatihan
+                </span>
+                <div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Halaman pelatihan sebelumnya"
+                    disabled={activeTrainingPage === 1}
+                    onClick={() =>
+                      setTrainingPage((page) => Math.max(1, page - 1))
+                    }
+                  >
+                    <ChevronLeft />
+                  </button>
+                  <strong>
+                    Halaman {activeTrainingPage} / {trainingPageCount}
+                  </strong>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Halaman pelatihan berikutnya"
+                    disabled={activeTrainingPage === trainingPageCount}
+                    onClick={() =>
+                      setTrainingPage((page) =>
+                        Math.min(trainingPageCount, page + 1)
+                      )
+                    }
+                  >
+                    <ChevronRight />
+                  </button>
+                </div>
+              </footer>
+            )}
+          </section>
+        )}
+        {catalogTab === "materials" && (
+          <section className="panel master-material-panel">
+            <div className="panel-heading">
+              <BookOpenText />
+              <div>
+                <p className="section-label">Kurikulum</p>
+                <h2>Materi Pelatihan</h2>
+              </div>
+              <div className="page-header-actions">
+                <button
+                  type="button"
+                  className="button button--secondary button--small"
+                  onClick={() => setMaterialImportOpen(true)}
+                >
+                  <Upload /> Upload File
+                </button>
+                <button
+                  type="button"
+                  className="button button--small"
+                  onClick={() => setMaterialModalOpen(true)}
+                >
+                  <Plus /> Tambah Materi
+                </button>
+              </div>
+            </div>
+            <div className="material-filter-bar">
+              <div className="material-filter-bar__intro">
+                <SlidersHorizontal />
+                <div>
+                  <strong>Filter materi</strong>
+                  <span>{materials.length} materi ditampilkan</span>
+                </div>
+              </div>
+              <div className="material-filter-bar__controls">
+                <label className="material-filter">
+                  <span>Pelatihan</span>
+                  <input
+                    list="material-training-options"
+                    value={materialTrainingQuery}
+                    onChange={(event) => {
+                      setMaterialTrainingQuery(event.target.value);
+                      setMaterialPage(1);
+                    }}
+                    placeholder="Ketik atau pilih pelatihan"
+                  />
+                  <datalist id="material-training-options">
+                    {catalog.trainings.map((training) => (
+                      <option value={training.name} key={training.id} />
+                    ))}
+                  </datalist>
+                </label>
+              </div>
+            </div>
+            <div className="data-table-wrap">
+              <table className="clean-table">
+                <thead>
+                  <tr>
+                    <th>Materi</th>
+                    <th>Pelatihan</th>
+                    <th>JP</th>
+                    <th>Urutan</th>
+                    <th>Bank Soal</th>
+                    <th>Aksi</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {displayedMaterials.map((material) => (
+                    <tr key={material.id}>
+                      <td>
+                        <strong>{material.name}</strong>
+                      </td>
+                      <td>{material.training_name}</td>
+                      <td>{material.jp}</td>
+                      <td>{material.sort_order}</td>
+                      <td>{material.bank_name ?? "Belum ada"}</td>
+                      <td>
+                        <div className="row-actions">
+                          <button
+                            type="button"
+                            className="text-button"
+                            onClick={() => setEditingMaterial(material)}
+                          >
+                            Edit
+                          </button>
+                          <button
+                            type="button"
+                            className="text-button is-danger"
+                            onClick={() => void deleteMaterial(material)}
+                          >
+                            Hapus
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {!materials.length && (
+                <p className="empty-state">Belum ada materi.</p>
+              )}
+            </div>
+            {materials.length > MATERIALS_PER_PAGE && (
+              <footer className="table-pagination">
+                <span>
+                  Menampilkan{" "}
+                  {(activeMaterialPage - 1) * MATERIALS_PER_PAGE + 1}–
+                  {Math.min(
+                    activeMaterialPage * MATERIALS_PER_PAGE,
+                    materials.length
+                  )}{" "}
+                  dari {materials.length} materi
+                </span>
+                <div>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Halaman sebelumnya"
+                    disabled={activeMaterialPage === 1}
+                    onClick={() =>
+                      setMaterialPage((page) => Math.max(1, page - 1))
+                    }
+                  >
+                    <ChevronLeft />
+                  </button>
+                  <strong>
+                    Halaman {activeMaterialPage} / {materialPageCount}
+                  </strong>
+                  <button
+                    type="button"
+                    className="icon-button"
+                    aria-label="Halaman berikutnya"
+                    disabled={activeMaterialPage === materialPageCount}
+                    onClick={() =>
+                      setMaterialPage((page) =>
+                        Math.min(materialPageCount, page + 1)
+                      )
+                    }
+                  >
+                    <ChevronRight />
+                  </button>
+                </div>
+              </footer>
+            )}
+          </section>
+        )}
+      </div>
+      {trainingModalOpen &&
+        createPortal(
+          <div
+            className="modal-backdrop participant-modal-backdrop"
+            role="presentation"
+            onMouseDown={(event) => {
+              if (event.target === event.currentTarget) {
+                setTrainingModalOpen(false);
+              }
+            }}
+          >
+            <section
+              className="participant-modal"
+              role="dialog"
+              aria-modal="true"
+              aria-labelledby="add-training-title"
+            >
+              <header className="participant-modal__header">
+                <div>
+                  <p className="section-label">Master</p>
+                  <h2 id="add-training-title">Tambah Pelatihan</h2>
+                  <p>
+                    Buat pelatihan terlebih dahulu sebelum menambahkan materi
+                    dan angkatan.
+                  </p>
+                </div>
+
+                <button
+                  type="button"
+                  className="participant-modal__close"
+                  aria-label="Tutup"
+                  onClick={() => setTrainingModalOpen(false)}
+                >
+                  ×
+                </button>
+              </header>
+
+              <form
+                className="participant-modal__form form-stack"
+                onSubmit={(event) => void createTraining(event)}
+              >
+                <label>
+                  Nama Pelatihan
+                  <input name="name" required autoFocus />
+                </label>
+
+                <footer className="participant-modal__actions">
+                  <button
+                    type="button"
+                    className="button button--secondary"
+                    onClick={() => setTrainingModalOpen(false)}
+                  >
+                    Batal
+                  </button>
+
+                  <button className="button">
+                    <Plus />
+                    Simpan Pelatihan
+                  </button>
+                </footer>
+              </form>
+            </section>
+          </div>,
+          document.body
+        )}
+      {materialModalOpen && createPortal (
+        <div
+          className="modal-backdrop participant-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget)
+              setMaterialModalOpen(false);
+          }}
+        >
+          <section
+            className="participant-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="add-material-title"
+          >
+            <header className="participant-modal__header">
+              <div>
+                <p className="section-label">Kurikulum</p>
+                <h2 id="add-material-title">Tambah Materi</h2>
+                <p>Tambahkan materi ke pelatihan yang sudah tersedia.</p>
+              </div>
+              <button
+                type="button"
+                className="participant-modal__close"
+                aria-label="Tutup"
+                onClick={() => setMaterialModalOpen(false)}
+              >
+                ×
+              </button>
+            </header>
+            <form
+              className="participant-modal__form form-stack"
+              onSubmit={(event) => void createMaterial(event)}
+            >
+              <label>
+                Pelatihan
+                <select name="trainingId" required autoFocus>
+                  <option value="">Pilih pelatihan</option>
+                  {catalog.trainings
+                    .filter((item) => item.is_active)
+                    .map((item) => (
+                      <option value={item.id} key={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                Nama Materi
+                <input name="name" required />
+              </label>
+              <div className="form-grid">
+                <label>
+                  Jumlah JP
+                  <input name="jp" type="number" min="1" required />
+                </label>
+                <label>
+                  Urutan
+                  <input name="sortOrder" type="number" min="1" required />
+                </label>
+              </div>
+              <footer className="participant-modal__actions">
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  onClick={() => setMaterialModalOpen(false)}
+                >
+                  Batal
+                </button>
+                <button className="button">
+                  <Plus /> Simpan Materi
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>,
+        document.body,
+      )}
+      {editingTraining && createPortal (
+        <div
+          className="modal-backdrop participant-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setEditingTraining(null);
+          }}
+        >
+          <section
+            className="participant-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-training-title"
+          >
+            <header className="participant-modal__header">
+              <div>
+                <p className="section-label">Master</p>
+                <h2 id="edit-training-title">Edit Pelatihan</h2>
+                <p>Perbarui nama dan status pelatihan.</p>
+              </div>
+              <button
+                type="button"
+                className="participant-modal__close"
+                aria-label="Tutup"
+                onClick={() => setEditingTraining(null)}
+              >
+                ×
+              </button>
+            </header>
+            <form
+              className="participant-modal__form form-stack"
+              onSubmit={(event) => void saveTrainingEdit(event)}
+            >
+              <label>
+                Nama Pelatihan
+                <input
+                  name="name"
+                  required
+                  autoFocus
+                  defaultValue={editingTraining.name}
+                />
+              </label>
+              <label className="toggle-row">
+                <input
+                  name="isActive"
+                  type="checkbox"
+                  defaultChecked={Boolean(editingTraining.is_active)}
+                />
+                <span>Pelatihan aktif</span>
+              </label>
+              <footer className="participant-modal__actions">
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  onClick={() => setEditingTraining(null)}
+                >
+                  Batal
+                </button>
+                <button className="button">
+                  <Pencil /> Simpan Perubahan
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>,
+        document.body,
+      )}
+      {editingMaterial && createPortal (
+        <div
+          className="modal-backdrop participant-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) setEditingMaterial(null);
+          }}
+        >
+          <section
+            className="participant-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="edit-material-title"
+          >
+            <header className="participant-modal__header">
+              <div>
+                <p className="section-label">Kurikulum</p>
+                <h2 id="edit-material-title">Edit Materi</h2>
+                <p>Perbarui penempatan dan rincian materi pelatihan.</p>
+              </div>
+              <button
+                type="button"
+                className="participant-modal__close"
+                aria-label="Tutup"
+                onClick={() => setEditingMaterial(null)}
+              >
+                ×
+              </button>
+            </header>
+            <form
+              className="participant-modal__form form-stack"
+              onSubmit={(event) => void saveMaterialEdit(event)}
+            >
+              <label>
+                Pelatihan
+                <select
+                  name="trainingId"
+                  required
+                  defaultValue={editingMaterial.training_id}
+                >
+                  {catalog.trainings
+                    .filter(
+                      (item) =>
+                        item.is_active ||
+                        item.id === editingMaterial.training_id
+                    )
+                    .map((item) => (
+                      <option value={item.id} key={item.id}>
+                        {item.name}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label>
+                Nama Materi
+                <input
+                  name="name"
+                  required
+                  autoFocus
+                  defaultValue={editingMaterial.name}
+                />
+              </label>
+              <div className="form-grid">
+                <label>
+                  Jumlah JP
+                  <input
+                    name="jp"
+                    type="number"
+                    min="1"
+                    required
+                    defaultValue={editingMaterial.jp}
+                  />
+                </label>
+                <label>
+                  Urutan
+                  <input
+                    name="sortOrder"
+                    type="number"
+                    min="1"
+                    required
+                    defaultValue={editingMaterial.sort_order}
+                  />
+                </label>
+              </div>
+              <footer className="participant-modal__actions">
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  onClick={() => setEditingMaterial(null)}
+                >
+                  Batal
+                </button>
+                <button className="button">
+                  <Pencil /> Simpan Perubahan
+                </button>
+              </footer>
+            </form>
+          </section>
+        </div>,
+        document.body,
+      )}
+      {materialImportOpen && createPortal (
+        <div
+          className="modal-backdrop participant-modal-backdrop"
+          role="presentation"
+          onMouseDown={(event) => {
+            if (event.target === event.currentTarget) closeMaterialImport();
+          }}
+        >
+          <section
+            className="participant-modal certificate-modal"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="import-material-title"
+          >
+            <header className="participant-modal__header">
+              <div>
+                <p className="section-label">Kurikulum</p>
+                <h2 id="import-material-title">Import Materi</h2>
+                <p>
+                  Gunakan template Excel dengan kolom Nama Materi, Jumlah JP,
+                  dan Urutan.
+                </p>
+              </div>
+              <button
+                type="button"
+                className="participant-modal__close"
+                aria-label="Tutup"
+                onClick={closeMaterialImport}
+              >
+                ×
+              </button>
+            </header>
+            <div className="participant-modal__form form-stack">
+              <label>
+                Pelatihan
+                <input
+                  list="import-training-options"
+                  value={materialImportTrainingQuery}
+                  onChange={(event) => {
+                    const query = event.target.value;
+                    const selectedTraining = catalog.trainings.find(
+                      (item) => item.is_active && item.name === query
+                    );
+                    setMaterialImportTrainingQuery(query);
+                    setMaterialImportTrainingId(selectedTraining?.id ?? "");
+                    setMaterialImportRows([]);
+                  }}
+                  placeholder="Ketik atau pilih pelatihan"
+                  required
+                />
+                <datalist id="import-training-options">
+                  {catalog.trainings
+                    .filter((item) => item.is_active)
+                    .map((item) => (
+                      <option value={item.name} key={item.id} />
+                    ))}
+                </datalist>
+              </label>
+              <div className="template-download-row">
+                <div>
+                  <strong>Belum memiliki template?</strong>
+                  <span>
+                    Unduh contoh, isi data materi, lalu unggah kembali.
+                  </span>
+                </div>
+                <a
+                  className="button button--secondary button--small"
+                  href="/Template-Import-Materi-BDI.xlsx"
+                  download
+                >
+                  <Download /> Download Contoh Template
+                </a>
+              </div>
+              <label>
+                File template (.xlsx)
+                <span className="file-field">
+                  <FileSpreadsheet />
+                  <input
+                    type="file"
+                    accept=".xlsx"
+                    onChange={(event) => {
+                      setMaterialImportFile(event.target.files?.[0] ?? null);
+                      setMaterialImportRows([]);
+                    }}
+                  />
+                </span>
+              </label>
+              <div className="participant-modal__actions">
+                <button
+                  type="button"
+                  className="button button--secondary"
+                  onClick={closeMaterialImport}
+                >
+                  Batal
+                </button>
+                <button
+                  type="button"
+                  className="button"
+                  disabled={
+                    !materialImportTrainingId ||
+                    !materialImportFile ||
+                    importBusy
+                  }
+                  onClick={() => void previewMaterialImport()}
+                >
+                  <FileSpreadsheet />{" "}
+                  {importBusy ? "Memproses…" : "Preview File"}
+                </button>
+              </div>
+              {materialImportRows.length > 0 && (
+                <section className="import-preview-section">
+                  <div className="import-preview-heading">
+                    <div>
+                      <p className="section-label">Preview</p>
+                      <h3>{materialImportRows.length} materi ditemukan</h3>
+                    </div>
+                    <span
+                      className={
+                        materialImportRows.some((row) => row.errors.length)
+                          ? "status-badge is-danger"
+                          : "status-badge is-active"
+                      }
+                    >
+                      {materialImportRows.some((row) => row.errors.length)
+                        ? "Ada data perlu diperbaiki"
+                        : "Seluruh data valid"}
+                    </span>
+                  </div>
+                  <div className="data-table-wrap">
+                    <table className="clean-table">
+                      <thead>
+                        <tr>
+                          <th>Baris</th>
+                          <th>Nama Materi</th>
+                          <th>JP</th>
+                          <th>Urutan</th>
+                          <th>Status</th>
+                        </tr>
+                      </thead>
+                      <tbody>
+                        {materialImportRows.map((row) => (
+                          <tr
+                            key={row.row}
+                            className={row.errors.length ? "is-invalid" : ""}
+                          >
+                            <td>{row.row}</td>
+                            <td>{row.name}</td>
+                            <td>{row.jp}</td>
+                            <td>{row.sortOrder}</td>
+                            <td>
+                              {row.errors.length
+                                ? row.errors.join(" ")
+                                : "Valid"}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
+                  </div>
+                  <div className="participant-modal__actions">
+                    <button
+                      type="button"
+                      className="button"
+                      disabled={
+                        importBusy ||
+                        materialImportRows.some((row) => row.errors.length)
+                      }
+                      onClick={() => void saveMaterialImport()}
+                    >
+                      <Upload />{" "}
+                      {importBusy
+                        ? "Menyimpan…"
+                        : `Import ${materialImportRows.length} Materi`}
+                    </button>
+                  </div>
+                </section>
+              )}
+            </div>
+          </section>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}

@@ -18,6 +18,7 @@ import { PublicHomePage } from "../pages/participant/PublicHomePage";
 import { TrainingEntryFoundationPage } from "../pages/participant/TrainingEntryFoundationPage";
 import { AttemptPage } from "../pages/participant/AttemptPage";
 import { ParticipantsPage } from "../pages/admin/ParticipantsPage";
+import { TrainingCatalogPage } from "../pages/admin/TrainingCatalogPage";
 
 export function AppRouter() {
   return (
@@ -35,6 +36,7 @@ export function AppRouter() {
           <Route path="bank-soal/:bankId" element={<QuestionBankDetailPage />} />
           <Route path="bank-soal/:bankId/import" element={<QuestionImportPage />} />
           <Route path="pelatihan" element={<TrainingListPage />} />
+          <Route path="master-pelatihan" element={<TrainingCatalogPage />} />
           <Route path="pelatihan/baru" element={<TrainingCreatePage />} />
           <Route path="pelatihan/:sessionId" element={<TrainingDetailPage />} />
           <Route path="hasil" element={<ResultsPage />} />
