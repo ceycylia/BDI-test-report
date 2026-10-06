@@ -11,7 +11,7 @@ export const certificateLayout = {
     label: { x: 47, y: 88, lineHeight: 7 },
     value: { x: 93, y: 88, lineHeight: 7 },
     narrative: { x: 35, y: 109, width: 220, lineHeight: 6 },
-    photo: { x: 136, y: 154, width: 33, height: 50 },
+    photo: { x: 138, y: 154, width: 33, height: 50 },
     issue: { x: 212, y: 138 },
     signerTitle: { x: 212, y: 147 },
     signature: { x: 190.5, y: 149, width: 43, height: 16 },

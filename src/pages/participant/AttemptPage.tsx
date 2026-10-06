@@ -31,7 +31,6 @@ export function AttemptPage() {
   const { slug = "", attemptId = "" } = useParams();
   const [payload, setPayload] = useState<AttemptPayload | null>(null);
   const [answers, setAnswers] = useState<Record<string, OptionKey>>({});
-  const [current, setCurrent] = useState(0);
   const [remaining, setRemaining] = useState<number | null>(null);
   const [normalRemaining, setNormalRemaining] = useState<number | null>(null);
   const [oneMinuteDeadlineAt, setOneMinuteDeadlineAt] = useState<number | null>(null);
@@ -40,12 +39,14 @@ export function AttemptPage() {
   useAutoDismiss(message, setMessage);
   const [error, setError] = useState<string | null>(null);
   const [confirming, setConfirming] = useState(false);
+  const [incompleteConfirming, setIncompleteConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [result, setResult] = useState<number | null>(null);
   const revisionRef = useRef(0);
   const serverOffsetRef = useRef(0);
   const loadedRef = useRef(false);
   const timeoutSubmittedRef = useRef(false);
+  const questionRefs = useRef<Record<string, HTMLElement | null>>({});
   const identityRaw = sessionStorage.getItem(`bdi-participant:${slug}`);
   const participantId = identityRaw ? (JSON.parse(identityRaw) as { participantId?: string }).participantId ?? "" : "";
   const localKey = `bdi-attempt:${slug}:${participantId}:${attemptId}`;
@@ -133,11 +134,25 @@ export function AttemptPage() {
     if (!payload) return;
     const unanswered = payload.questions.filter((question) => !answers[question.id]);
     if (unanswered.length) {
-      setError(`Masih ada ${unanswered.length} soal yang belum dijawab.`);
-      setCurrent(payload.questions.findIndex((question) => question.id === unanswered[0]?.id));
+      setError(null);
+      setIncompleteConfirming(true);
       return;
     }
     setError(null); setConfirming(true);
+  }
+
+  function scrollToFirstUnanswered() {
+    if (!payload) return;
+    const unanswered = payload.questions.find((question) => !answers[question.id]);
+    if (!unanswered) return;
+    const target = questionRefs.current[unanswered.id];
+    target?.scrollIntoView({ behavior: "smooth", block: "center" });
+    target?.focus({ preventScroll: true });
+  }
+
+  function returnToUnanswered() {
+    setIncompleteConfirming(false);
+    window.setTimeout(scrollToFirstUnanswered, 0);
   }
 
   if (error && !payload) return <PublicLayout><section className="entry-card"><p className="form-message is-error">{error}</p><Link className="button" to={`/t/${slug}`}>Kembali</Link></section></PublicLayout>;
@@ -148,25 +163,27 @@ export function AttemptPage() {
     const stageLabel = payload.attempt.stage === "PRE" ? "Pre-Test" : payload.attempt.stage === "POST" ? "Post-Test" : payload.attempt.stage.replace("_", " ").replace("REMEDIAL", "Remedial");
     return <PublicLayout><section className="entry-card result-card"><div className="entry-card__eyebrow">{stageLabel} selesai</div><h1>Nilai Anda</h1><strong className="result-score">{result}</strong>{!isPre && <p className={`result-status ${passed ? "is-passed" : "is-failed"}`}>Status: {passed ? "LULUS" : "BELUM LULUS"}</p>}<p>Jawaban telah dikirim dan tidak dapat diubah.</p><Link className="button" to={`/t/${slug}`}>Kembali ke pelatihan</Link></section></PublicLayout>;
   }
-  const question = payload.questions[current];
-  if (!question) return <PublicLayout><section className="entry-card"><p className="form-message is-error">Soal tidak tersedia.</p></section></PublicLayout>;
+  if (!payload.questions.length) return <PublicLayout><section className="entry-card"><p className="form-message is-error">Soal tidak tersedia.</p></section></PublicLayout>;
 
   const mainTimeFinished = normalRemaining !== null && normalRemaining === 0;
   const oneMinuteRemaining = oneMinuteDeadlineAt === null ? 0 : Math.max(0, Math.ceil((oneMinuteDeadlineAt - (Date.now() + serverOffsetRef.current)) / 1000));
   const showingOneMinute = mainTimeFinished && oneMinuteRemaining > 0;
   const displayedRemaining = mainTimeFinished ? oneMinuteRemaining : normalRemaining ?? 0;
+  const answeredCount = payload.questions.filter((question) => Boolean(answers[question.id])).length;
+  const unansweredCount = payload.questions.length - answeredCount;
 
   return <PublicLayout><section className="test-shell">
-    <header className="test-header"><div><span>{payload.attempt.stage.replace("_", " ")}</span><strong>Soal {current + 1} dari {payload.questions.length}</strong></div><div className={`test-timer ${showingOneMinute ? "is-critical" : ""}`} aria-label="Sisa waktu pengerjaan">{formatTime(displayedRemaining)}</div></header>
-    <div className="test-progress"><span style={{ width: `${((current + 1) / payload.questions.length) * 100}%` }} /></div>
+    <header className="test-header"><div><span>{payload.attempt.stage.replace("_", " ")}</span><strong>{answeredCount} dari {payload.questions.length} soal sudah dijawab</strong></div><div className={`test-timer ${showingOneMinute ? "is-critical" : ""}`} aria-label="Sisa waktu pengerjaan">{formatTime(displayedRemaining)}</div></header>
+    <div className="test-progress" aria-label={`${answeredCount} dari ${payload.questions.length} soal sudah dijawab`}><span style={{ width: `${(answeredCount / payload.questions.length) * 100}%` }} /></div>
     {mainTimeFinished && (showingOneMinute ? <div className="test-time-warning is-critical" role="status"><strong>WAKTU HAMPIR HABIS.</strong><span>SEGERA SELESAIKAN SOAL YANG BELUM DIJAWAB.</span></div> : <div className="test-time-warning" role="status"><strong>WAKTU PENGERJAAN TELAH HABIS.</strong><span>Periksa soal yang belum dijawab, lalu tambahkan waktu 1 menit untuk menyelesaikannya.</span><button type="button" className="button" disabled={(remaining ?? 0) === 0} onClick={addOneMinute}>TAMBAH WAKTU 1 MENIT</button></div>)}
     {error && <p className="form-message is-error" role="alert">{error}</p>}
-    <article className="question-card"><p className="question-number">Pertanyaan {current + 1}</p><h1>{question.text}</h1>{question.imageUrl && <figure className="test-question-figure"><img className="test-question-image" src={question.imageUrl} alt="Gambar pertanyaan" onError={(event) => { event.currentTarget.hidden = true; event.currentTarget.nextElementSibling?.removeAttribute("hidden"); }} /><figcaption hidden>Gambar soal tidak dapat dimuat. Silakan hubungi panitia.</figcaption></figure>}
+    <div className="scroll-question-list">{payload.questions.map((question, index) => <article className={`question-card scroll-question-card${answers[question.id] ? " is-answered" : ""}`} id={`question-${index + 1}`} key={question.id} tabIndex={-1} ref={(element) => { questionRefs.current[question.id] = element; }}><header className="scroll-question-card__header"><p className="question-number">Pertanyaan {index + 1}</p><span className={`question-answer-status${answers[question.id] ? " is-answered" : ""}`}>{answers[question.id] ? "Sudah dijawab" : "Belum dijawab"}</span></header><h2>{question.text}</h2>{question.imageUrl && <figure className="test-question-figure"><img className="test-question-image" src={question.imageUrl} alt={`Gambar pertanyaan ${index + 1}`} onError={(event) => { event.currentTarget.hidden = true; event.currentTarget.nextElementSibling?.removeAttribute("hidden"); }} /><figcaption hidden>Gambar soal tidak dapat dimuat. Silakan hubungi panitia.</figcaption></figure>}
       <div className="answer-options">{question.options.map((option) => <label className={answers[question.id] === option.originalKey ? "is-selected" : ""} key={option.originalKey}><input type="radio" name={question.id} checked={answers[question.id] === option.originalKey} onChange={() => { setAnswers((currentAnswers) => ({ ...currentAnswers, [question.id]: option.originalKey })); setError(null); setMessage(null); }} /><span className="answer-key">{option.displayKey}</span><span>{option.text}</span></label>)}</div>
-    </article>
-    <div className="test-actions"><button className="button button--secondary" disabled={current === 0} onClick={() => setCurrent((index) => Math.max(0, index - 1))}>Sebelumnya</button>{current < payload.questions.length - 1 ? <button className="button" onClick={() => setCurrent((index) => Math.min(payload.questions.length - 1, index + 1))}>Berikutnya</button> : <button className="button" onClick={requestSubmit}>Kirim jawaban</button>}</div>
-    <nav className="question-nav" aria-label="Navigasi soal">{payload.questions.map((item, index) => <button className={`${index === current ? "is-current" : ""} ${answers[item.id] ? "is-answered" : ""}`} key={item.id} onClick={() => setCurrent(index)} aria-label={`Soal ${index + 1}`}>{index + 1}</button>)}</nav>
+    </article>)}</div>
+    <section className="test-submit-section"><div><strong>{answeredCount} dari {payload.questions.length} soal sudah dijawab</strong>{unansweredCount > 0 && <span>{unansweredCount} soal masih kosong.</span>}</div><button className="button" disabled={submitting} onClick={requestSubmit}>{submitting ? "Mengirim…" : "KIRIM JAWABAN"}</button></section>
+    {unansweredCount > 0 && <button type="button" className="button unanswered-jump-button" onClick={scrollToFirstUnanswered}>Ke soal yang belum dijawab <span>{unansweredCount}</span></button>}
     {message && <p className="autosave-message" aria-live="polite">{message}</p>}
+    {incompleteConfirming && <ModalPortal onClose={() => setIncompleteConfirming(false)}><section className="submit-modal" role="dialog" aria-modal="true" aria-labelledby="incomplete-submit-title"><button type="button" className="participant-modal__close submit-modal__close" aria-label="Tutup konfirmasi" onClick={() => setIncompleteConfirming(false)}>×</button><h2 id="incomplete-submit-title">Masih ada soal yang belum dijawab</h2><p>{unansweredCount} soal masih kosong. Lengkapi jawaban terlebih dahulu sebelum mengirim.</p><div className="test-actions"><button className="button" onClick={returnToUnanswered}>KEMBALI MENGISI</button></div></section></ModalPortal>}
     {confirming && <ModalPortal onClose={() => setConfirming(false)} blocked={submitting}><section className="submit-modal" role="dialog" aria-modal="true" aria-labelledby="submit-title"><button type="button" className="participant-modal__close submit-modal__close" aria-label="Tutup konfirmasi" disabled={submitting} onClick={() => setConfirming(false)}>×</button><h2 id="submit-title">Kirim jawaban?</h2><p>Apakah Anda yakin ingin mengirim jawaban? Jawaban tidak dapat diubah setelah dikirim.</p><div className="test-actions"><button className="button button--secondary" onClick={() => setConfirming(false)}>BATAL</button><button className="button" disabled={submitting} onClick={() => void sendSubmission("NORMAL")}>{submitting ? "Mengirim…" : "KIRIM JAWABAN"}</button></div></section></ModalPortal>}
   </section></PublicLayout>;
 }

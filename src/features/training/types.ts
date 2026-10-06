@@ -10,6 +10,12 @@ export type TrainingSummary = {
   trainingStartDate: string;
   trainingEndDate: string;
   status: "DRAFT" | "ACTIVE" | "COMPLETED";
+  scheduleStatus: "NOT_OPEN" | "ONGOING" | "FINISHED";
+  trainingId: string;
+  trainingName: string;
+  materialId: string;
+  materialName: string;
+  cohorts: Array<{ id: string; name: string }>;
 };
 
 export type TrainingDetail = TrainingSummary & {

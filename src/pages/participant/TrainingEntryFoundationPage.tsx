@@ -1,5 +1,5 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { PublicLayout } from "../../layouts/PublicLayout";
 import { nextPostStage, type AttemptStage } from "../../../worker/domain/attempts/progression";
 import { formatDateForDisplay } from "../../features/dates/date-format";
@@ -38,6 +38,10 @@ export function TrainingEntryFoundationPage() {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
+    setIdentity(null);
+    setName("");
+    setNik("");
+    setError(null);
     void publicJson<EntryData>(`/api/public/training/${slug}`)
       .then((payload) => { setData(payload); setBatchId(payload.batches[0]?.id ?? ""); })
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Pelatihan tidak dapat dimuat."));
@@ -71,13 +75,14 @@ export function TrainingEntryFoundationPage() {
   return (
     <PublicLayout>
       <section className="entry-card" aria-labelledby="training-title">
+        <Link className="participant-home-back" to="/" aria-label="Kembali ke menu utama peserta">← Kembali</Link>
         <div className="entry-card__eyebrow">Pelatihan BDI</div>
         <h1 id="training-title">{data?.training.name ?? "Memuat pelatihan…"}</h1>
         {data && <p className="entry-card__lead">{data.training.questionCount} soal · 15 menit<br />Periode {formatDateForDisplay(data.training.startDate)} sampai {formatDateForDisplay(data.training.endDate)}</p>}
         {error && <p className="form-message is-error" role="alert">{error}</p>}
-        {data && !identity && <form className="participant-entry-form" onSubmit={(event) => void identify(event)}>
-          <label>Nama Lengkap<input value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="Masukkan nama lengkap" required minLength={2} /></label>
-          <label>NIK<input value={nik} onChange={(event) => setNik(event.target.value)} inputMode="numeric" autoComplete="off" placeholder="Masukkan NIK sesuai pendaftaran" required minLength={3} /></label>
+        {data && !identity && <form className="participant-entry-form" autoComplete="off" onSubmit={(event) => void identify(event)}>
+          <label>Nama Lengkap<input name="participantName" value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="Masukkan nama lengkap" required minLength={2} maxLength={150} /></label>
+          <label>NIK<input name="participantNik" value={nik} onChange={(event) => setNik(event.target.value.replace(/\D/gu, "").slice(0, 40))} inputMode="numeric" pattern="[0-9]+" autoComplete="off" placeholder="Masukkan NIK sesuai pendaftaran" required minLength={3} maxLength={40} /></label>
           <label>Pilih Angkatan<select value={batchId} onChange={(event) => setBatchId(event.target.value)} required>{data.batches.map((batch) => <option key={batch.id} value={batch.id}>{batch.name}</option>)}</select></label>
           <button className="button participant-primary-button" disabled={busy || !batchId}>{busy ? "Memeriksa…" : "LANJUTKAN"}</button>
           {!data.training.preOpen && !data.training.postOpen && <p className="availability-note">Tes belum dibuka. Silakan hubungi admin pelatihan.</p>}

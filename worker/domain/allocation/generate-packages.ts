@@ -41,7 +41,7 @@ export function allocateQuestionPackages(
     throw new Error("Jumlah soal harus berupa integer positif.");
   }
   if (questions.length < questionCount) {
-    throw new Error("Jumlah soal aktif tidak mencukupi untuk satu paket.");
+    throw new Error("Jumlah soal tidak mencukupi untuk satu paket.");
   }
 
   const usage = new Map(questions.map((question) => [question.id, question.timesAssigned]));

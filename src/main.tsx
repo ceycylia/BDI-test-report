@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import { AppRouter } from "./app/router";
 import { AuthProvider } from "./features/admin-auth/AuthProvider";
+import { ActiveYearProvider } from "./features/active-year/ActiveYearProvider";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -20,7 +21,9 @@ createRoot(root).render(
   <StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <AppRouter />
+        <ActiveYearProvider>
+          <AppRouter />
+        </ActiveYearProvider>
       </AuthProvider>
     </BrowserRouter>
   </StrictMode>,

@@ -21,6 +21,7 @@ import {
   deleteTrainingSession,
 } from "../../repositories/training-repository";
 import { NORMAL_TEST_MINUTES } from "../../domain/attempts/timing";
+import { getTestScheduleStatus } from "../../domain/scheduling/test-availability";
 import type { AppEnvironment } from "../../types";
 
 const createStageScheduleSchema = z.discriminatedUnion("status", [
@@ -40,6 +41,7 @@ const createTrainingSchema = z
     trainingId: z.string().min(1),
     materialId: z.string().min(1),
     cohortId: z.string().min(1),
+    activeYear: z.number().int().min(2000).max(2200).optional(),
     passingScore: z.number().min(0).max(100),
     pre: createStageScheduleSchema,
     post: createStageScheduleSchema,
@@ -52,12 +54,143 @@ const stageScheduleSchema = z.discriminatedUnion("status", [
   z.object({ stage: z.enum(["PRE", "POST"]), status: z.literal("CLOSED") }),
 ]);
 
+const overlappingTestMessage = "Test untuk pelatihan, materi, dan angkatan ini sudah tersedia pada periode yang sama atau bertumpang tindih.";
+
+type ComparableStageSchedule = {
+  mode: "MANUAL" | "SCHEDULED";
+  startAt: string | null;
+  endAt: string | null;
+  manualOpen: boolean;
+};
+
+function scheduleWindow(schedule: ComparableStageSchedule, now: number) {
+  if (schedule.mode === "MANUAL") {
+    return schedule.manualOpen ? { start: now, end: Number.POSITIVE_INFINITY } : null;
+  }
+  const start = Date.parse(schedule.startAt ?? "");
+  const end = Date.parse(schedule.endAt ?? "");
+  return Number.isFinite(start) && Number.isFinite(end) && end > start ? { start, end } : null;
+}
+
+function schedulesOverlap(
+  proposed: ComparableStageSchedule[],
+  existing: ComparableStageSchedule[],
+  now: number,
+) {
+  const proposedWindows = proposed.map((schedule) => scheduleWindow(schedule, now)).filter((window) => window !== null);
+  const existingWindows = existing.map((schedule) => scheduleWindow(schedule, now)).filter((window) => window !== null);
+  return proposedWindows.some((left) =>
+    existingWindows.some((right) => left.start < right.end && left.end > right.start)
+  );
+}
+
+async function assertNoOverlappingTest(
+  database: D1Database,
+  input: {
+    trainingId: string;
+    materialId: string;
+    cohortId: string;
+    excludeSessionId?: string;
+    schedules: ComparableStageSchedule[];
+  },
+) {
+  const rows = await database.prepare(
+    `SELECT DISTINCT sessions.id,sessions.pre_mode,sessions.pre_start_at,sessions.pre_end_at,
+            sessions.pre_manual_open,sessions.post_mode,sessions.post_start_at,sessions.post_end_at,
+            sessions.post_manual_open
+       FROM training_sessions sessions
+       JOIN batches ON batches.training_session_id=sessions.id
+      WHERE sessions.training_id=? AND sessions.material_id=? AND batches.cohort_id=?
+        AND (? IS NULL OR sessions.id<>?)`
+  ).bind(
+    input.trainingId,
+    input.materialId,
+    input.cohortId,
+    input.excludeSessionId ?? null,
+    input.excludeSessionId ?? null,
+  ).all<{
+    id: string;
+    pre_mode: "MANUAL" | "SCHEDULED";
+    pre_start_at: string | null;
+    pre_end_at: string | null;
+    pre_manual_open: number;
+    post_mode: "MANUAL" | "SCHEDULED";
+    post_start_at: string | null;
+    post_end_at: string | null;
+    post_manual_open: number;
+  }>();
+  const now = Date.now();
+  const duplicate = rows.results.some((row) => schedulesOverlap(input.schedules, [
+    { mode: row.pre_mode, startAt: row.pre_start_at, endAt: row.pre_end_at, manualOpen: row.pre_manual_open === 1 },
+    { mode: row.post_mode, startAt: row.post_start_at, endAt: row.post_end_at, manualOpen: row.post_manual_open === 1 },
+  ], now));
+  if (duplicate) throw new HttpError(409, "TEST_SCHEDULE_OVERLAP", overlappingTestMessage);
+}
+
+function createComparableSchedule(schedule: z.infer<typeof createStageScheduleSchema>): ComparableStageSchedule {
+  return {
+    mode: schedule.status === "SCHEDULED" ? "SCHEDULED" : "MANUAL",
+    startAt: schedule.status === "SCHEDULED" ? schedule.startAt : null,
+    endAt: schedule.status === "SCHEDULED" ? schedule.endAt : null,
+    manualOpen: schedule.status === "OPEN_NOW",
+  };
+}
+
+function editComparableSchedule(schedule: z.infer<typeof stageScheduleSchema>): ComparableStageSchedule {
+  return {
+    mode: schedule.status === "SCHEDULED" ? "SCHEDULED" : "MANUAL",
+    startAt: schedule.status === "SCHEDULED" ? schedule.startAt : null,
+    endAt: schedule.status === "SCHEDULED" ? schedule.endAt : null,
+    manualOpen: schedule.status === "OPEN_NOW",
+  };
+}
+
 export const trainingRoutes = new Hono<AppEnvironment>();
 trainingRoutes.use("*", requireAdmin);
 
+function activeYearInJakarta() {
+  return Number(new Intl.DateTimeFormat("en", {
+    timeZone: "Asia/Jakarta",
+    year: "numeric",
+  }).format(new Date()));
+}
+
+function parseCohorts(value: string): Array<{ id: string; name: string }> {
+  try {
+    const parsed = JSON.parse(value) as Array<{ id?: unknown; name?: unknown }>;
+    return parsed
+      .filter((item) => typeof item.id === "string" && typeof item.name === "string")
+      .map((item) => ({ id: item.id as string, name: item.name as string }));
+  } catch {
+    return [];
+  }
+}
+
+function scheduleStatusFor(session: NonNullable<Awaited<ReturnType<typeof findTrainingSession>>>) {
+  return getTestScheduleStatus(session.status, [
+    {
+      mode: session.pre_mode,
+      startAt: session.pre_start_at,
+      endAt: session.pre_end_at,
+      manualOpen: session.pre_manual_open === 1,
+    },
+    {
+      mode: session.post_mode,
+      startAt: session.post_start_at,
+      endAt: session.post_end_at,
+      manualOpen: session.post_manual_open === 1,
+    },
+  ]);
+}
+
 trainingRoutes.get("/", async (context) => {
-  const sessions = await listTrainingSessions(context.env.DB);
+  const requestedYear = Number(context.req.query("year"));
+  const activeYear = Number.isInteger(requestedYear) && requestedYear >= 2000 && requestedYear <= 2200
+    ? requestedYear
+    : activeYearInJakarta();
+  const sessions = await listTrainingSessions(context.env.DB, activeYear);
   return context.json({
+    activeYear,
     sessions: sessions.map((session) => ({
       id: session.id,
       name: session.name,
@@ -70,6 +203,12 @@ trainingRoutes.get("/", async (context) => {
       trainingStartDate: session.training_start_date,
       trainingEndDate: session.training_end_date,
       status: session.status,
+      scheduleStatus: scheduleStatusFor(session),
+      trainingId: session.training_id ?? "",
+      trainingName: session.training_name ?? "Pelatihan tidak tersedia",
+      materialId: session.material_id ?? "",
+      materialName: session.material_name ?? session.name,
+      cohorts: parseCohorts(session.cohorts_json),
     })),
   });
 });
@@ -87,17 +226,27 @@ trainingRoutes.post("/", requireSameOrigin, requireCsrf, async (context) => {
        FROM trainings
        JOIN training_materials AS materials ON materials.training_id = trainings.id
        JOIN training_cohorts AS cohorts ON cohorts.training_id = trainings.id
-       JOIN question_banks AS banks ON banks.material_id = materials.id AND banks.is_active = 1
+       JOIN question_banks AS banks ON banks.material_id = materials.id
       WHERE trainings.id = ? AND trainings.is_active = 1 AND trainings.is_deleted = 0
         AND materials.id = ? AND cohorts.id = ? AND cohorts.status = 'ACTIVE'
+      ORDER BY banks.is_active DESC, banks.created_at DESC
       LIMIT 1`,
   ).bind(input.trainingId, input.materialId, input.cohortId).first<{
     training_name: string; material_name: string; cohort_name: string;
     start_date: string; end_date: string; bank_id: string;
   }>();
   if (!selection) throw new HttpError(422, "TEST_SELECTION_INVALID", "Pelatihan, materi, angkatan, atau Bank Soal tidak tersedia.");
+  if (input.activeYear && selection.start_date.slice(0, 4) !== String(input.activeYear)) {
+    throw new HttpError(422, "YEAR_MISMATCH", `Tanggal pelaksanaan berada pada tahun ${selection.start_date.slice(0, 4)}, sedangkan Tahun Aktif adalah ${input.activeYear}. Ubah Tahun Aktif atau angkatan yang dipilih.`);
+  }
+  await assertNoOverlappingTest(context.env.DB, {
+    trainingId: input.trainingId,
+    materialId: input.materialId,
+    cohortId: input.cohortId,
+    schedules: [createComparableSchedule(input.pre), createComparableSchedule(input.post)],
+  });
   const available = await activeQuestionCount(context.env.DB, selection.bank_id);
-  if (available < 1) throw new HttpError(422, "BANK_EMPTY", "Materi ini belum memiliki soal aktif.");
+  if (available < 1) throw new HttpError(422, "BANK_EMPTY", "Materi ini belum memiliki soal.");
 
   const id = crypto.randomUUID();
   const slugBase = `${selection.material_name}-${selection.cohort_name}`.toLowerCase()
@@ -171,8 +320,8 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
   }
   const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
-  if (session.status !== "DRAFT") {
-    throw new HttpError(409, "TRAINING_ALREADY_ACTIVE", "Paket tidak dapat diubah setelah pelatihan aktif.");
+  if (session.status === "COMPLETED") {
+    throw new HttpError(409, "TRAINING_COMPLETED", "Paket tidak dapat dibuat ulang setelah pelaksanaan selesai permanen.");
   }
 
   const [batches, questionRows, previousAssignments] = await Promise.all([
@@ -181,7 +330,7 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
     listExistingPackageAssignments(context.env.DB, session.id),
   ]);
   if (questionRows.length < parsed.data.questionCount) {
-    throw new HttpError(422, "QUESTION_COUNT_EXCEEDS_BANK", `Jumlah soal per paket maksimal ${questionRows.length} sesuai soal aktif yang tersedia.`);
+    throw new HttpError(422, "QUESTION_COUNT_EXCEEDS_BANK", `Jumlah soal per paket maksimal ${questionRows.length} sesuai soal yang tersedia.`);
   }
 
   const oldCountMap = countQuestionIds(previousAssignments);
@@ -217,7 +366,10 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
     newCounts: [...newCountMap].map(([questionId, count]) => ({ questionId, count })),
     layouts,
   });
-  return context.json(packageResponse(await getPackagePreview(context.env.DB, session.id)));
+  return context.json({
+    ...packageResponse(await getPackagePreview(context.env.DB, session.id)),
+    status: "ACTIVE",
+  });
 });
 
 trainingRoutes.post("/:sessionId/activate", requireSameOrigin, requireCsrf, async (context) => {
@@ -258,6 +410,26 @@ trainingRoutes.put("/:sessionId/schedule", requireSameOrigin, requireCsrf, async
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
 
   const input = parsed.data;
+  const identity = await context.env.DB.prepare(
+    `SELECT sessions.training_id,sessions.material_id,batches.cohort_id
+       FROM training_sessions sessions
+       JOIN batches ON batches.training_session_id=sessions.id
+      WHERE sessions.id=?
+      LIMIT 1`
+  ).bind(session.id).first<{
+    training_id: string | null;
+    material_id: string | null;
+    cohort_id: string | null;
+  }>();
+  if (identity?.training_id && identity.material_id && identity.cohort_id) {
+    await assertNoOverlappingTest(context.env.DB, {
+      trainingId: identity.training_id,
+      materialId: identity.material_id,
+      cohortId: identity.cohort_id,
+      excludeSessionId: session.id,
+      schedules: [editComparableSchedule(input)],
+    });
+  }
   await updateStageSchedule(context.env.DB, {
     sessionId: session.id,
     stage: input.stage,
@@ -294,7 +466,8 @@ trainingRoutes.delete("/:sessionId", requireSameOrigin, requireCsrf, async (cont
 
 trainingRoutes.get("/:sessionId", async (context) => {
   const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
-  if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
+  const year = Number(context.req.query("year"));
+  if (!session || (Number.isInteger(year) && String(year) !== session.training_start_date.slice(0, 4))) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan pada Tahun Aktif ini.");
   const [batches, packageRows, availableQuestionCount] = await Promise.all([
     listBatches(context.env.DB, session.id),
     getPackagePreview(context.env.DB, session.id),
@@ -315,6 +488,12 @@ trainingRoutes.get("/:sessionId", async (context) => {
       trainingStartDate: session.training_start_date,
       trainingEndDate: session.training_end_date,
       status: session.status,
+      scheduleStatus: scheduleStatusFor(session),
+      trainingId: session.training_id ?? "",
+      trainingName: session.training_name ?? "Pelatihan tidak tersedia",
+      materialId: session.material_id ?? "",
+      materialName: session.material_name ?? session.name,
+      cohorts: parseCohorts(session.cohorts_json),
       pre: {
         mode: session.pre_mode,
         startAt: session.pre_start_at,

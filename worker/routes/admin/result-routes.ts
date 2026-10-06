@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { HttpError } from "../../http/errors";
 import { requireAdmin, requireCsrf, requireSameOrigin } from "../../middleware/admin-auth";
-import { getParticipantResult, listParticipantAttemptDetails, listResultSummaries, resetAttempt, updateParticipantName } from "../../repositories/result-repository";
+import { getParticipantResult, listParticipantAttemptDetails, listResultFilterOptions, listResultSummaries, resetAttempt, updateParticipantName } from "../../repositories/result-repository";
 import { listExportAnswers, listExportTrainingInfo } from "../../repositories/result-repository";
 import { createXlsx } from "../../export/xlsx";
 import type { AppEnvironment } from "../../types";
@@ -10,12 +10,24 @@ import type { AppEnvironment } from "../../types";
 export const resultRoutes = new Hono<AppEnvironment>();
 resultRoutes.use("*", requireAdmin);
 
+function activeYear(value: string | undefined) {
+  const parsed = Number(value);
+  if (Number.isInteger(parsed) && parsed >= 2000 && parsed <= 2200) return parsed;
+  return Number(new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone: "Asia/Jakarta" }).format(new Date()));
+}
+
 resultRoutes.get("/", async (context) => {
   const results = await listResultSummaries(context.env.DB, {
-    sessionId: context.req.query("sessionId"), batchId: context.req.query("batchId"),
+    year: activeYear(context.req.query("year")),
+    trainingId: context.req.query("trainingId"), materialId: context.req.query("materialId"),
+    cohortId: context.req.query("cohortId"),
     status: context.req.query("status"), search: context.req.query("search"),
   });
   return context.json({ results });
+});
+
+resultRoutes.get("/options", async (context) => {
+  return context.json(await listResultFilterOptions(context.env.DB, activeYear(context.req.query("year"))));
 });
 
 function optionValue(row: Record<string, string | number | null>, key: unknown) {
@@ -28,11 +40,13 @@ function value(row: Record<string, string | number | null>, key: string) {
 
 resultRoutes.get("/export", async (context) => {
   const summaries = await listResultSummaries(context.env.DB, {
-    sessionId: context.req.query("sessionId"), batchId: context.req.query("batchId"),
+    year: activeYear(context.req.query("year")),
+    trainingId: context.req.query("trainingId"), materialId: context.req.query("materialId"),
+    cohortId: context.req.query("cohortId"),
     status: context.req.query("status"), search: context.req.query("search"),
   });
   const participantIds = summaries.map((row) => String(row.id));
-  const sessionIds = [...new Set(summaries.map((row) => String(row.training_id)))];
+  const sessionIds = [...new Set(summaries.map((row) => String(row.training_session_id)))];
   const [answers, trainings] = await Promise.all([
     listExportAnswers(context.env.DB, participantIds), listExportTrainingInfo(context.env.DB, sessionIds),
   ]);
@@ -58,7 +72,7 @@ resultRoutes.get("/export", async (context) => {
 });
 
 resultRoutes.get("/participants/:participantId", async (context) => {
-  const participant = await getParticipantResult(context.env.DB, context.req.param("participantId"));
+  const participant = await getParticipantResult(context.env.DB, context.req.param("participantId"), activeYear(context.req.query("year")));
   if (!participant) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
   const details = await listParticipantAttemptDetails(context.env.DB, participant.id);
   return context.json({ participant, ...details });

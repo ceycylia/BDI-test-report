@@ -82,8 +82,8 @@ export async function createQuestionBank(
 ): Promise<void> {
   await database
     .prepare(
-      `INSERT INTO question_banks (id, name, material_id)
-      VALUES (?, ?, ?)`
+      `INSERT INTO question_banks (id, name, material_id, is_active)
+      VALUES (?, ?, ?, 1)`
     )
     .bind(input.id, input.name, input.materialId)
     .run();
@@ -101,11 +101,12 @@ export async function bulkCreateQuestionBanks(
 
   const result = await database
     .prepare(
-      `INSERT INTO question_banks (id, name, material_id)
+      `INSERT INTO question_banks (id, name, material_id, is_active)
        SELECT
          json_extract(value, '$.id'),
          json_extract(value, '$.name'),
-         json_extract(value, '$.materialId')
+         json_extract(value, '$.materialId'),
+         1
        FROM json_each(?) AS requested
        WHERE NOT EXISTS (
          SELECT 1
@@ -123,17 +124,15 @@ export async function updateQuestionBank(
   database: D1Database,
   input: {
     id: string;
-    isActive: boolean;
   }
 ): Promise<void> {
   await database
     .prepare(
       `UPDATE question_banks
-          SET is_active = ?,
-              updated_at = CURRENT_TIMESTAMP
+          SET is_active = 1, updated_at = CURRENT_TIMESTAMP
         WHERE id = ?`
     )
-    .bind(input.isActive ? 1 : 0, input.id)
+    .bind(input.id)
     .run();
 }
 
@@ -221,8 +220,8 @@ export async function createQuestion(
     .prepare(
       `INSERT INTO questions (
          id, bank_id, question_text, image_key,
-         option_a, option_b, option_c, option_d, correct_option_key
-       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+         option_a, option_b, option_c, option_d, correct_option_key, is_active
+       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 1)`
     )
     .bind(
       input.id,
@@ -257,7 +256,7 @@ export async function bulkCreateQuestions(
     .prepare(
       `INSERT INTO questions (
          id, bank_id, question_text, image_key,
-         option_a, option_b, option_c, option_d, correct_option_key
+         option_a, option_b, option_c, option_d, correct_option_key, is_active
        )
        SELECT
          json_extract(value, '$.id'),
@@ -268,7 +267,8 @@ export async function bulkCreateQuestions(
          json_extract(value, '$.optionB'),
          json_extract(value, '$.optionC'),
          json_extract(value, '$.optionD'),
-         json_extract(value, '$.correctOptionKey')
+         json_extract(value, '$.correctOptionKey'),
+         1
        FROM json_each(?)`
     )
     .bind(bankId, encoded)
@@ -287,14 +287,13 @@ export async function updateQuestion(
     optionC: string;
     optionD: string;
     correctOptionKey: "A" | "B" | "C" | "D";
-    isActive: boolean;
   }
 ): Promise<void> {
   await database
     .prepare(
       `UPDATE questions
           SET question_text = ?, image_key = ?, option_a = ?, option_b = ?,
-              option_c = ?, option_d = ?, correct_option_key = ?, is_active = ?,
+              option_c = ?, option_d = ?, correct_option_key = ?, is_active = 1,
               updated_at = CURRENT_TIMESTAMP
         WHERE id = ? AND bank_id = ?`
     )
@@ -306,7 +305,6 @@ export async function updateQuestion(
       input.optionC,
       input.optionD,
       input.correctOptionKey,
-      input.isActive ? 1 : 0,
       input.id,
       input.bankId
     )
