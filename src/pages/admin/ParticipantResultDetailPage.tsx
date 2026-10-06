@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
+import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
 
 type Participant = { id: string; name: string; batch_name: string; training_name: string; passing_score: number };
 type Attempt = { id: string; stage: string; status: string; score: number | null; correct_count: number | null; wrong_count: number | null; started_at: string; submitted_at: string | null };
@@ -15,14 +16,15 @@ function optionText(answer: Answer, key: string | null) {
 
 export function ParticipantResultDetailPage() {
   const { participantId = "" } = useParams();
+  const { activeYear } = useActiveYear();
   const [detail, setDetail] = useState<Detail | null>(null);
   const [name, setName] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
   const [confirmReset, setConfirmReset] = useState<string | null>(null);
-  const load = () => adminQuery<Detail>(`/api/admin/results/participants/${participantId}`).then((data) => { setDetail(data); setName(data.participant.name); });
-  useEffect(() => { void load().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Detail peserta tidak dapat dimuat.")); }, [participantId]);
+  const load = () => adminQuery<Detail>(withActiveYear(`/api/admin/results/participants/${participantId}`, activeYear)).then((data) => { setDetail(data); setName(data.participant.name); });
+  useEffect(() => { setDetail(null); void load().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Detail peserta tidak dapat dimuat.")); }, [activeYear, participantId]);
   const answerGroups = useMemo(() => new Map(detail?.attempts.map((attempt) => [attempt.id, detail.answers.filter((answer) => answer.attempt_id === attempt.id)]) ?? []), [detail]);
 
   async function saveName() {
@@ -39,7 +41,7 @@ export function ParticipantResultDetailPage() {
 
   if (error && !detail) return <p className="form-message is-error">{error}</p>;
   if (!detail) return <p className="muted">Memuat detail…</p>;
-  return <><header className="admin-page-header"><div><Link className="back-link" to="/admin/hasil">← Hasil</Link><h1>{detail.participant.name}</h1><p>{detail.participant.training_name} · {detail.participant.batch_name}</p></div></header>
+  return <><header className="admin-page-header"><div><Link className="back-link" to="/admin/hasil">← Hasil</Link><h1>{detail.participant.name}</h1><p>{detail.participant.training_name} · {detail.participant.batch_name}</p><ActiveYearIndicator /></div></header>
     {error && <p className="form-message is-error">{error}</p>}{message && <p className="form-message is-success">{message}</p>}
     <section className="panel participant-name-editor"><label>Perbaiki nama peserta<input value={name} onChange={(event) => setName(event.target.value)} /></label><button className="button button--secondary" onClick={() => void saveName()}>Simpan nama</button></section>
     <section className="attempt-details">{detail.attempts.map((attempt) => <article className="panel" key={attempt.id}><header><div><p className="section-label">{attempt.stage.replace("_", " ")}</p><h2>{attempt.status}</h2></div><strong className="attempt-score">{attempt.score ?? "—"}</strong></header><p>{attempt.correct_count ?? 0} benar · {attempt.wrong_count ?? 0} salah</p>{attempt.status !== "RESET" && (confirmReset === attempt.id ? <div className="reset-confirm"><p>Reset attempt ini agar peserta dapat mengulang?</p><button className="button button--secondary" onClick={() => setConfirmReset(null)}>Batal</button><button className="button danger-button" onClick={() => void resetAttempt(attempt.id)}>Reset attempt</button></div> : <button className="text-button is-danger" onClick={() => setConfirmReset(attempt.id)}>Reset attempt</button>)}

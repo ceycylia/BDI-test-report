@@ -6,10 +6,11 @@ import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { adminMutation, adminQuery, AdminApiError } from "../../features/admin-auth/admin-api";
 import { formatDateTimeForApi } from "../../features/dates/date-format";
 import type { QuestionBankSummary } from "../../features/question-banks/types";
+import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
 
 type Catalog = {
   trainings: Array<{ id: string; name: string }>;
-  cohorts: Array<{ id: string; training_id: string; name: string; status: string }>;
+  cohorts: Array<{ id: string; training_id: string; name: string; status: string; start_date: string; end_date: string }>;
 };
 
 type Draft = {
@@ -27,6 +28,7 @@ const initialDraft: Draft = {
 
 export function TrainingCreatePage() {
   const navigate = useNavigate();
+  const { activeYear } = useActiveYear();
   const [draft, setDraft] = useState(initialDraft);
   const [catalog, setCatalog] = useState<Catalog>({ trainings: [], cohorts: [] });
   const [banks, setBanks] = useState<QuestionBankSummary[]>([]);
@@ -35,17 +37,21 @@ export function TrainingCreatePage() {
 
   useEffect(() => {
     void Promise.all([
-      adminQuery<Catalog>("/api/admin/participants/catalog"),
+      adminQuery<Catalog>(withActiveYear("/api/admin/participants/catalog", activeYear)),
       adminQuery<{ banks: QuestionBankSummary[] }>("/api/admin/banks"),
     ]).then(([catalogPayload, bankPayload]) => {
       setCatalog(catalogPayload);
-      setBanks(bankPayload.banks.filter((bank) => bank.isActive && bank.materialId));
+      setBanks(bankPayload.banks.filter((bank) => bank.materialId));
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Data Test tidak dapat dimuat."));
-  }, []);
+  }, [activeYear]);
 
   const materials = useMemo(() => {
     const unique = new Map<string, QuestionBankSummary>();
-    for (const bank of banks) if (bank.trainingId === draft.trainingId && bank.materialId) unique.set(bank.materialId, bank);
+    for (const bank of banks) {
+      if (bank.trainingId !== draft.trainingId || !bank.materialId) continue;
+      const current = unique.get(bank.materialId);
+      if (!current || (!current.isActive && bank.isActive)) unique.set(bank.materialId, bank);
+    }
     return [...unique.values()];
   }, [banks, draft.trainingId]);
   const cohorts = useMemo(
@@ -57,6 +63,12 @@ export function TrainingCreatePage() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const selectedCohort = catalog.cohorts.find((cohort) => cohort.id === draft.cohortId);
+    const cohortYear = Number(selectedCohort?.start_date.slice(0, 4));
+    if (selectedCohort && cohortYear !== activeYear) {
+      setError(`Tanggal pelaksanaan angkatan berada pada tahun ${cohortYear}, sedangkan Tahun Aktif adalah ${activeYear}. Pilih Tahun Aktif atau angkatan yang sesuai.`);
+      return;
+    }
     function schedulePayload(mode: ScheduleMode, startValue: string, endValue: string, label: string) {
       if (mode === "OPEN_NOW") return { status: "OPEN_NOW" as const };
       const startAt = formatDateTimeForApi(startValue);
@@ -80,6 +92,7 @@ export function TrainingCreatePage() {
         method: "POST",
         body: JSON.stringify({
           trainingId: draft.trainingId, materialId: draft.materialId, cohortId: draft.cohortId,
+          activeYear,
           passingScore: Number(draft.passingScore),
           pre,
           post,
@@ -92,21 +105,21 @@ export function TrainingCreatePage() {
   }
 
   return <>
-    <header className="admin-page-header"><div><Link className="back-link" to="/admin/pelatihan">← Pelatihan/Test</Link><h1>Buat Test</h1><p>Pilih materi dan angkatan, kemudian tentukan jadwal link Pre-Test dan Post-Test.</p></div></header>
+    <header className="admin-page-header"><div><Link className="back-link" to="/admin/pelatihan">← Pelatihan/Test</Link><h1>Buat Test</h1><p>Pilih materi dan angkatan, kemudian tentukan jadwal link Pre-Test dan Post-Test.</p><ActiveYearIndicator /></div></header>
     {error && <p className="form-message is-error" role="alert">{error}</p>}
     <form className="panel training-form test-create-form" onSubmit={(event) => void submit(event)}>
-      <fieldset className="test-create-section"><legend><span>01</span> Informasi Test</legend><p className="test-create-section__hint">Pilih pelatihan, materi yang memiliki bank soal aktif, serta angkatan peserta.</p><div className="form-grid test-create-form__grid">
+      <fieldset className="test-create-section"><legend><span>01</span> Informasi Test</legend><p className="test-create-section__hint">Pilih pelatihan, materi yang memiliki Bank Soal, serta angkatan peserta.</p><div className="form-grid test-create-form__grid">
         <label>Pelatihan<SearchableSelect required value={draft.trainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(trainingId) => setDraft((current) => ({ ...current, trainingId, materialId: "", cohortId: "" }))} /></label>
-        <label>Materi<select required disabled={!draft.trainingId} value={draft.materialId} onChange={(event) => update("materialId", event.target.value)}><option value="">Pilih materi</option>{materials.map((bank) => <option key={bank.materialId!} value={bank.materialId!}>{bank.materialName} ({bank.activeQuestionCount} soal)</option>)}</select></label>
+        <label>Materi<select required disabled={!draft.trainingId} value={draft.materialId} onChange={(event) => update("materialId", event.target.value)}><option value="">Pilih materi</option>{materials.map((bank) => <option key={bank.materialId!} value={bank.materialId!}>{bank.materialName} ({bank.activeQuestionCount + bank.inactiveQuestionCount} soal)</option>)}</select></label>
         <label>Angkatan<select required disabled={!draft.trainingId} value={draft.cohortId} onChange={(event) => update("cohortId", event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>
         <label>Passing Grade<input type="number" min={0} max={100} step="0.01" required value={draft.passingScore} onChange={(event) => update("passingScore", Number(event.target.value))} /></label>
-      </div>{draft.trainingId && !materials.length && <p className="form-message is-error">Pelatihan ini belum mempunyai materi dengan Bank Soal aktif.</p>}{draft.trainingId && !cohorts.length && <p className="form-message is-error">Pelatihan ini belum mempunyai angkatan aktif.</p>}</fieldset>
+      </div>{draft.trainingId && !materials.length && <p className="form-message is-error">Pelatihan ini belum mempunyai materi dengan Bank Soal.</p>}{draft.trainingId && !cohorts.length && <p className="form-message is-error">Pelatihan ini belum mempunyai angkatan aktif.</p>}</fieldset>
       <div className="fixed-test-rule"><Clock3 /><div><strong>Durasi pengerjaan otomatis</strong><span>15 menit untuk setiap tes. Remedial maksimal 3 kali.</span></div></div>
       <section className="test-schedule-section" aria-labelledby="test-schedule-title"><div className="test-schedule-section__heading"><span>02</span><div><h2 id="test-schedule-title">Jadwal Pelaksanaan</h2><p>Pre-Test dan Post-Test dapat memakai mode akses yang berbeda.</p></div></div><div className="test-schedule-grid">
         <fieldset><legend><CalendarClock /> Pre-Test</legend><ScheduleModeControl value={draft.preMode} onChange={(value) => update("preMode", value)} label="Pre-Test" />{draft.preMode === "SCHEDULED" ? <div className="test-schedule-fields"><label>Tanggal dan jam buka<DateTimeInput required value={draft.preStartAt} onValueChange={(value) => update("preStartAt", value)} aria-label="Tanggal buka Pre-Test" /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.preEndAt} onValueChange={(value) => update("preEndAt", value)} aria-label="Tanggal tutup Pre-Test" /></label></div> : <p className="test-schedule-open-note">Pre-Test langsung terbuka setelah disimpan dan tetap terbuka sampai ditutup manual.</p>}</fieldset>
         <fieldset><legend><CalendarClock /> Post-Test</legend><ScheduleModeControl value={draft.postMode} onChange={(value) => update("postMode", value)} label="Post-Test" />{draft.postMode === "SCHEDULED" ? <div className="test-schedule-fields"><label>Tanggal dan jam buka<DateTimeInput required value={draft.postStartAt} onValueChange={(value) => update("postStartAt", value)} aria-label="Tanggal buka Post-Test" /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.postEndAt} onValueChange={(value) => update("postEndAt", value)} aria-label="Tanggal tutup Post-Test" /></label></div> : <p className="test-schedule-open-note">Post-Test langsung terbuka setelah disimpan dan tetap terbuka sampai ditutup manual.</p>}</fieldset>
       </div></section>
-      {selectedMaterial && <p className="test-bank-note">Bank Soal mengikuti materi <strong>{selectedMaterial.materialName}</strong> dan menggunakan {selectedMaterial.activeQuestionCount} soal aktif.</p>}
+      {selectedMaterial && <p className="test-bank-note">Bank Soal mengikuti materi <strong>{selectedMaterial.materialName}</strong> dan menggunakan {selectedMaterial.activeQuestionCount + selectedMaterial.inactiveQuestionCount} soal.</p>}
       <div className="form-actions test-create-form__actions"><Link className="button button--secondary" to="/admin/pelatihan">Batal</Link><button className="button" type="submit" disabled={submitting || !draft.trainingId || !draft.materialId || !draft.cohortId}>{submitting ? "Menyimpan…" : "Simpan Test"}</button></div>
     </form>
   </>;

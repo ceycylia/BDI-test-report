@@ -36,5 +36,5 @@ export type Question = {
 
 export type QuestionInput = Omit<
   Question,
-  "id" | "bankId" | "timesAssigned" | "createdAt" | "updatedAt"
+  "id" | "bankId" | "isActive" | "timesAssigned" | "createdAt" | "updatedAt"
 >;

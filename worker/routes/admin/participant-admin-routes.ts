@@ -14,6 +14,7 @@ import {
 import fontkit from "@pdf-lib/fontkit";
 import bookmanRegularDataUri from "../../assets/fonts/URWBookman-Light.otf?inline";
 import bookmanBoldDataUri from "../../assets/fonts/URWBookman-Demi.otf?inline";
+import completionLetterHeaderDataUri from "../../assets/images/completion-letter-header.png?inline";
 import {
   requireAdmin,
   requireCsrf,
@@ -65,6 +66,7 @@ const materialImportInput = z.object({
 });
 const cohortInput = z
   .object({
+    activeYear: z.number().int().min(2000).max(2200).optional(),
     trainingId: z.string().min(1),
     name: z.string().trim().min(1).max(100),
     startDate: z.string().date(),
@@ -76,6 +78,7 @@ const cohortInput = z
     "Tanggal selesai harus setelah tanggal mulai."
   );
 const bulkCohortInput = z.object({
+  activeYear: z.number().int().min(2000).max(2200).optional(),
   trainingId: z.string().min(1),
   cohorts: z
     .array(
@@ -101,6 +104,7 @@ const participantInput = z.object({
   nik: z.string().trim().min(3).max(40),
   birthPlace: z.string().trim().min(2).max(120),
   birthDate: z.string().date(),
+  address: z.string().trim().min(1).max(500),
   isActive: z.boolean().default(true),
 });
 const allowedParticipantImages = new Map([
@@ -134,16 +138,24 @@ async function requireMatchingCohort(
 }
 
 participantAdminRoutes.get("/catalog", async (c) => {
+  const requestedYear = c.req.query("year");
+  const year = requestedYear && /^\d{4}$/u.test(requestedYear) ? requestedYear : null;
+  const cohortQuery = `SELECT cohorts.*, trainings.name training_name, (SELECT COUNT(*) FROM participant_profiles WHERE cohort_id=cohorts.id) participant_count FROM training_cohorts cohorts JOIN trainings ON trainings.id=cohorts.training_id WHERE trainings.is_deleted=0${year ? " AND SUBSTR(cohorts.start_date,1,4)=?" : ""} ORDER BY cohorts.created_at DESC, cohorts.rowid DESC`;
+  const cohortStatement = c.env.DB.prepare(cohortQuery);
   const [trainings, materials, cohorts] = await Promise.all([
     c.env.DB.prepare(
       `SELECT trainings.*, (SELECT COUNT(*) FROM training_materials WHERE training_id=trainings.id) material_count, (SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=trainings.id) total_jp FROM trainings WHERE trainings.is_deleted=0 ORDER BY trainings.created_at DESC, trainings.rowid DESC`
     ).all(),
     c.env.DB.prepare(
-      `SELECT materials.*, trainings.name training_name, banks.id bank_id, banks.name bank_name FROM training_materials materials JOIN trainings ON trainings.id=materials.training_id LEFT JOIN question_banks banks ON banks.material_id=materials.id AND banks.is_active=1 WHERE trainings.is_deleted=0 ORDER BY trainings.created_at DESC, materials.sort_order ASC`
+      `SELECT materials.*, trainings.name training_name,
+              (SELECT banks.id FROM question_banks banks WHERE banks.material_id=materials.id ORDER BY banks.is_active DESC, banks.created_at DESC LIMIT 1) bank_id,
+              (SELECT banks.name FROM question_banks banks WHERE banks.material_id=materials.id ORDER BY banks.is_active DESC, banks.created_at DESC LIMIT 1) bank_name
+         FROM training_materials materials
+         JOIN trainings ON trainings.id=materials.training_id
+        WHERE trainings.is_deleted=0
+        ORDER BY trainings.created_at DESC, materials.sort_order ASC`
     ).all(),
-    c.env.DB.prepare(
-      `SELECT cohorts.*, trainings.name training_name, (SELECT COUNT(*) FROM participant_profiles WHERE cohort_id=cohorts.id) participant_count FROM training_cohorts cohorts JOIN trainings ON trainings.id=cohorts.training_id WHERE trainings.is_deleted=0 ORDER BY cohorts.created_at DESC, cohorts.rowid DESC`
-    ).all(),
+    (year ? cohortStatement.bind(year) : cohortStatement).all(),
   ]);
   return c.json({
     trainings: trainings.results,
@@ -555,6 +567,9 @@ participantAdminRoutes.post(
   async (c) => {
     const parsed = cohortInput.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
+    if (parsed.data.activeYear && parsed.data.startDate.slice(0, 4) !== String(parsed.data.activeYear)) {
+      throw new HttpError(422, "YEAR_MISMATCH", `Tanggal mulai berada pada tahun ${parsed.data.startDate.slice(0, 4)}, sedangkan Tahun Aktif adalah ${parsed.data.activeYear}.`);
+    }
     const id = crypto.randomUUID();
     try {
       await c.env.DB.prepare(
@@ -590,6 +605,10 @@ participantAdminRoutes.post(
       await c.req.json().catch(() => null)
     );
     if (!parsed.success) throw validationError(parsed);
+    const mismatched = parsed.data.activeYear
+      ? parsed.data.cohorts.find((cohort) => cohort.startDate.slice(0, 4) !== String(parsed.data.activeYear))
+      : undefined;
+    if (mismatched) throw new HttpError(422, "YEAR_MISMATCH", `Tanggal mulai ${mismatched.name} berada pada tahun ${mismatched.startDate.slice(0, 4)}, sedangkan Tahun Aktif adalah ${parsed.data.activeYear}.`);
     const normalizedNames = parsed.data.cohorts.map((cohort) =>
       cohort.name.trim().toLocaleLowerCase("id")
     );
@@ -667,6 +686,9 @@ participantAdminRoutes.put(
   async (c) => {
     const parsed = cohortInput.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
+    if (parsed.data.activeYear && parsed.data.startDate.slice(0, 4) !== String(parsed.data.activeYear)) {
+      throw new HttpError(422, "YEAR_MISMATCH", `Tanggal mulai berada pada tahun ${parsed.data.startDate.slice(0, 4)}, sedangkan Tahun Aktif adalah ${parsed.data.activeYear}.`);
+    }
     const id = c.req.param("id");
     const current = await c.env.DB.prepare(
       `SELECT training_id,(EXISTS(SELECT 1 FROM participant_profiles WHERE cohort_id=training_cohorts.id) OR EXISTS(SELECT 1 FROM batches WHERE cohort_id=training_cohorts.id)) AS in_use FROM training_cohorts WHERE id=?`
@@ -739,6 +761,10 @@ participantAdminRoutes.delete(
 participantAdminRoutes.get("/participants", async (c) => {
   const conditions: string[] = [];
   const bindings: string[] = [];
+  if (c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!)) {
+    conditions.push("SUBSTR(cohorts.start_date,1,4)=?");
+    bindings.push(c.req.query("year")!);
+  }
   if (c.req.query("trainingId")) {
     conditions.push("profiles.training_id=?");
     bindings.push(c.req.query("trainingId")!);
@@ -800,6 +826,9 @@ participantAdminRoutes.delete(
         `DELETE FROM certificates WHERE participant_profile_id IN (SELECT value FROM json_each(?))`
       ).bind(existingIdsJson),
       c.env.DB.prepare(
+        `DELETE FROM completion_letters WHERE participant_profile_id IN (SELECT value FROM json_each(?))`
+      ).bind(existingIdsJson),
+      c.env.DB.prepare(
         `DELETE FROM participants WHERE profile_id IN (SELECT value FROM json_each(?))`
       ).bind(existingIdsJson),
       c.env.DB.prepare(
@@ -817,10 +846,11 @@ participantAdminRoutes.delete(
   }
 );
 participantAdminRoutes.get("/participants/:id", async (c) => {
+  const year = c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!) ? c.req.query("year")! : null;
   const row = await c.env.DB.prepare(
-    `SELECT profiles.*,trainings.name training_name,cohorts.name cohort_name FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id WHERE profiles.id=?`
+    `SELECT profiles.*,trainings.name training_name,cohorts.name cohort_name FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id WHERE profiles.id=?${year ? " AND SUBSTR(cohorts.start_date,1,4)=?" : ""}`
   )
-    .bind(c.req.param("id"))
+    .bind(...(year ? [c.req.param("id"), year] : [c.req.param("id")]))
     .first();
   if (!row)
     throw new HttpError(
@@ -844,7 +874,7 @@ participantAdminRoutes.post(
     const id = crypto.randomUUID();
     try {
       await c.env.DB.prepare(
-        `INSERT INTO participant_profiles(id,training_id,cohort_id,name,normalized_name,nik,birth_place,birth_date,is_active) VALUES(?,?,?,?,?,?,?,?,?)`
+        `INSERT INTO participant_profiles(id,training_id,cohort_id,name,normalized_name,nik,birth_place,birth_date,address,is_active) VALUES(?,?,?,?,?,?,?,?,?,?)`
       )
         .bind(
           id,
@@ -855,6 +885,7 @@ participantAdminRoutes.post(
           normalizeNik(d.nik),
           d.birthPlace,
           d.birthDate,
+          d.address,
           d.isActive ? 1 : 0
         )
         .run();
@@ -908,7 +939,7 @@ participantAdminRoutes.put(
     try {
       await c.env.DB.batch([
         c.env.DB.prepare(
-          `UPDATE participant_profiles SET training_id=?,cohort_id=?,name=?,normalized_name=?,nik=?,birth_place=?,birth_date=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`
+          `UPDATE participant_profiles SET training_id=?,cohort_id=?,name=?,normalized_name=?,nik=?,birth_place=?,birth_date=?,address=?,is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`
         ).bind(
           d.trainingId,
           d.cohortId,
@@ -917,6 +948,7 @@ participantAdminRoutes.put(
           normalizeNik(d.nik),
           d.birthPlace,
           d.birthDate,
+          d.address,
           d.isActive ? 1 : 0,
           profileId
         ),
@@ -1003,16 +1035,16 @@ participantAdminRoutes.get("/participants-template", async () => {
     {
       name: "Data Peserta",
       rows: [
-        ["No", "Nama Lengkap", "NIK", "Tempat Lahir", "Tanggal Lahir"],
-        [1, "Ade Febriyanti", "1271054102860002", "Medan", "1986-02-01"],
-        [2, "Budi Santoso", "1271051206880001", "Medan", "1988-06-12"],
-        [3, "Citra Lestari", "1271055501950003", "Binjai", "1995-01-15"],
-        [4, "Dedi Irawan", "1271051205800004", "Deli Serdang", "1980-05-12"],
-        [5, "Eka Putri", "1271054001970005", "Medan", "1997-01-01"],
+        ["No", "Nama Lengkap", "NIK", "Tempat Lahir", "Tanggal Lahir", "Alamat"],
+        [1, "Ade Febriyanti", "1271054102860002", "Medan", "1986-02-01", "Jl. Industri No. 1, Medan"],
+        [2, "Budi Santoso", "1271051206880001", "Medan", "1988-06-12", "Jl. Pembangunan No. 2, Medan"],
+        [3, "Citra Lestari", "1271055501950003", "Binjai", "1995-01-15", "Jl. Merdeka No. 3, Binjai"],
+        [4, "Dedi Irawan", "1271051205800004", "Deli Serdang", "1980-05-12", "Jl. Besar No. 4, Deli Serdang"],
+        [5, "Eka Putri", "1271054001970005", "Medan", "1997-01-01", "Jl. Karya No. 5, Medan"],
       ],
       textColumns: [2],
       dateColumns: [4],
-      columnWidths: [8, 28, 22, 22, 18],
+      columnWidths: [8, 28, 22, 22, 18, 45],
     },
     {
       name: "Petunjuk",
@@ -1025,6 +1057,7 @@ participantAdminRoutes.get("/participants-template", async () => {
         ],
         ["Tempat Lahir", "Wajib."],
         ["Tanggal Lahir", "Wajib. Gunakan format DD/MM/YYYY."],
+        ["Alamat", "Wajib. Isi alamat peserta sesuai data resmi."],
         [
           "Pelatihan & Angkatan",
           "Tidak perlu ditulis di Excel. Pilih di aplikasi sebelum preview.",
@@ -1145,6 +1178,7 @@ participantAdminRoutes.post(
       const nik = parsedNik.nik;
       const birthPlace = String(record["Tempat Lahir"] ?? "").trim();
       const birthDate = excelDate(record["Tanggal Lahir"]);
+      const address = String(record.Alamat ?? "").trim();
       const errors: string[] = [];
       if (!name) errors.push("Nama kosong");
       if (!nik) errors.push("NIK wajib");
@@ -1152,10 +1186,11 @@ participantAdminRoutes.post(
       else if (!/^\d{16}$/u.test(nik)) errors.push("NIK harus 16 digit angka");
       if (!birthPlace) errors.push("Tempat lahir kosong");
       if (!birthDate) errors.push("Tanggal lahir tidak valid");
+      if (!address) errors.push("Alamat kosong");
       if (nik && existing.has(nik)) errors.push("Peserta sudah terdaftar");
       else if (nik && fileNiks.has(nik)) errors.push("NIK duplikat dalam file");
       if (nik) fileNiks.add(nik);
-      return { row: index + 2, name, nik, birthPlace, birthDate, errors };
+      return { row: index + 2, name, nik, birthPlace, birthDate, address, errors };
     });
     return c.json({ rows });
   }
@@ -1177,6 +1212,7 @@ participantAdminRoutes.post(
               nik: z.string().regex(/^\d{16}$/u, "NIK harus 16 digit angka"),
               birthPlace: z.string().trim().min(1),
               birthDate: z.string().date(),
+              address: z.string().trim().min(1).max(500),
             })
           )
           .min(1)
@@ -1204,7 +1240,7 @@ participantAdminRoutes.post(
       seen.add(nik);
       statements.push(
         c.env.DB.prepare(
-          `INSERT INTO participant_profiles(id,training_id,cohort_id,name,normalized_name,nik,birth_place,birth_date) VALUES(?,?,?,?,?,?,?,?)`
+          `INSERT INTO participant_profiles(id,training_id,cohort_id,name,normalized_name,nik,birth_place,birth_date,address) VALUES(?,?,?,?,?,?,?,?,?)`
         ).bind(
           crypto.randomUUID(),
           data.trainingId,
@@ -1213,7 +1249,8 @@ participantAdminRoutes.post(
           normalizeParticipantName(row.name),
           nik,
           row.birthPlace,
-          row.birthDate
+          row.birthDate,
+          row.address
         )
       );
     }
@@ -1223,11 +1260,13 @@ participantAdminRoutes.post(
 );
 
 participantAdminRoutes.get("/certificates", async (c) => {
+  const year = c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!) ? c.req.query("year")! : null;
   const result = await c.env.DB.prepare(
-    `WITH scores AS (SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id) SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,trainings.name training_name,cohorts.name cohort_name,scores.final_score,scores.passing_score,CASE WHEN scores.final_score>=scores.passing_score THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,certificates.id certificate_id,certificates.certificate_number,certificates.status certificate_status FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id LEFT JOIN scores ON scores.profile_id=profiles.id LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id ORDER BY profiles.created_at DESC, profiles.rowid DESC`
-  ).all<Record<string, unknown>>();
+    `WITH scores AS (SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id) SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,trainings.name training_name,cohorts.name cohort_name,scores.final_score,scores.passing_score,CASE WHEN scores.final_score>=scores.passing_score THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,certificates.id certificate_id,certificates.certificate_number,certificates.status certificate_status,completion_letters.id completion_letter_id,completion_letters.completion_letter_number FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id LEFT JOIN scores ON scores.profile_id=profiles.id LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id LEFT JOIN completion_letters ON completion_letters.participant_profile_id=profiles.id${year ? " WHERE SUBSTR(cohorts.start_date,1,4)=?" : ""} ORDER BY profiles.created_at DESC, profiles.rowid DESC`
+  );
+  const rows = await (year ? result.bind(year) : result).all<Record<string, unknown>>();
   return c.json({
-    certificates: result.results.map((r) => ({
+    certificates: rows.results.map((r) => ({
       ...r,
       nik_masked: maskNik(String(r.nik)),
       nik: undefined,
@@ -1236,7 +1275,7 @@ participantAdminRoutes.get("/certificates", async (c) => {
 });
 participantAdminRoutes.get("/certificate-settings", async (c) => {
   const row = await c.env.DB.prepare(
-    `SELECT * FROM global_certificate_settings WHERE id=1`
+    `SELECT certificate_prefix,signer_name,signer_title,signer_nip,issue_place,issue_date,signature_key,stamp_key,front_template_key,back_template_key FROM global_certificate_settings WHERE id=1`
   )
     .first();
   return c.json({
@@ -1247,8 +1286,6 @@ participantAdminRoutes.get("/certificate-settings", async (c) => {
       signer_nip: "",
       issue_place: "",
       issue_date: "",
-      offset_x_mm: 0,
-      offset_y_mm: 0,
     },
   });
 });
@@ -1264,14 +1301,12 @@ participantAdminRoutes.put(
         signerNip: z.string().max(80),
         issuePlace: z.string().max(120),
         issueDate: z.string().date(),
-        offsetXmm: z.number().min(-20).max(20),
-        offsetYmm: z.number().min(-20).max(20),
       })
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     const d = parsed.data;
     await c.env.DB.prepare(
-      `INSERT INTO global_certificate_settings(id,certificate_prefix,signer_name,signer_title,signer_nip,issue_place,issue_date,offset_x_mm,offset_y_mm) VALUES(1,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET signer_name=excluded.signer_name,signer_title=excluded.signer_title,signer_nip=excluded.signer_nip,issue_place=excluded.issue_place,issue_date=excluded.issue_date,offset_x_mm=excluded.offset_x_mm,offset_y_mm=excluded.offset_y_mm,updated_at=CURRENT_TIMESTAMP`
+      `INSERT INTO global_certificate_settings(id,certificate_prefix,signer_name,signer_title,signer_nip,issue_place,issue_date) VALUES(1,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET signer_name=excluded.signer_name,signer_title=excluded.signer_title,signer_nip=excluded.signer_nip,issue_place=excluded.issue_place,issue_date=excluded.issue_date,updated_at=CURRENT_TIMESTAMP`
     )
       .bind(
         "",
@@ -1279,9 +1314,7 @@ participantAdminRoutes.put(
         d.signerTitle,
         d.signerNip,
         d.issuePlace,
-        d.issueDate,
-        d.offsetXmm,
-        d.offsetYmm
+        d.issueDate
       )
       .run();
     return c.json({ success: true });
@@ -1380,15 +1413,15 @@ function formatLongDate(value: string) {
 async function certificateData(db: D1Database, profileId: string) {
   return db
     .prepare(
-      `WITH score AS (SELECT MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id=?) SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date,(SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,score.final_score,score.passing_score,settings.signer_name,settings.signer_title,settings.signer_nip,settings.issue_place,settings.issue_date,settings.offset_x_mm,settings.offset_y_mm,settings.signature_key,settings.stamp_key,settings.front_template_key,settings.back_template_key FROM participant_profiles p JOIN trainings t ON t.id=p.training_id JOIN training_cohorts c ON c.id=p.cohort_id CROSS JOIN score LEFT JOIN global_certificate_settings settings ON settings.id=1 WHERE p.id=?`
+      `WITH score AS (SELECT MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id=?) SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date,(SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,score.final_score,score.passing_score,settings.signer_name,settings.signer_title,settings.signer_nip,settings.issue_place,settings.issue_date,settings.signature_key,settings.stamp_key,settings.front_template_key,settings.back_template_key FROM participant_profiles p JOIN trainings t ON t.id=p.training_id JOIN training_cohorts c ON c.id=p.cohort_id CROSS JOIN score LEFT JOIN global_certificate_settings settings ON settings.id=1 WHERE p.id=?`
     )
     .bind(profileId, profileId)
     .first<Record<string, unknown>>();
 }
-function point(page: any, x: number, y: number, d: Record<string, unknown>) {
+function point(page: any, x: number, y: number, _d: Record<string, unknown>) {
   return {
-    x: mm(x + Number(d.offset_x_mm ?? 0)),
-    y: page.getHeight() - mm(y + Number(d.offset_y_mm ?? 0)),
+    x: mm(x),
+    y: page.getHeight() - mm(y),
   };
 }
 function drawCentered(
@@ -1456,6 +1489,47 @@ function drawWrapped(
     const p = point(page, x, y + row * lineHeight, d);
     page.drawText(line, { x: p.x, y: p.y, font, size, color: rgb(0, 0, 0) });
   }
+}
+function drawJustified(
+  page: any,
+  font: any,
+  text: string,
+  x: number,
+  y: number,
+  width: number,
+  lineHeight: number,
+  size: number,
+  d: Record<string, unknown>,
+  justifyLastLine = false
+) {
+  const words = safeText(text).split(/\s+/).filter(Boolean);
+  const lines: string[][] = [];
+  let line: string[] = [];
+  for (const word of words) {
+    const candidate = [...line, word];
+    if (line.length && font.widthOfTextAtSize(candidate.join(" "), size) > mm(width)) {
+      lines.push(line);
+      line = [word];
+    } else {
+      line = candidate;
+    }
+  }
+  if (line.length) lines.push(line);
+  lines.forEach((lineWords, row) => {
+    const p = point(page, x, y + row * lineHeight, d);
+    const shouldJustify = lineWords.length > 1 && (justifyLastLine || row < lines.length - 1);
+    if (!shouldJustify) {
+      page.drawText(lineWords.join(" "), { x: p.x, y: p.y, font, size, color: rgb(0, 0, 0) });
+      return;
+    }
+    const wordsWidth = lineWords.reduce((total, word) => total + font.widthOfTextAtSize(word, size), 0);
+    const gap = (mm(width) - wordsWidth) / (lineWords.length - 1);
+    let cursor = p.x;
+    lineWords.forEach((word) => {
+      page.drawText(word, { x: cursor, y: p.y, font, size, color: rgb(0, 0, 0) });
+      cursor += font.widthOfTextAtSize(word, size) + gap;
+    });
+  });
 }
 async function embedImage(
   c: Context<AppEnvironment>,
@@ -1655,7 +1729,7 @@ async function renderCertificate(
     )} s.d. ${formatLongDate(String(d.end_date))} selama ${
       d.total_jp
     } jam pelatihan dan dinyatakan LULUS.`;
-    drawWrapped(
+    drawJustified(
       page,
       regular,
       narrative,
@@ -1841,6 +1915,134 @@ async function renderCertificate(
     number: String(cert?.certificate_number ?? ""),
   };
 }
+
+async function renderCompletionLetter(
+  c: Context<AppEnvironment>,
+  profileId: string,
+  preview = false
+) {
+  const d = await certificateData(c.env.DB, profileId);
+  if (!d)
+    throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
+  if (Number(d.final_score ?? -1) < Number(d.passing_score ?? 101))
+    throw new HttpError(409, "NOT_ELIGIBLE", "Surat keterangan hanya dapat dibuat untuk peserta yang lulus.");
+  if (!preview && !d.issue_date)
+    throw new HttpError(409, "ISSUE_DATE_REQUIRED", "Atur tanggal penerbitan terlebih dahulu.");
+  const letter = await c.env.DB.prepare(
+    `SELECT * FROM completion_letters WHERE participant_profile_id=?`
+  ).bind(profileId).first<Record<string, unknown>>();
+  if (!preview && !letter?.completion_letter_number)
+    throw new HttpError(409, "COMPLETION_LETTER_NUMBER_REQUIRED", "Simpan nomor surat resmi terlebih dahulu.");
+
+  const pdf = await PDFDocument.create();
+  pdf.registerFontkit(fontkit);
+  const regular = await pdf.embedFont(fontBytes(bookmanRegularDataUri));
+  const bold = await pdf.embedFont(fontBytes(bookmanBoldDataUri));
+  const header = await pdf.embedPng(fontBytes(completionLetterHeaderDataUri));
+  const page = pdf.addPage([mm(210), mm(297)]);
+  const bodySize = 10.5;
+  const titleSize = 11;
+  const headerWidth = 184;
+  const headerHeight = headerWidth * (header.height / header.width);
+  page.drawImage(header, box(page, 13, 15, headerWidth, headerHeight, d));
+
+  drawCentered(page, regular, "SURAT KETERANGAN TELAH MENYELESAIKAN PELATIHAN", 105, 59, titleSize, d);
+  drawCentered(
+    page,
+    regular,
+    `NOMOR : ${String(letter?.completion_letter_number ?? "Nomor surat belum diisi")}`,
+    105,
+    66.5,
+    bodySize,
+    d
+  );
+
+  drawTextAt(page, regular, "Yang bertanda tangan di bawah ini:", 25, 81, bodySize, d);
+  const officialRows = [
+    ["Nama", String(d.signer_name || "")],
+    ["NIP", String(d.signer_nip || "")],
+    ["Jabatan", String(d.signer_title || "")],
+  ];
+  officialRows.forEach(([label, value], index) => {
+    const y = 88.5 + index * 7;
+    drawTextAt(page, regular, label, 25, y, bodySize, d);
+    drawTextAt(page, regular, ":", 76, y, bodySize, d);
+    drawTextAt(page, regular, value, 89, y, bodySize, d);
+  });
+
+  drawTextAt(page, regular, "menerangkan bahwa:", 25, 115, bodySize, d);
+  const participantRows = [
+    ["Nama", String(d.name || "")],
+    ["NIK", String(d.nik || "")],
+    ["Tanggal, tempat lahir", `${formatLongDate(String(d.birth_date))}, ${String(d.birth_place || "")}`],
+  ];
+  participantRows.forEach(([label, value], index) => {
+    const y = 123 + index * 9;
+    drawTextAt(page, regular, label, 26, y, bodySize, d);
+    drawTextAt(page, regular, ":", 76, y, bodySize, d);
+    drawTextAt(page, regular, value, 89, y, bodySize, d);
+  });
+  drawTextAt(page, regular, "Alamat", 26, 150, bodySize, d);
+  drawTextAt(page, regular, ":", 76, 150, bodySize, d);
+  drawWrapped(page, regular, String(d.address || "-"), 89, 150, 94, 5.7, bodySize, d);
+
+  drawJustified(
+    page,
+    regular,
+    `telah menyelesaikan ${trainingLabel(d.training_name)} yang dilaksanakan pada tanggal ${formatLongDate(String(d.start_date))} s.d. ${formatLongDate(String(d.end_date))} selama ${d.total_jp} jam pelatihan.`,
+    25,
+    169,
+    160,
+    6.5,
+    bodySize,
+    d
+  );
+  drawJustified(
+    page,
+    regular,
+    "Demikian surat keterangan ini dibuat untuk dipergunakan sebagaimana mestinya.",
+    25,
+    190,
+    160,
+    6.5,
+    bodySize,
+    d,
+    true
+  );
+
+  const issueText = `${String(d.issue_place || "Medan")}, ${d.issue_date ? formatLongDate(String(d.issue_date)) : "Tanggal penerbitan belum diisi"}`;
+  drawCentered(page, regular, issueText, 145, 204, bodySize, d);
+  drawCentered(page, regular, String(d.signer_title || ""), 145, 211, bodySize, d);
+  const stamp = await embedImage(c, pdf, d.stamp_key);
+  if (stamp) drawImageContained(page, stamp, { x: 127, y: 214, width: 36, height: 22 }, d);
+  const signature = await embedImage(c, pdf, d.signature_key);
+  if (signature) drawImageContained(page, signature, { x: 122, y: 216, width: 46, height: 14 }, d);
+  const signerName = String(d.signer_name || "");
+  drawCentered(page, bold, signerName, 145, 237, bodySize, d);
+  const signerNameWidth = bold.widthOfTextAtSize(safeText(signerName), bodySize) / mm(1);
+  if (signerName) drawRule(page, 145 - signerNameWidth / 2, 238.2, 145 + signerNameWidth / 2, 238.2, d);
+  drawCentered(page, bold, d.signer_nip ? `NIP. ${d.signer_nip}` : "", 145, 244, bodySize, d);
+
+  return {
+    bytes: await pdf.save(),
+    letterId: String(letter?.id ?? ""),
+    number: String(letter?.completion_letter_number ?? ""),
+  };
+}
+
+async function combinePdfDocuments(documents: Uint8Array[]) {
+  const combined = await PDFDocument.create();
+  for (const bytes of documents) {
+    const source = await PDFDocument.load(bytes);
+    const pages = await combined.copyPages(source, source.getPageIndices());
+    pages.forEach((page) => combined.addPage(page));
+  }
+  return combined.save();
+}
+
+function safeDocumentName(value: string) {
+  return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-|-$/g, "") || "peserta";
+}
 participantAdminRoutes.put(
   "/certificates/:participantId/number",
   requireSameOrigin,
@@ -1888,6 +2090,193 @@ participantAdminRoutes.put(
         )
         .run();
     return c.json({ success: true });
+  }
+);
+participantAdminRoutes.put(
+  "/completion-letters/:participantId/number",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const parsed = z.object({ completionLetterNumber: z.string().trim().min(1).max(160) })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw validationError(parsed);
+    const d = await certificateData(c.env.DB, c.req.param("participantId"));
+    if (!d || Number(d.final_score ?? -1) < Number(d.passing_score ?? 101))
+      throw new HttpError(409, "NOT_ELIGIBLE", "Nomor surat hanya dapat disimpan untuk peserta yang lulus.");
+    if (!d.issue_date)
+      throw new HttpError(409, "ISSUE_DATE_REQUIRED", "Atur tanggal penerbitan terlebih dahulu.");
+    const existing = await c.env.DB.prepare(
+      `SELECT id FROM completion_letters WHERE participant_profile_id=?`
+    ).bind(c.req.param("participantId")).first<{ id: string }>();
+    if (existing) {
+      await c.env.DB.prepare(
+        `UPDATE completion_letters SET completion_letter_number=?,issued_at=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`
+      ).bind(parsed.data.completionLetterNumber, d.issue_date, existing.id).run();
+    } else {
+      await c.env.DB.prepare(
+        `INSERT INTO completion_letters(id,participant_profile_id,training_id,cohort_id,completion_letter_number,issued_at) VALUES(?,?,?,?,?,?)`
+      ).bind(
+        crypto.randomUUID(),
+        c.req.param("participantId"),
+        d.training_id,
+        d.cohort_id,
+        parsed.data.completionLetterNumber,
+        d.issue_date
+      ).run();
+    }
+    return c.json({ success: true });
+  }
+);
+participantAdminRoutes.put(
+  "/document-numbers/bulk",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const parsed = z.object({
+      entries: z.array(z.object({
+        participantId: z.string().uuid(),
+        certificateNumber: z.string().trim().min(1).max(120).optional(),
+        completionLetterNumber: z.string().trim().min(1).max(160).optional(),
+      }).refine(
+        (entry) => Boolean(entry.certificateNumber || entry.completionLetterNumber),
+        "Minimal satu nomor dokumen harus diisi."
+      )).min(1).max(1000),
+    }).safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw validationError(parsed);
+    const participantIds = parsed.data.entries.map((entry) => entry.participantId);
+    if (new Set(participantIds).size !== participantIds.length)
+      throw new HttpError(422, "DATA_INVALID", "Peserta tidak boleh muncul lebih dari sekali.");
+
+    const settings = await c.env.DB.prepare(
+      `SELECT issue_date FROM global_certificate_settings WHERE id=1`
+    ).first<{ issue_date: string | null }>();
+    if (!settings?.issue_date)
+      throw new HttpError(409, "ISSUE_DATE_REQUIRED", "Atur tanggal penerbitan terlebih dahulu.");
+
+    const profiles = await c.env.DB.prepare(
+      `WITH scores AS (
+        SELECT p.profile_id,
+          MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,
+          MAX(s.passing_score) passing_score
+        FROM participants p
+        JOIN attempts a ON a.participant_id=p.id
+        JOIN training_sessions s ON s.id=a.training_session_id
+        WHERE p.profile_id IS NOT NULL
+        GROUP BY p.profile_id
+      )
+      SELECT profiles.id,profiles.training_id,profiles.cohort_id,scores.final_score,scores.passing_score
+      FROM participant_profiles profiles
+      LEFT JOIN scores ON scores.profile_id=profiles.id
+      WHERE profiles.id IN (SELECT value FROM json_each(?))`
+    ).bind(JSON.stringify(participantIds)).all<{
+      id: string;
+      training_id: string;
+      cohort_id: string;
+      final_score: number | null;
+      passing_score: number | null;
+    }>();
+    if (
+      profiles.results.length !== participantIds.length ||
+      profiles.results.some((profile) =>
+        Number(profile.final_score ?? -1) < Number(profile.passing_score ?? 101)
+      )
+    )
+      throw new HttpError(409, "NOT_ELIGIBLE", "Nomor hanya dapat diterapkan kepada peserta yang lulus.");
+
+    const ensureUniqueNumbers = async (
+      table: "certificates" | "completion_letters",
+      column: "certificate_number" | "completion_letter_number",
+      values: Array<{ participantId: string; number: string }>
+    ) => {
+      if (!values.length) return;
+      if (new Set(values.map((value) => value.number)).size !== values.length)
+        throw new HttpError(409, "DOCUMENT_NUMBER_DUPLICATE", "Nomor dokumen hasil pengisian tidak boleh sama.");
+      const existing = await c.env.DB.prepare(
+        `SELECT participant_profile_id,${column} number FROM ${table} WHERE ${column} IN (SELECT value FROM json_each(?))`
+      ).bind(JSON.stringify(values.map((value) => value.number))).all<{
+        participant_profile_id: string;
+        number: string;
+      }>();
+      const owners = new Map(values.map((value) => [value.number, value.participantId]));
+      const targetParticipantIds = new Set(values.map((value) => value.participantId));
+      if (existing.results.some((row) =>
+        owners.get(row.number) !== row.participant_profile_id &&
+        !targetParticipantIds.has(row.participant_profile_id)
+      ))
+        throw new HttpError(409, "DOCUMENT_NUMBER_DUPLICATE", "Salah satu nomor dokumen sudah digunakan peserta lain.");
+    };
+
+    await ensureUniqueNumbers(
+      "certificates",
+      "certificate_number",
+      parsed.data.entries.flatMap((entry) => entry.certificateNumber
+        ? [{ participantId: entry.participantId, number: entry.certificateNumber }]
+        : [])
+    );
+    await ensureUniqueNumbers(
+      "completion_letters",
+      "completion_letter_number",
+      parsed.data.entries.flatMap((entry) => entry.completionLetterNumber
+        ? [{ participantId: entry.participantId, number: entry.completionLetterNumber }]
+        : [])
+    );
+
+    const profileById = new Map(profiles.results.map((profile) => [profile.id, profile]));
+    const statements: D1PreparedStatement[] = [];
+    const certificateTargets = parsed.data.entries.filter((entry) => entry.certificateNumber);
+    const letterTargets = parsed.data.entries.filter((entry) => entry.completionLetterNumber);
+    for (const entry of certificateTargets) {
+      statements.push(c.env.DB.prepare(
+        `UPDATE certificates SET certificate_number=? WHERE participant_profile_id=?`
+      ).bind(`__bulk_certificate_${crypto.randomUUID()}`, entry.participantId));
+    }
+    for (const entry of letterTargets) {
+      statements.push(c.env.DB.prepare(
+        `UPDATE completion_letters SET completion_letter_number=? WHERE participant_profile_id=?`
+      ).bind(`__bulk_letter_${crypto.randomUUID()}`, entry.participantId));
+    }
+    for (const entry of parsed.data.entries) {
+      const profile = profileById.get(entry.participantId)!;
+      if (entry.certificateNumber) {
+        statements.push(c.env.DB.prepare(
+          `INSERT INTO certificates(id,participant_profile_id,training_id,cohort_id,certificate_number,issued_at)
+           VALUES(?,?,?,?,?,?)
+           ON CONFLICT(participant_profile_id,training_id,cohort_id) DO UPDATE SET
+             certificate_number=excluded.certificate_number,
+             issued_at=excluded.issued_at,
+             updated_at=CURRENT_TIMESTAMP`
+        ).bind(
+          crypto.randomUUID(),
+          profile.id,
+          profile.training_id,
+          profile.cohort_id,
+          entry.certificateNumber,
+          settings.issue_date
+        ));
+      }
+      if (entry.completionLetterNumber) {
+        statements.push(c.env.DB.prepare(
+          `INSERT INTO completion_letters(id,participant_profile_id,training_id,cohort_id,completion_letter_number,issued_at)
+           VALUES(?,?,?,?,?,?)
+           ON CONFLICT(participant_profile_id) DO UPDATE SET
+             completion_letter_number=excluded.completion_letter_number,
+             issued_at=excluded.issued_at,
+             updated_at=CURRENT_TIMESTAMP`
+        ).bind(
+          crypto.randomUUID(),
+          profile.id,
+          profile.training_id,
+          profile.cohort_id,
+          entry.completionLetterNumber,
+          settings.issue_date
+        ));
+      }
+    }
+    await c.env.DB.batch(statements);
+    return c.json({
+      participantsUpdated: new Set(parsed.data.entries.map((entry) => entry.participantId)).size,
+      numbersUpdated: certificateTargets.length + letterTargets.length,
+    });
   }
 );
 participantAdminRoutes.post(
@@ -2148,6 +2537,103 @@ participantAdminRoutes.get(
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="sertifikat-${safeNumber}.pdf"`,
+      },
+    });
+  }
+);
+
+participantAdminRoutes.get(
+  "/completion-letters/preview-participant/:participantId",
+  async (c) => {
+    const result = await renderCompletionLetter(c, c.req.param("participantId"), true);
+    return new Response(result.bytes.slice().buffer, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": "inline; filename=preview-surat-keterangan.pdf",
+      },
+    });
+  }
+);
+
+participantAdminRoutes.get(
+  "/completion-letters/:participantId/download",
+  async (c) => {
+    const result = await renderCompletionLetter(c, c.req.param("participantId"));
+    const safeNumber = safeDocumentName(result.number);
+    return new Response(result.bytes.slice().buffer, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Content-Disposition": `attachment; filename="surat-keterangan-${safeNumber}.pdf"`,
+      },
+    });
+  }
+);
+
+participantAdminRoutes.post(
+  "/completion-letters/download-all",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const parsed = z.object({ trainingId: z.string(), cohortId: z.string() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw validationError(parsed);
+    const rows = await c.env.DB.prepare(
+      `SELECT id,name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND is_active=1 ORDER BY name`
+    ).bind(parsed.data.trainingId, parsed.data.cohortId).all<{ id: string; name: string }>();
+    const files: Record<string, Uint8Array> = {};
+    for (const row of rows.results) {
+      try {
+        const letter = await renderCompletionLetter(c, row.id);
+        files[`Surat Keterangan - ${safeDocumentName(row.name)}.pdf`] = letter.bytes;
+      } catch (error) {
+        if (!(error instanceof HttpError && (error.code === "NOT_ELIGIBLE" || error.code === "COMPLETION_LETTER_NUMBER_REQUIRED"))) throw error;
+      }
+    }
+    if (!Object.keys(files).length)
+      throw new HttpError(409, "COMPLETION_LETTER_NUMBER_REQUIRED", "Belum ada peserta lulus dengan nomor surat resmi pada angkatan ini.");
+    const archive = zipSync(files, { level: 6 });
+    return new Response(archive, {
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="surat-keterangan-${parsed.data.cohortId}.zip"`,
+      },
+    });
+  }
+);
+
+participantAdminRoutes.post(
+  "/documents/download-all",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const parsed = z.object({ trainingId: z.string(), cohortId: z.string() })
+      .safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw validationError(parsed);
+    const rows = await c.env.DB.prepare(
+      `SELECT id,name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND is_active=1 ORDER BY name`
+    ).bind(parsed.data.trainingId, parsed.data.cohortId).all<{ id: string; name: string }>();
+    const files: Record<string, Uint8Array> = {};
+    for (const row of rows.results) {
+      try {
+        const [front, back, letter] = await Promise.all([
+          renderCertificate(c, row.id, "FRONT"),
+          renderCertificate(c, row.id, "BACK"),
+          renderCompletionLetter(c, row.id),
+        ]);
+        const safeName = safeDocumentName(row.name);
+        files[`${safeName}/Sertifikat - ${safeName}.pdf`] = await combinePdfDocuments([front.bytes, back.bytes]);
+        files[`${safeName}/Surat Keterangan - ${safeName}.pdf`] = letter.bytes;
+      } catch (error) {
+        if (!(error instanceof HttpError && ["NOT_ELIGIBLE", "CERTIFICATE_NUMBER_REQUIRED", "COMPLETION_LETTER_NUMBER_REQUIRED"].includes(error.code))) throw error;
+      }
+    }
+    if (!Object.keys(files).length)
+      throw new HttpError(409, "DOCUMENT_NUMBER_REQUIRED", "Belum ada peserta lulus yang memiliki nomor sertifikat dan nomor surat resmi lengkap.");
+    const archive = zipSync(files, { level: 6 });
+    return new Response(archive, {
+      headers: {
+        "Content-Type": "application/zip",
+        "Content-Disposition": `attachment; filename="dokumen-kelulusan-${parsed.data.cohortId}.zip"`,
       },
     });
   }

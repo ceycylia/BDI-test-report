@@ -9,7 +9,7 @@ import type { AppEnvironment } from "../../types";
 
 const identifySchema = z.object({
   name: z.string().trim().min(2, "Nama lengkap wajib diisi.").max(150),
-  nik: z.string().trim().min(3, "NIK wajib diisi.").max(40),
+  nik: z.string().trim().min(3, "NIK wajib diisi.").max(40, "NIK maksimal 40 karakter.").regex(/^\d+$/u, "NIK hanya boleh berisi angka."),
   batchId: z.string().uuid("Angkatan tidak valid."),
 });
 

@@ -18,6 +18,11 @@ export type TrainingSessionRecord = {
   post_start_at: string | null;
   post_end_at: string | null;
   post_manual_open: number;
+  training_id: string | null;
+  material_id: string | null;
+  training_name: string | null;
+  material_name: string | null;
+  cohorts_json: string;
   created_at: string;
   updated_at: string;
 };
@@ -31,14 +36,32 @@ export type BatchRecord = {
   created_at: string;
 };
 
-export async function listTrainingSessions(database: D1Database): Promise<TrainingSessionRecord[]> {
+export async function listTrainingSessions(
+  database: D1Database,
+  activeYear?: number,
+): Promise<TrainingSessionRecord[]> {
   const result = await database
     .prepare(
-      `SELECT sessions.*, banks.name AS bank_name
+      `SELECT sessions.*, banks.name AS bank_name,
+              trainings.name AS training_name,
+              materials.name AS material_name,
+              COALESCE((
+                SELECT json_group_array(json_object('id', related.id, 'name', related.name))
+                  FROM (
+                    SELECT DISTINCT cohorts.id, cohorts.name
+                      FROM batches
+                      JOIN training_cohorts AS cohorts ON cohorts.id = batches.cohort_id
+                     WHERE batches.training_session_id = sessions.id
+                  ) AS related
+              ), '[]') AS cohorts_json
          FROM training_sessions AS sessions
          JOIN question_banks AS banks ON banks.id = sessions.bank_id
+         LEFT JOIN trainings ON trainings.id = sessions.training_id
+         LEFT JOIN training_materials AS materials ON materials.id = sessions.material_id
+        WHERE (? IS NULL OR SUBSTR(sessions.training_start_date, 1, 4) = ?)
         ORDER BY sessions.created_at DESC`,
     )
+    .bind(activeYear ?? null, activeYear ? String(activeYear) : null)
     .all<TrainingSessionRecord>();
   return result.results;
 }
@@ -49,9 +72,22 @@ export async function findTrainingSession(
 ): Promise<TrainingSessionRecord | null> {
   return database
     .prepare(
-      `SELECT sessions.*, banks.name AS bank_name
+      `SELECT sessions.*, banks.name AS bank_name,
+              trainings.name AS training_name,
+              materials.name AS material_name,
+              COALESCE((
+                SELECT json_group_array(json_object('id', related.id, 'name', related.name))
+                  FROM (
+                    SELECT DISTINCT cohorts.id, cohorts.name
+                      FROM batches
+                      JOIN training_cohorts AS cohorts ON cohorts.id = batches.cohort_id
+                     WHERE batches.training_session_id = sessions.id
+                  ) AS related
+              ), '[]') AS cohorts_json
          FROM training_sessions AS sessions
          JOIN question_banks AS banks ON banks.id = sessions.bank_id
+         LEFT JOIN trainings ON trainings.id = sessions.training_id
+         LEFT JOIN training_materials AS materials ON materials.id = sessions.material_id
         WHERE sessions.id = ?
         LIMIT 1`,
     )
@@ -69,7 +105,7 @@ export async function slugExists(database: D1Database, slug: string): Promise<bo
 
 export async function activeQuestionCount(database: D1Database, bankId: string): Promise<number> {
   const row = await database
-    .prepare("SELECT COUNT(*) AS count FROM questions WHERE bank_id = ? AND is_active = 1")
+    .prepare("SELECT COUNT(*) AS count FROM questions WHERE bank_id = ?")
     .bind(bankId)
     .first<{ count: number }>();
   return row?.count ?? 0;
@@ -172,7 +208,7 @@ export async function listActiveQuestionUsageForSession(
       `SELECT questions.id, questions.times_assigned
          FROM questions
          JOIN training_sessions ON training_sessions.bank_id = questions.bank_id
-        WHERE training_sessions.id = ? AND questions.is_active = 1
+        WHERE training_sessions.id = ?
         ORDER BY questions.id`,
     )
     .bind(sessionId)
@@ -217,8 +253,10 @@ export async function saveGeneratedPackages(
     database
       .prepare(
         `UPDATE training_sessions
-            SET question_count = ?, updated_at = CURRENT_TIMESTAMP
-          WHERE id = ? AND status = 'DRAFT'`,
+            SET question_count = ?, status = 'ACTIVE',
+                activated_at = COALESCE(activated_at, CURRENT_TIMESTAMP),
+                updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND status IN ('DRAFT', 'ACTIVE')`,
       )
       .bind(input.questionCount, sessionId),
     database

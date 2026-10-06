@@ -26,7 +26,6 @@ const emptyQuestion: QuestionInput = {
   optionC: "",
   optionD: "",
   correctOptionKey: "A",
-  isActive: true,
 };
 
 export function QuestionBankDetailPage() {
@@ -100,37 +99,6 @@ export function QuestionBankDetailPage() {
   const resetQuestionEditor = () => {
     setEditingQuestionId(null);
     setQuestionDraft(emptyQuestion);
-  };
-
-  const handleBankUpdate = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-
-    if (!bank) return;
-
-    const form = new FormData(event.currentTarget);
-
-    setSubmitting(true);
-    setError(null);
-
-    try {
-      await adminMutation(`/api/admin/banks/${bankId}`, {
-        method: "PUT",
-        body: JSON.stringify({
-          isActive: form.get("isActive") === "on",
-        }),
-      });
-
-      await loadDetail();
-      setMessage("Bank Soal berhasil diperbarui.");
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Bank Soal tidak dapat diperbarui."
-      );
-    } finally {
-      setSubmitting(false);
-    }
   };
 
   const handleBankDelete = async () => {
@@ -227,39 +195,9 @@ export function QuestionBankDetailPage() {
       optionC: question.optionC,
       optionD: question.optionD,
       correctOptionKey: question.correctOptionKey,
-      isActive: question.isActive,
     });
 
     setQuestionModalOpen(true);
-  };
-
-  const toggleQuestion = async (question: Question) => {
-    setError(null);
-    try {
-      await adminMutation(
-        `/api/admin/banks/${bankId}/questions/${question.id}`,
-        {
-          method: "PUT",
-          body: JSON.stringify({
-            questionText: question.questionText,
-            imageKey: question.imageKey,
-            optionA: question.optionA,
-            optionB: question.optionB,
-            optionC: question.optionC,
-            optionD: question.optionD,
-            correctOptionKey: question.correctOptionKey,
-            isActive: !question.isActive,
-          }),
-        }
-      );
-      await loadDetail();
-    } catch (reason) {
-      setError(
-        reason instanceof Error
-          ? reason.message
-          : "Status soal tidak dapat diubah."
-      );
-    }
   };
 
   const removeQuestion = async (question: Question) => {
@@ -331,13 +269,6 @@ export function QuestionBankDetailPage() {
             Upload Word
           </button>
 
-          <span
-            className={
-              bank.isActive ? "status-badge is-active" : "status-badge"
-            }
-          >
-            {bank.isActive ? "Aktif" : "Nonaktif"}
-          </span>
         </div>
       </header>
 
@@ -348,11 +279,10 @@ export function QuestionBankDetailPage() {
       )}
       {message && <p className="form-message is-success">{message}</p>}
 
-      <div className="bank-detail-grid">
-        <section
-          className="panel question-list-panel"
-          aria-labelledby="question-list-title"
-        >
+      <section
+        className="panel question-list-panel"
+        aria-labelledby="question-list-title"
+      >
           <div className="question-list-toolbar">
             <div>
               <p className="section-label">Daftar soal</p>
@@ -404,16 +334,6 @@ export function QuestionBankDetailPage() {
                 <article className="question-card" key={question.id}>
                   <div className="question-card__header">
                     <strong>Soal {index + 1}</strong>
-
-                    <span
-                      className={
-                        question.isActive
-                          ? "status-badge is-active"
-                          : "status-badge"
-                      }
-                    >
-                      {question.isActive ? "Aktif" : "Nonaktif"}
-                    </span>
                   </div>
 
                   <p className="question-card__text">{question.questionText}</p>
@@ -456,14 +376,6 @@ export function QuestionBankDetailPage() {
                       </button>
 
                       <button
-                        className="text-button"
-                        type="button"
-                        onClick={() => void toggleQuestion(question)}
-                      >
-                        {question.isActive ? "Nonaktifkan" : "Aktifkan"}
-                      </button>
-
-                      <button
                         className="text-button is-danger"
                         type="button"
                         onClick={() => setQuestionToDelete(question)}
@@ -476,53 +388,22 @@ export function QuestionBankDetailPage() {
               ))}
             </div>
           )}
-        </section>
+      </section>
 
-        <aside className="bank-sidebar">
-          <section
-            className="panel bank-settings-panel"
-            aria-labelledby="bank-settings-title"
-          >
-            <div className="panel-header">
-              <h2 id="bank-settings-title">Pengaturan Bank Soal</h2>
-              <p>Kelola status dan tindakan untuk bank soal ini.</p>
-            </div>
-
-            <form
-              className="form-stack"
-              onSubmit={(event) => void handleBankUpdate(event)}
-            >
-              <label className="checkbox-card">
-                <input
-                  name="isActive"
-                  type="checkbox"
-                  defaultChecked={bank.isActive}
-                />
-                <div>
-                  <strong>Bank Soal aktif</strong>
-                  <small>
-                    Soal dari bank ini dapat digunakan dalam pengelolaan tes.
-                  </small>
-                </div>
-              </label>
-
-              <div className="sidebar-actions">
-                <button className="button button--secondary" type="submit">
-                  Simpan
-                </button>
-
-                <button
-                  className="danger-button"
-                  type="button"
-                  onClick={() => setDeleteConfirmOpen(true)}
-                >
-                  Hapus Bank Soal
-                </button>
-              </div>
-            </form>
-          </section>
-        </aside>
-      </div>
+      <section className="panel danger-zone bank-danger-zone" aria-labelledby="bank-danger-title">
+        <div>
+          <p className="section-label">Zona Berbahaya</p>
+          <h2 id="bank-danger-title">Hapus Bank Soal</h2>
+          <p>Bank Soal hanya dapat dihapus jika belum berisi soal dan belum digunakan oleh pelaksanaan atau paket Test.</p>
+        </div>
+        <button
+          className="button danger-button"
+          type="button"
+          onClick={() => setDeleteConfirmOpen(true)}
+        >
+          Hapus Bank Soal
+        </button>
+      </section>
       {showScrollTop && <button
         type="button"
         className="bank-scroll-top"
@@ -534,7 +415,7 @@ export function QuestionBankDetailPage() {
         open={deleteConfirmOpen}
         title="Hapus Bank Soal?"
         itemName={bank.materialName ?? bank.name}
-        description="Bank Soal dan soal yang belum pernah digunakan akan dihapus. Tindakan ini tidak dapat dibatalkan."
+        description="Bank Soal hanya dapat dihapus jika belum berisi soal dan belum digunakan oleh pelaksanaan Test. Tindakan ini tidak dapat dibatalkan."
         busy={deleting}
         onCancel={() => setDeleteConfirmOpen(false)}
         onConfirm={() => void handleBankDelete()}
@@ -673,22 +554,6 @@ export function QuestionBankDetailPage() {
                     <option value="D">D</option>
                   </select>
                 </label>
-
-                {editingQuestionId && (
-                  <label className="checkbox-label">
-                    <input
-                      type="checkbox"
-                      checked={questionDraft.isActive}
-                      onChange={(event) =>
-                        setQuestionDraft((current) => ({
-                          ...current,
-                          isActive: event.target.checked,
-                        }))
-                      }
-                    />
-                    Soal aktif
-                  </label>
-                )}
 
                 <footer className="participant-modal__actions">
                   <button

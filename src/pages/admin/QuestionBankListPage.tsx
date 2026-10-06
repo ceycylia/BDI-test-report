@@ -151,20 +151,10 @@ export function QuestionBankListPage() {
                 <div className="bank-list__content">
                   <div className="bank-list__title-row">
                     <h3>{bank.materialName ?? bank.name}</h3>
-                    <span
-                      className={
-                        bank.isActive
-                          ? "status-badge is-active"
-                          : "status-badge"
-                      }
-                    >
-                      {bank.isActive ? "Aktif" : "Nonaktif"}
-                    </span>
                   </div>
                   {bank.trainingName && <p>{bank.trainingName}</p>}
                   <div className="bank-list__meta">
-                    <span>{bank.activeQuestionCount} soal aktif</span>
-                    <span>{bank.inactiveQuestionCount} nonaktif</span>
+                    <span>{bank.activeQuestionCount + bank.inactiveQuestionCount} soal</span>
                   </div>
                 </div>
                 <Link

@@ -44,10 +44,6 @@ const bulkBankSchema = z.object({
     .max(500),
 });
 
-const updateBankSchema = z.object({
-  isActive: z.boolean(),
-});
-
 const questionSchema = z.object({
   questionText: z.string().trim().min(1, "Pertanyaan wajib diisi.").max(10_000),
   imageKey: z.string().trim().max(500).nullable().optional(),
@@ -58,9 +54,7 @@ const questionSchema = z.object({
   correctOptionKey: z.enum(["A", "B", "C", "D"]),
 });
 
-const updateQuestionSchema = questionSchema.extend({
-  isActive: z.boolean(),
-});
+const updateQuestionSchema = questionSchema;
 
 const importQuestionsSchema = z.object({
   questions: z.array(questionSchema).min(1).max(500),
@@ -127,7 +121,8 @@ questionBankRoutes.post(
     const material = await context.env.DB.prepare(
       `SELECT
       materials.id,
-      trainings.name AS training_name
+      trainings.name AS training_name,
+      (SELECT id FROM question_banks WHERE material_id = materials.id LIMIT 1) AS existing_bank_id
    FROM training_materials materials
    JOIN trainings
      ON trainings.id = materials.training_id
@@ -138,6 +133,7 @@ questionBankRoutes.post(
       .first<{
         id: string;
         training_name: string;
+        existing_bank_id: string | null;
       }>();
     if (!material)
       throw new HttpError(
@@ -145,6 +141,13 @@ questionBankRoutes.post(
         "MATERIAL_UNAVAILABLE",
         "Materi tidak ditemukan atau pelatihannya tidak aktif."
       );
+    if (material.existing_bank_id) {
+      throw new HttpError(
+        409,
+        "MATERIAL_BANK_EXISTS",
+        "Materi ini sudah mempunyai Bank Soal."
+      );
+    }
 
     const id = crypto.randomUUID();
     try {
@@ -158,7 +161,7 @@ questionBankRoutes.post(
         throw new HttpError(
           409,
           "MATERIAL_BANK_EXISTS",
-          "Materi ini sudah mempunyai Bank Soal aktif."
+          "Materi ini sudah mempunyai Bank Soal."
         );
       throw error;
     }
@@ -287,28 +290,16 @@ questionBankRoutes.put(
       throw new HttpError(404, "BANK_NOT_FOUND", "Bank Soal tidak ditemukan.");
     }
 
-    const parsed = updateBankSchema.safeParse(
-      await context.req.json().catch(() => null)
-    );
-    if (!parsed.success) {
-      throw new HttpError(
-        422,
-        "BANK_INVALID",
-        parsed.error.issues[0]?.message ?? "Data Bank Soal tidak valid."
-      );
-    }
-
     try {
       await updateQuestionBank(context.env.DB, {
         id: bankId,
-        isActive: parsed.data.isActive,
       });
     } catch (error) {
       if (String(error).includes("UNIQUE"))
         throw new HttpError(
           409,
           "MATERIAL_BANK_EXISTS",
-          "Materi ini sudah mempunyai Bank Soal aktif."
+          "Materi ini sudah mempunyai Bank Soal."
         );
       throw error;
     }
@@ -334,7 +325,7 @@ questionBankRoutes.delete(
       throw new HttpError(
         409,
         "BANK_HAS_DEPENDENCIES",
-        "Bank Soal masih mempunyai soal atau digunakan pelatihan. Nonaktifkan Bank Soal sebagai gantinya."
+        "Bank Soal tidak dapat dihapus karena masih mempunyai soal atau sudah digunakan oleh pelaksanaan Test."
       );
     }
 
@@ -549,7 +540,6 @@ questionBankRoutes.put(
       optionC: parsed.data.optionC,
       optionD: parsed.data.optionD,
       correctOptionKey: parsed.data.correctOptionKey,
-      isActive: parsed.data.isActive,
     });
     return context.json({ success: true });
   }
@@ -570,7 +560,7 @@ questionBankRoutes.delete(
       throw new HttpError(
         409,
         "QUESTION_HAS_DEPENDENCIES",
-        "Soal sudah digunakan. Nonaktifkan soal agar riwayat tetap dapat diaudit."
+        "Soal sudah digunakan dan tidak dapat dihapus agar riwayat tetap dapat diaudit."
       );
     }
 
