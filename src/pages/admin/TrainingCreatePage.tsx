@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate } from "react-router-dom";
 import { CalendarClock, Clock3 } from "lucide-react";
 import { DateTimeInput } from "../../components/ui/DateTimeInput";
+import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { adminMutation, adminQuery, AdminApiError } from "../../features/admin-auth/admin-api";
 import { formatDateTimeForApi } from "../../features/dates/date-format";
 import type { QuestionBankSummary } from "../../features/question-banks/types";
@@ -13,11 +14,14 @@ type Catalog = {
 
 type Draft = {
   trainingId: string; materialId: string; cohortId: string; passingScore: number;
+  preMode: ScheduleMode; postMode: ScheduleMode;
   preStartAt: string; preEndAt: string; postStartAt: string; postEndAt: string;
 };
+type ScheduleMode = "OPEN_NOW" | "SCHEDULED";
 
 const initialDraft: Draft = {
   trainingId: "", materialId: "", cohortId: "", passingScore: 75,
+  preMode: "SCHEDULED", postMode: "SCHEDULED",
   preStartAt: "", preEndAt: "", postStartAt: "", postEndAt: "",
 };
 
@@ -53,12 +57,21 @@ export function TrainingCreatePage() {
 
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
-    const preStartAt = formatDateTimeForApi(draft.preStartAt);
-    const preEndAt = formatDateTimeForApi(draft.preEndAt);
-    const postStartAt = formatDateTimeForApi(draft.postStartAt);
-    const postEndAt = formatDateTimeForApi(draft.postEndAt);
-    if (!preStartAt || !preEndAt || !postStartAt || !postEndAt) {
-      setError("Lengkapi seluruh jadwal buka dan tutup Test.");
+    function schedulePayload(mode: ScheduleMode, startValue: string, endValue: string, label: string) {
+      if (mode === "OPEN_NOW") return { status: "OPEN_NOW" as const };
+      const startAt = formatDateTimeForApi(startValue);
+      const endAt = formatDateTimeForApi(endValue);
+      if (!startAt || !endAt) throw new Error(`Lengkapi tanggal dan jam buka/tutup ${label}.`);
+      if (Date.parse(endAt) <= Date.parse(startAt)) throw new Error(`Waktu tutup ${label} harus setelah waktu buka.`);
+      return { status: "SCHEDULED" as const, startAt, endAt };
+    }
+    let pre: ReturnType<typeof schedulePayload>;
+    let post: ReturnType<typeof schedulePayload>;
+    try {
+      pre = schedulePayload(draft.preMode, draft.preStartAt, draft.preEndAt, "Pre-Test");
+      post = schedulePayload(draft.postMode, draft.postStartAt, draft.postEndAt, "Post-Test");
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Pengaturan waktu Test tidak valid.");
       return;
     }
     setSubmitting(true); setError(null);
@@ -68,8 +81,8 @@ export function TrainingCreatePage() {
         body: JSON.stringify({
           trainingId: draft.trainingId, materialId: draft.materialId, cohortId: draft.cohortId,
           passingScore: Number(draft.passingScore),
-          pre: { startAt: preStartAt, endAt: preEndAt },
-          post: { startAt: postStartAt, endAt: postEndAt },
+          pre,
+          post,
         }),
       });
       navigate(`/admin/pelatihan/${payload.session.id}`, { replace: true });
@@ -83,18 +96,25 @@ export function TrainingCreatePage() {
     {error && <p className="form-message is-error" role="alert">{error}</p>}
     <form className="panel training-form test-create-form" onSubmit={(event) => void submit(event)}>
       <fieldset className="test-create-section"><legend><span>01</span> Informasi Test</legend><p className="test-create-section__hint">Pilih pelatihan, materi yang memiliki bank soal aktif, serta angkatan peserta.</p><div className="form-grid test-create-form__grid">
-        <label>Pelatihan<select required value={draft.trainingId} onChange={(event) => setDraft((current) => ({ ...current, trainingId: event.target.value, materialId: "", cohortId: "" }))}><option value="">Pilih pelatihan</option>{catalog.trainings.map((training) => <option key={training.id} value={training.id}>{training.name}</option>)}</select></label>
+        <label>Pelatihan<SearchableSelect required value={draft.trainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(trainingId) => setDraft((current) => ({ ...current, trainingId, materialId: "", cohortId: "" }))} /></label>
         <label>Materi<select required disabled={!draft.trainingId} value={draft.materialId} onChange={(event) => update("materialId", event.target.value)}><option value="">Pilih materi</option>{materials.map((bank) => <option key={bank.materialId!} value={bank.materialId!}>{bank.materialName} ({bank.activeQuestionCount} soal)</option>)}</select></label>
         <label>Angkatan<select required disabled={!draft.trainingId} value={draft.cohortId} onChange={(event) => update("cohortId", event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>
         <label>Passing Grade<input type="number" min={0} max={100} step="0.01" required value={draft.passingScore} onChange={(event) => update("passingScore", Number(event.target.value))} /></label>
       </div>{draft.trainingId && !materials.length && <p className="form-message is-error">Pelatihan ini belum mempunyai materi dengan Bank Soal aktif.</p>}{draft.trainingId && !cohorts.length && <p className="form-message is-error">Pelatihan ini belum mempunyai angkatan aktif.</p>}</fieldset>
       <div className="fixed-test-rule"><Clock3 /><div><strong>Durasi pengerjaan otomatis</strong><span>15 menit untuk setiap tes. Remedial maksimal 3 kali.</span></div></div>
-      <section className="test-schedule-section" aria-labelledby="test-schedule-title"><div className="test-schedule-section__heading"><span>02</span><div><h2 id="test-schedule-title">Jadwal Pelaksanaan</h2><p>Tentukan waktu akses Pre-Test dan Post-Test.</p></div></div><div className="test-schedule-grid">
-        <fieldset><legend><CalendarClock /> Pre-Test</legend><label>Tanggal dan jam buka<DateTimeInput required value={draft.preStartAt} onValueChange={(value) => update("preStartAt", value)} /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.preEndAt} onValueChange={(value) => update("preEndAt", value)} /></label></fieldset>
-        <fieldset><legend><CalendarClock /> Post-Test</legend><label>Tanggal dan jam buka<DateTimeInput required value={draft.postStartAt} onValueChange={(value) => update("postStartAt", value)} /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.postEndAt} onValueChange={(value) => update("postEndAt", value)} /></label></fieldset>
+      <section className="test-schedule-section" aria-labelledby="test-schedule-title"><div className="test-schedule-section__heading"><span>02</span><div><h2 id="test-schedule-title">Jadwal Pelaksanaan</h2><p>Pre-Test dan Post-Test dapat memakai mode akses yang berbeda.</p></div></div><div className="test-schedule-grid">
+        <fieldset><legend><CalendarClock /> Pre-Test</legend><ScheduleModeControl value={draft.preMode} onChange={(value) => update("preMode", value)} label="Pre-Test" />{draft.preMode === "SCHEDULED" ? <div className="test-schedule-fields"><label>Tanggal dan jam buka<DateTimeInput required value={draft.preStartAt} onValueChange={(value) => update("preStartAt", value)} aria-label="Tanggal buka Pre-Test" /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.preEndAt} onValueChange={(value) => update("preEndAt", value)} aria-label="Tanggal tutup Pre-Test" /></label></div> : <p className="test-schedule-open-note">Pre-Test langsung terbuka setelah disimpan dan tetap terbuka sampai ditutup manual.</p>}</fieldset>
+        <fieldset><legend><CalendarClock /> Post-Test</legend><ScheduleModeControl value={draft.postMode} onChange={(value) => update("postMode", value)} label="Post-Test" />{draft.postMode === "SCHEDULED" ? <div className="test-schedule-fields"><label>Tanggal dan jam buka<DateTimeInput required value={draft.postStartAt} onValueChange={(value) => update("postStartAt", value)} aria-label="Tanggal buka Post-Test" /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.postEndAt} onValueChange={(value) => update("postEndAt", value)} aria-label="Tanggal tutup Post-Test" /></label></div> : <p className="test-schedule-open-note">Post-Test langsung terbuka setelah disimpan dan tetap terbuka sampai ditutup manual.</p>}</fieldset>
       </div></section>
       {selectedMaterial && <p className="test-bank-note">Bank Soal mengikuti materi <strong>{selectedMaterial.materialName}</strong> dan menggunakan {selectedMaterial.activeQuestionCount} soal aktif.</p>}
       <div className="form-actions test-create-form__actions"><Link className="button button--secondary" to="/admin/pelatihan">Batal</Link><button className="button" type="submit" disabled={submitting || !draft.trainingId || !draft.materialId || !draft.cohortId}>{submitting ? "Menyimpan…" : "Simpan Test"}</button></div>
     </form>
   </>;
+}
+
+function ScheduleModeControl({ value, onChange, label }: { value: ScheduleMode; onChange: (value: ScheduleMode) => void; label: string }) {
+  return <div className="schedule-mode-control" role="group" aria-label={`Mode akses ${label}`}>
+    <button type="button" className={value === "OPEN_NOW" ? "is-active" : ""} aria-pressed={value === "OPEN_NOW"} onClick={() => onChange("OPEN_NOW")}>Buka Sekarang</button>
+    <button type="button" className={value === "SCHEDULED" ? "is-active" : ""} aria-pressed={value === "SCHEDULED"} onClick={() => onChange("SCHEDULED")}>Set Jadwal</button>
+  </div>;
 }

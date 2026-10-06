@@ -1,5 +1,6 @@
+import { Download, FileText, Upload, X } from "lucide-react";
 import { useState, type ChangeEvent } from "react";
-import { Link, useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams } from "react-router-dom";
 import {
   adminMutation,
   adminUpload,
@@ -11,11 +12,20 @@ import {
 } from "../../features/docx-import/read-docx";
 import type { ParsedImportQuestion } from "../../features/docx-import/parser-core";
 import { downloadQuestionTemplate } from "../../features/docx-import/template";
+import { ModalPortal } from "../../components/ui/ModalPortal";
 
-export function QuestionImportPage() {
-  const { bankId = "" } = useParams();
-  const navigate = useNavigate();
-  const [fileName, setFileName] = useState<string | null>(null);
+type QuestionImportModalProps = {
+  bankId: string;
+  onClose: () => void;
+  onImported: (count: number) => void | Promise<void>;
+};
+
+export function QuestionImportModal({
+  bankId,
+  onClose,
+  onImported,
+}: QuestionImportModalProps) {
+  const [selectedFile, setSelectedFile] = useState<File | null>(null);
   const [questions, setQuestions] = useState<ParsedImportQuestion[]>([]);
   const [warnings, setWarnings] = useState<string[]>([]);
   const [parsing, setParsing] = useState(false);
@@ -24,19 +34,24 @@ export function QuestionImportPage() {
 
   const invalidCount = questions.filter((question) => question.errors.length > 0).length;
   const canImport = questions.length > 0 && invalidCount === 0 && !importing;
+  const busy = parsing || importing;
 
-  const handleFile = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.target.files?.[0];
-    if (!file) return;
+  function handleFile(event: ChangeEvent<HTMLInputElement>) {
+    setSelectedFile(event.target.files?.[0] ?? null);
+    setQuestions([]);
+    setWarnings([]);
+    setError(null);
+  }
 
+  async function previewFile() {
+    if (!selectedFile) return;
     setParsing(true);
     setError(null);
     setQuestions([]);
     setWarnings([]);
-    setFileName(file.name);
 
     try {
-      const result = await readDocxQuestions(file);
+      const result = await readDocxQuestions(selectedFile);
       setQuestions(result.questions);
       setWarnings(result.warnings);
       if (result.questions.length === 0) {
@@ -47,12 +62,12 @@ export function QuestionImportPage() {
     } finally {
       setParsing(false);
     }
-  };
+  }
 
-  const uploadQuestionImage = async (
+  async function uploadQuestionImage(
     question: ParsedImportQuestion,
     index: number,
-  ): Promise<string | null> => {
+  ): Promise<string | null> {
     if (!question.image) return null;
     const form = new FormData();
     form.set("image", imageDataUrlToFile(question.image, index + 1));
@@ -61,9 +76,9 @@ export function QuestionImportPage() {
       form,
     );
     return payload.imageKey;
-  };
+  }
 
-  const handleImport = async () => {
+  async function handleImport() {
     if (!canImport) return;
     setImporting(true);
     setError(null);
@@ -86,10 +101,7 @@ export function QuestionImportPage() {
         method: "POST",
         body: JSON.stringify({ questions: payload }),
       });
-      navigate(`/admin/bank-soal/${bankId}`, {
-        replace: true,
-        state: { message: `${questions.length} soal berhasil diimport.` },
-      });
+      await onImported(questions.length);
     } catch (reason) {
       setError(
         reason instanceof AdminApiError
@@ -99,84 +111,143 @@ export function QuestionImportPage() {
     } finally {
       setImporting(false);
     }
-  };
+  }
 
   return (
-    <>
-      <header className="admin-page-header">
-        <div>
-          <Link className="back-link" to={`/admin/bank-soal/${bankId}`}>← Detail Bank Soal</Link>
-          <h1>Import Soal dari Word</h1>
-        </div>
-        <button className="button button--secondary" type="button" onClick={() => void downloadQuestionTemplate()}>
-          Download Template Word
-        </button>
-      </header>
+    <ModalPortal onClose={onClose} blocked={busy}>
+      <section
+        className="participant-modal question-import-modal"
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="question-import-title"
+      >
+        <header className="participant-modal__header">
+          <div>
+            <p className="section-label">Bank Soal</p>
+            <h2 id="question-import-title">Import Soal dari Word</h2>
+            <p>Gunakan berkas .docx sesuai template. Maksimal 15 MB.</p>
+          </div>
+          <button
+            type="button"
+            className="participant-modal__close"
+            aria-label="Tutup import soal"
+            disabled={busy}
+            onClick={onClose}
+          >
+            <X />
+          </button>
+        </header>
 
-      <section className="panel import-upload-panel" aria-labelledby="upload-word-title">
-        <div>
-          <h2 id="upload-word-title">Upload Soal Word</h2>
-          <p className="muted">Gunakan berkas .docx sesuai template. Maksimal 15 MB.</p>
-        </div>
-        <label className="file-drop-field">
-          <span>{parsing ? "Membaca berkas…" : fileName ?? "Pilih berkas .docx"}</span>
-          <input type="file" accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document" onChange={(event) => void handleFile(event)} disabled={parsing || importing} />
-        </label>
-      </section>
-
-      {error && <p className="form-message is-error" role="alert">{error}</p>}
-      {warnings.length > 0 && (
-        <div className="form-message import-warning">
-          Word memberi {warnings.length} peringatan saat membaca dokumen. Periksa preview dengan teliti.
-        </div>
-      )}
-
-      {questions.length > 0 && (
-        <section className="import-preview" aria-labelledby="preview-title">
-          <div className="import-summary">
+        <div className="question-import-modal__content">
+          <div className="template-download-row">
             <div>
-              <p className="section-label">Preview</p>
-              <h2 id="preview-title">{questions.length} blok soal ditemukan</h2>
+              <strong>Belum memiliki template?</strong>
+              <span>Unduh template resmi, lalu isi soal sesuai format yang tersedia.</span>
             </div>
-            <div className="button-row">
-              <span className={invalidCount === 0 ? "status-badge is-active" : "status-badge is-error"}>
-                {invalidCount === 0 ? "Semua valid" : `${invalidCount} perlu diperbaiki`}
-              </span>
-              <button className="button" type="button" disabled={!canImport} onClick={() => void handleImport()}>
-                {importing ? "Mengimport…" : "Import ke Bank Soal"}
-              </button>
-            </div>
+            <button
+              className="button button--secondary button--small"
+              type="button"
+              onClick={() => void downloadQuestionTemplate()}
+            >
+              <Download /> Download Template Word
+            </button>
           </div>
 
-          <div className="import-question-list">
-            {questions.map((question, index) => (
-              <article className="question-card" key={`${question.sourceNumber ?? "unknown"}-${index}`}>
+          <label className="question-import-modal__file">
+            File soal (.docx)
+            <span className="file-field">
+              <FileText />
+              <input
+                type="file"
+                accept=".docx,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                onChange={handleFile}
+                disabled={busy}
+              />
+            </span>
+            {selectedFile && <small>{selectedFile.name}</small>}
+          </label>
+
+          {error && <p className="form-message is-error" role="alert">{error}</p>}
+          {warnings.length > 0 && <div className="form-message import-warning">
+            Word memberi {warnings.length} peringatan saat membaca dokumen. Periksa preview dengan teliti.
+          </div>}
+
+          {questions.length > 0 && <section className="import-preview-section" aria-labelledby="question-preview-title">
+            <div className="import-preview-heading">
+              <div>
+                <p className="section-label">Preview</p>
+                <h3 id="question-preview-title">{questions.length} blok soal ditemukan</h3>
+              </div>
+              <span className={invalidCount === 0 ? "status-badge is-active" : "status-badge is-danger"}>
+                {invalidCount === 0 ? "Semua valid" : `${invalidCount} perlu diperbaiki`}
+              </span>
+            </div>
+
+            <div className="import-question-list">
+              {questions.map((question, index) => <article className="question-card" key={`${question.sourceNumber ?? "unknown"}-${index}`}>
                 <div className="question-card__header">
                   <strong>Soal {question.sourceNumber ?? index + 1}</strong>
-                  <span className={question.errors.length === 0 ? "status-badge is-active" : "status-badge is-error"}>
+                  <span className={question.errors.length === 0 ? "status-badge is-active" : "status-badge is-danger"}>
                     {question.errors.length === 0 ? "Valid" : "Error"}
                   </span>
                 </div>
-                {question.errors.length > 0 && (
-                  <ul className="import-errors">
-                    {question.errors.map((item) => <li key={item}>{item}</li>)}
-                  </ul>
-                )}
+                {question.errors.length > 0 && <ul className="import-errors">
+                  {question.errors.map((item) => <li key={item}>{item}</li>)}
+                </ul>}
                 <p className="question-card__text">{question.questionText || "Pertanyaan belum terbaca."}</p>
                 {question.image && <img className="question-card__image" src={question.image.dataUrl} alt={`Gambar soal ${question.sourceNumber ?? index + 1}`} />}
                 <ol className="option-list">
-                  {(["A", "B", "C", "D"] as const).map((key) => (
-                    <li className={question.correctOptionKey === key ? "is-correct" : ""} key={key}>
-                      <strong>{key}.</strong> {question[`option${key}`] || "—"}
-                    </li>
-                  ))}
+                  {(["A", "B", "C", "D"] as const).map((key) => <li className={question.correctOptionKey === key ? "is-correct" : ""} key={key}>
+                    <strong>{key}.</strong> {question[`option${key}`] || "—"}
+                  </li>)}
                 </ol>
                 <p className="import-key">Kunci: <strong>{question.correctOptionKey ?? "—"}</strong></p>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-    </>
+              </article>)}
+            </div>
+          </section>}
+
+        </div>
+        <footer className="participant-modal__actions question-import-modal__footer">
+          <button
+            type="button"
+            className="button button--secondary"
+            disabled={busy}
+            onClick={onClose}
+          >
+            Batal
+          </button>
+          {questions.length === 0 ? <button
+            type="button"
+            className="button"
+            disabled={!selectedFile || parsing}
+            onClick={() => void previewFile()}
+          >
+            <FileText /> {parsing ? "Membaca…" : "Preview File"}
+          </button> : <button
+            type="button"
+            className="button"
+            disabled={!canImport}
+            onClick={() => void handleImport()}
+          >
+            <Upload /> {importing ? "Mengimport…" : `Import ${questions.length} Soal`}
+          </button>}
+        </footer>
+      </section>
+    </ModalPortal>
   );
+}
+
+export function QuestionImportPage() {
+  const { bankId = "" } = useParams();
+  const navigate = useNavigate();
+  const close = () => navigate(`/admin/bank-soal/${bankId}`, { replace: true });
+
+  return <QuestionImportModal
+    bankId={bankId}
+    onClose={close}
+    onImported={(count) => navigate(`/admin/bank-soal/${bankId}`, {
+      replace: true,
+      state: { message: `${count} soal berhasil diimport.` },
+    })}
+  />;
 }

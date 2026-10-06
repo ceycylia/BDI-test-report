@@ -136,13 +136,13 @@ async function requireMatchingCohort(
 participantAdminRoutes.get("/catalog", async (c) => {
   const [trainings, materials, cohorts] = await Promise.all([
     c.env.DB.prepare(
-      `SELECT trainings.*, (SELECT COUNT(*) FROM training_materials WHERE training_id=trainings.id) material_count, (SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=trainings.id) total_jp FROM trainings WHERE trainings.is_deleted=0 ORDER BY name COLLATE NOCASE`
+      `SELECT trainings.*, (SELECT COUNT(*) FROM training_materials WHERE training_id=trainings.id) material_count, (SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=trainings.id) total_jp FROM trainings WHERE trainings.is_deleted=0 ORDER BY trainings.created_at DESC, trainings.rowid DESC`
     ).all(),
     c.env.DB.prepare(
-      `SELECT materials.*, trainings.name training_name, banks.id bank_id, banks.name bank_name FROM training_materials materials JOIN trainings ON trainings.id=materials.training_id LEFT JOIN question_banks banks ON banks.material_id=materials.id AND banks.is_active=1 WHERE trainings.is_deleted=0 ORDER BY trainings.name, materials.sort_order`
+      `SELECT materials.*, trainings.name training_name, banks.id bank_id, banks.name bank_name FROM training_materials materials JOIN trainings ON trainings.id=materials.training_id LEFT JOIN question_banks banks ON banks.material_id=materials.id AND banks.is_active=1 WHERE trainings.is_deleted=0 ORDER BY trainings.created_at DESC, materials.sort_order ASC`
     ).all(),
     c.env.DB.prepare(
-      `SELECT cohorts.*, trainings.name training_name, (SELECT COUNT(*) FROM participant_profiles WHERE cohort_id=cohorts.id) participant_count FROM training_cohorts cohorts JOIN trainings ON trainings.id=cohorts.training_id WHERE trainings.is_deleted=0 ORDER BY cohorts.start_date DESC, cohorts.name`
+      `SELECT cohorts.*, trainings.name training_name, (SELECT COUNT(*) FROM participant_profiles WHERE cohort_id=cohorts.id) participant_count FROM training_cohorts cohorts JOIN trainings ON trainings.id=cohorts.training_id WHERE trainings.is_deleted=0 ORDER BY cohorts.created_at DESC, cohorts.rowid DESC`
     ).all(),
   ]);
   return c.json({
@@ -706,6 +706,35 @@ participantAdminRoutes.put(
     return c.json({ success: true });
   }
 );
+participantAdminRoutes.delete(
+  "/cohorts/:id",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const id = c.req.param("id");
+    const cohort = await c.env.DB.prepare(
+      `SELECT id,
+        (EXISTS(SELECT 1 FROM participant_profiles WHERE cohort_id=training_cohorts.id)
+          OR EXISTS(SELECT 1 FROM batches WHERE cohort_id=training_cohorts.id)
+          OR EXISTS(SELECT 1 FROM certificates WHERE cohort_id=training_cohorts.id)) AS in_use
+       FROM training_cohorts WHERE id=?`
+    )
+      .bind(id)
+      .first<{ id: string; in_use: number }>();
+    if (!cohort)
+      throw new HttpError(404, "COHORT_NOT_FOUND", "Angkatan tidak ditemukan.");
+    if (cohort.in_use)
+      throw new HttpError(
+        409,
+        "COHORT_IN_USE",
+        "Angkatan sudah digunakan oleh peserta atau pelaksanaan tes dan tidak dapat dihapus. Nonaktifkan angkatan jika tidak ingin digunakan lagi."
+      );
+    await c.env.DB.prepare(`DELETE FROM training_cohorts WHERE id=?`)
+      .bind(id)
+      .run();
+    return c.json({ success: true });
+  }
+);
 
 participantAdminRoutes.get("/participants", async (c) => {
   const conditions: string[] = [];
@@ -724,7 +753,7 @@ participantAdminRoutes.get("/participants", async (c) => {
   }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const result = await c.env.DB.prepare(
-    `SELECT profiles.*, trainings.name training_name, cohorts.name cohort_name FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id ${where} ORDER BY profiles.name COLLATE NOCASE`
+    `SELECT profiles.*, trainings.name training_name, cohorts.name cohort_name FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id ${where} ORDER BY profiles.created_at DESC, profiles.rowid DESC`
   )
     .bind(...bindings)
     .all<Record<string, unknown>>();
@@ -1195,7 +1224,7 @@ participantAdminRoutes.post(
 
 participantAdminRoutes.get("/certificates", async (c) => {
   const result = await c.env.DB.prepare(
-    `WITH scores AS (SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id) SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,trainings.name training_name,cohorts.name cohort_name,scores.final_score,scores.passing_score,CASE WHEN scores.final_score>=scores.passing_score THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,certificates.id certificate_id,certificates.certificate_number,certificates.status certificate_status FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id LEFT JOIN scores ON scores.profile_id=profiles.id LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id ORDER BY profiles.name`
+    `WITH scores AS (SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id) SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,trainings.name training_name,cohorts.name cohort_name,scores.final_score,scores.passing_score,CASE WHEN scores.final_score>=scores.passing_score THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,certificates.id certificate_id,certificates.certificate_number,certificates.status certificate_status FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id LEFT JOIN scores ON scores.profile_id=profiles.id LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id ORDER BY profiles.created_at DESC, profiles.rowid DESC`
   ).all<Record<string, unknown>>();
   return c.json({
     certificates: result.results.map((r) => ({
@@ -1205,15 +1234,13 @@ participantAdminRoutes.get("/certificates", async (c) => {
     })),
   });
 });
-participantAdminRoutes.get("/certificate-settings/:trainingId", async (c) => {
+participantAdminRoutes.get("/certificate-settings", async (c) => {
   const row = await c.env.DB.prepare(
-    `SELECT * FROM certificate_settings WHERE training_id=?`
+    `SELECT * FROM global_certificate_settings WHERE id=1`
   )
-    .bind(c.req.param("trainingId"))
     .first();
   return c.json({
     settings: row ?? {
-      training_id: c.req.param("trainingId"),
       certificate_prefix: "",
       signer_name: "",
       signer_title: "",
@@ -1226,7 +1253,7 @@ participantAdminRoutes.get("/certificate-settings/:trainingId", async (c) => {
   });
 });
 participantAdminRoutes.put(
-  "/certificate-settings/:trainingId",
+  "/certificate-settings",
   requireSameOrigin,
   requireCsrf,
   async (c) => {
@@ -1244,10 +1271,9 @@ participantAdminRoutes.put(
     if (!parsed.success) throw validationError(parsed);
     const d = parsed.data;
     await c.env.DB.prepare(
-      `INSERT INTO certificate_settings(training_id,certificate_prefix,signer_name,signer_title,signer_nip,issue_place,issue_date,offset_x_mm,offset_y_mm) VALUES(?,?,?,?,?,?,?,?,?) ON CONFLICT(training_id) DO UPDATE SET signer_name=excluded.signer_name,signer_title=excluded.signer_title,signer_nip=excluded.signer_nip,issue_place=excluded.issue_place,issue_date=excluded.issue_date,offset_x_mm=excluded.offset_x_mm,offset_y_mm=excluded.offset_y_mm,updated_at=CURRENT_TIMESTAMP`
+      `INSERT INTO global_certificate_settings(id,certificate_prefix,signer_name,signer_title,signer_nip,issue_place,issue_date,offset_x_mm,offset_y_mm) VALUES(1,?,?,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET signer_name=excluded.signer_name,signer_title=excluded.signer_title,signer_nip=excluded.signer_nip,issue_place=excluded.issue_place,issue_date=excluded.issue_date,offset_x_mm=excluded.offset_x_mm,offset_y_mm=excluded.offset_y_mm,updated_at=CURRENT_TIMESTAMP`
     )
       .bind(
-        c.req.param("trainingId"),
         "",
         d.signerName,
         d.signerTitle,
@@ -1262,12 +1288,11 @@ participantAdminRoutes.put(
   }
 );
 participantAdminRoutes.post(
-  "/certificate-settings/:trainingId/assets",
+  "/certificate-settings/assets",
   requireSameOrigin,
   requireCsrf,
   async (c) => {
     const form = await c.req.formData();
-    const trainingId = c.req.param("trainingId");
     const updates: Array<{
       column:
         | "signature_key"
@@ -1291,7 +1316,7 @@ participantAdminRoutes.post(
             "Tanda tangan, stempel, atau template harus berupa gambar maksimal 8 MB."
           );
         const ext = file.type.includes("png") ? "png" : "jpg";
-        const key = `certificates/assets/${trainingId}/${field}-${crypto.randomUUID()}.${ext}`;
+        const key = `certificates/assets/global/${field}-${crypto.randomUUID()}.${ext}`;
         await c.env.QUESTION_IMAGES.put(key, await file.arrayBuffer(), {
           httpMetadata: { contentType: file.type },
         });
@@ -1299,15 +1324,15 @@ participantAdminRoutes.post(
       }
     }
     await c.env.DB.prepare(
-      `INSERT OR IGNORE INTO certificate_settings(training_id,certificate_prefix) VALUES(?,?)`
+      `INSERT OR IGNORE INTO global_certificate_settings(id,certificate_prefix) VALUES(1,?)`
     )
-      .bind(trainingId, "")
+      .bind("")
       .run();
     for (const item of updates)
       await c.env.DB.prepare(
-        `UPDATE certificate_settings SET ${item.column}=?,updated_at=CURRENT_TIMESTAMP WHERE training_id=?`
+        `UPDATE global_certificate_settings SET ${item.column}=?,updated_at=CURRENT_TIMESTAMP WHERE id=1`
       )
-        .bind(item.key, trainingId)
+        .bind(item.key)
         .run();
     return c.json({ success: true });
   }
@@ -1355,7 +1380,7 @@ function formatLongDate(value: string) {
 async function certificateData(db: D1Database, profileId: string) {
   return db
     .prepare(
-      `WITH score AS (SELECT MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id=?) SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date,(SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,score.final_score,score.passing_score,settings.signer_name,settings.signer_title,settings.signer_nip,settings.issue_place,settings.issue_date,settings.offset_x_mm,settings.offset_y_mm,settings.signature_key,settings.stamp_key,settings.front_template_key,settings.back_template_key FROM participant_profiles p JOIN trainings t ON t.id=p.training_id JOIN training_cohorts c ON c.id=p.cohort_id CROSS JOIN score LEFT JOIN certificate_settings settings ON settings.training_id=t.id WHERE p.id=?`
+      `WITH score AS (SELECT MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id=?) SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date,(SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,score.final_score,score.passing_score,settings.signer_name,settings.signer_title,settings.signer_nip,settings.issue_place,settings.issue_date,settings.offset_x_mm,settings.offset_y_mm,settings.signature_key,settings.stamp_key,settings.front_template_key,settings.back_template_key FROM participant_profiles p JOIN trainings t ON t.id=p.training_id JOIN training_cohorts c ON c.id=p.cohort_id CROSS JOIN score LEFT JOIN global_certificate_settings settings ON settings.id=1 WHERE p.id=?`
     )
     .bind(profileId, profileId)
     .first<Record<string, unknown>>();

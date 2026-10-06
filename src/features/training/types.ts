@@ -13,6 +13,7 @@ export type TrainingSummary = {
 };
 
 export type TrainingDetail = TrainingSummary & {
+  availableQuestionCount: number;
   pre: ScheduleSetting;
   post: ScheduleSetting;
 };

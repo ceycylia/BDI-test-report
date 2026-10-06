@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { Link, useParams } from "react-router-dom";
 import { PublicLayout } from "../../layouts/PublicLayout";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
+import { ModalPortal } from "../../components/ui/ModalPortal";
 
 type OptionKey = "A" | "B" | "C" | "D";
 type Question = {
@@ -166,6 +167,6 @@ export function AttemptPage() {
     <div className="test-actions"><button className="button button--secondary" disabled={current === 0} onClick={() => setCurrent((index) => Math.max(0, index - 1))}>Sebelumnya</button>{current < payload.questions.length - 1 ? <button className="button" onClick={() => setCurrent((index) => Math.min(payload.questions.length - 1, index + 1))}>Berikutnya</button> : <button className="button" onClick={requestSubmit}>Kirim jawaban</button>}</div>
     <nav className="question-nav" aria-label="Navigasi soal">{payload.questions.map((item, index) => <button className={`${index === current ? "is-current" : ""} ${answers[item.id] ? "is-answered" : ""}`} key={item.id} onClick={() => setCurrent(index)} aria-label={`Soal ${index + 1}`}>{index + 1}</button>)}</nav>
     {message && <p className="autosave-message" aria-live="polite">{message}</p>}
-    {confirming && <div className="modal-backdrop" role="presentation"><section className="submit-modal" role="dialog" aria-modal="true" aria-labelledby="submit-title"><h2 id="submit-title">Kirim jawaban?</h2><p>Apakah Anda yakin ingin mengirim jawaban? Jawaban tidak dapat diubah setelah dikirim.</p><div className="test-actions"><button className="button button--secondary" onClick={() => setConfirming(false)}>BATAL</button><button className="button" disabled={submitting} onClick={() => void sendSubmission("NORMAL")}>{submitting ? "Mengirim…" : "KIRIM JAWABAN"}</button></div></section></div>}
+    {confirming && <ModalPortal onClose={() => setConfirming(false)} blocked={submitting}><section className="submit-modal" role="dialog" aria-modal="true" aria-labelledby="submit-title"><button type="button" className="participant-modal__close submit-modal__close" aria-label="Tutup konfirmasi" disabled={submitting} onClick={() => setConfirming(false)}>×</button><h2 id="submit-title">Kirim jawaban?</h2><p>Apakah Anda yakin ingin mengirim jawaban? Jawaban tidak dapat diubah setelah dikirim.</p><div className="test-actions"><button className="button button--secondary" onClick={() => setConfirming(false)}>BATAL</button><button className="button" disabled={submitting} onClick={() => void sendSubmission("NORMAL")}>{submitting ? "Mengirim…" : "KIRIM JAWABAN"}</button></div></section></ModalPortal>}
   </section></PublicLayout>;
 }

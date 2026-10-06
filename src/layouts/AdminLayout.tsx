@@ -6,8 +6,8 @@ import { useAdminAuth } from "../features/admin-auth/AuthProvider";
 
 const primaryNavigation = [
   { label: "Dashboard", to: "/admin", end: true, icon: LayoutDashboard },
-  { label: "Bank Soal", to: "/admin/bank-soal", icon: BookOpenText },
   { label: "Pelatihan & Materi", to: "/admin/master-pelatihan", icon: GraduationCap },
+  { label: "Bank Soal", to: "/admin/bank-soal", icon: BookOpenText },
   { label: "Tes & Hasil", to: "/admin/pelatihan", icon: ClipboardCheck },
   { label: "Peserta", to: "/admin/peserta", icon: Users },
   { label: "Pengaturan", to: "/admin/akun", icon: UserCog },

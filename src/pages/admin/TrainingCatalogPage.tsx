@@ -19,7 +19,9 @@ import {
   AdminApiError,
 } from "../../features/admin-auth/admin-api";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
-import { createPortal } from "react-dom";
+import { SearchableSelect } from "../../components/ui/SearchableSelect";
+import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
+import { ModalPortal } from "../../components/ui/ModalPortal";
 
 type Training = {
   id: string;
@@ -52,6 +54,9 @@ type MaterialImportRow = {
   sortOrder: number;
   errors: string[];
 };
+type DeleteTarget =
+  | { kind: "training"; training: Training }
+  | { kind: "material"; material: Material };
 const MATERIALS_PER_PAGE = 10;
 const TRAININGS_PER_PAGE = 5;
 
@@ -75,8 +80,6 @@ export function TrainingCatalogPage() {
   const [editingMaterial, setEditingMaterial] = useState<Material | null>(null);
   const [materialImportOpen, setMaterialImportOpen] = useState(false);
   const [materialImportTrainingId, setMaterialImportTrainingId] = useState("");
-  const [materialImportTrainingQuery, setMaterialImportTrainingQuery] =
-    useState("");
   const [materialImportFile, setMaterialImportFile] = useState<File | null>(
     null
   );
@@ -86,6 +89,8 @@ export function TrainingCatalogPage() {
   const [importBusy, setImportBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
+  const [deleting, setDeleting] = useState(false);
   useAutoDismiss(message, setMessage);
 
   const load = async () => {
@@ -250,20 +255,19 @@ export function TrainingCatalogPage() {
   }
 
   async function deleteTraining(training: Training) {
-    if (
-      !window.confirm(
-        `Hapus pelatihan “${training.name}” dari master data? Data historis tetap disimpan.`
-      )
-    )
-      return;
+    setDeleting(true);
     try {
       await adminMutation(`/api/admin/participants/trainings/${training.id}`, {
         method: "DELETE",
         body: "{}",
       });
+      setDeleteTarget(null);
       complete("Pelatihan dihapus. Data historis tetap disimpan.");
     } catch (reason) {
+      setDeleteTarget(null);
       fail(reason);
+    } finally {
+      setDeleting(false);
     }
   }
 
@@ -292,22 +296,25 @@ export function TrainingCatalogPage() {
   }
 
   async function deleteMaterial(material: Material) {
-    if (!window.confirm(`Hapus materi “${material.name}”?`)) return;
+    setDeleting(true);
     try {
       await adminMutation(`/api/admin/participants/materials/${material.id}`, {
         method: "DELETE",
         body: "{}",
       });
+      setDeleteTarget(null);
       complete("Materi dihapus.");
     } catch (reason) {
+      setDeleteTarget(null);
       fail(reason);
+    } finally {
+      setDeleting(false);
     }
   }
 
   function closeMaterialImport() {
     setMaterialImportOpen(false);
     setMaterialImportTrainingId("");
-    setMaterialImportTrainingQuery("");
     setMaterialImportFile(null);
     setMaterialImportRows([]);
   }
@@ -421,20 +428,16 @@ export function TrainingCatalogPage() {
               <div className="training-filter-bar__controls">
                 <label className="training-status-filter">
                   <span>Nama Pelatihan</span>
-                  <input
-                    list="training-name-options"
+                  <SearchableSelect
+                    allowCustomValue
                     value={trainingNameQuery}
-                    onChange={(event) => {
-                      setTrainingNameQuery(event.target.value);
+                    onValueChange={(value) => {
+                      setTrainingNameQuery(value);
                       setTrainingPage(1);
                     }}
                     placeholder="Ketik atau pilih pelatihan"
+                    options={catalog.trainings.map((training) => ({ value: training.name, label: training.name }))}
                   />
-                  <datalist id="training-name-options">
-                    {catalog.trainings.map((training) => (
-                      <option value={training.name} key={training.id} />
-                    ))}
-                  </datalist>
                 </label>
                 <label className="training-status-filter">
                   <span>Status</span>
@@ -495,7 +498,7 @@ export function TrainingCatalogPage() {
                     <button
                       type="button"
                       className="text-button is-danger"
-                      onClick={() => void deleteTraining(training)}
+                      onClick={() => setDeleteTarget({ kind: "training", training })}
                     >
                       <Trash2 /> Hapus
                     </button>
@@ -590,20 +593,16 @@ export function TrainingCatalogPage() {
               <div className="material-filter-bar__controls">
                 <label className="material-filter">
                   <span>Pelatihan</span>
-                  <input
-                    list="material-training-options"
+                  <SearchableSelect
+                    allowCustomValue
                     value={materialTrainingQuery}
-                    onChange={(event) => {
-                      setMaterialTrainingQuery(event.target.value);
+                    onValueChange={(value) => {
+                      setMaterialTrainingQuery(value);
                       setMaterialPage(1);
                     }}
                     placeholder="Ketik atau pilih pelatihan"
+                    options={catalog.trainings.map((training) => ({ value: training.name, label: training.name }))}
                   />
-                  <datalist id="material-training-options">
-                    {catalog.trainings.map((training) => (
-                      <option value={training.name} key={training.id} />
-                    ))}
-                  </datalist>
                 </label>
               </div>
             </div>
@@ -641,7 +640,7 @@ export function TrainingCatalogPage() {
                           <button
                             type="button"
                             className="text-button is-danger"
-                            onClick={() => void deleteMaterial(material)}
+                            onClick={() => setDeleteTarget({ kind: "material", material })}
                           >
                             Hapus
                           </button>
@@ -701,16 +700,7 @@ export function TrainingCatalogPage() {
         )}
       </div>
       {trainingModalOpen &&
-        createPortal(
-          <div
-            className="modal-backdrop participant-modal-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget) {
-                setTrainingModalOpen(false);
-              }
-            }}
-          >
+          <ModalPortal onClose={() => setTrainingModalOpen(false)}>
             <section
               className="participant-modal"
               role="dialog"
@@ -762,18 +752,8 @@ export function TrainingCatalogPage() {
                 </footer>
               </form>
             </section>
-          </div>,
-          document.body
-        )}
-      {materialModalOpen && createPortal (
-        <div
-          className="modal-backdrop participant-modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget)
-              setMaterialModalOpen(false);
-          }}
-        >
+          </ModalPortal>}
+      {materialModalOpen && <ModalPortal onClose={() => setMaterialModalOpen(false)}>
           <section
             className="participant-modal"
             role="dialog"
@@ -801,16 +781,7 @@ export function TrainingCatalogPage() {
             >
               <label>
                 Pelatihan
-                <select name="trainingId" required autoFocus>
-                  <option value="">Pilih pelatihan</option>
-                  {catalog.trainings
-                    .filter((item) => item.is_active)
-                    .map((item) => (
-                      <option value={item.id} key={item.id}>
-                        {item.name}
-                      </option>
-                    ))}
-                </select>
+                <SearchableSelect name="trainingId" required autoFocus placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.filter((item) => item.is_active).map((item) => ({ value: item.id, label: item.name }))} />
               </label>
               <label>
                 Nama Materi
@@ -840,17 +811,8 @@ export function TrainingCatalogPage() {
               </footer>
             </form>
           </section>
-        </div>,
-        document.body,
-      )}
-      {editingTraining && createPortal (
-        <div
-          className="modal-backdrop participant-modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setEditingTraining(null);
-          }}
-        >
+        </ModalPortal>}
+      {editingTraining && <ModalPortal onClose={() => setEditingTraining(null)}>
           <section
             className="participant-modal"
             role="dialog"
@@ -907,17 +869,8 @@ export function TrainingCatalogPage() {
               </footer>
             </form>
           </section>
-        </div>,
-        document.body,
-      )}
-      {editingMaterial && createPortal (
-        <div
-          className="modal-backdrop participant-modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) setEditingMaterial(null);
-          }}
-        >
+        </ModalPortal>}
+      {editingMaterial && <ModalPortal onClose={() => setEditingMaterial(null)}>
           <section
             className="participant-modal"
             role="dialog"
@@ -1008,17 +961,8 @@ export function TrainingCatalogPage() {
               </footer>
             </form>
           </section>
-        </div>,
-        document.body,
-      )}
-      {materialImportOpen && createPortal (
-        <div
-          className="modal-backdrop participant-modal-backdrop"
-          role="presentation"
-          onMouseDown={(event) => {
-            if (event.target === event.currentTarget) closeMaterialImport();
-          }}
-        >
+        </ModalPortal>}
+      {materialImportOpen && <ModalPortal onClose={closeMaterialImport} blocked={importBusy}>
           <section
             className="participant-modal certificate-modal"
             role="dialog"
@@ -1046,28 +990,16 @@ export function TrainingCatalogPage() {
             <div className="participant-modal__form form-stack">
               <label>
                 Pelatihan
-                <input
-                  list="import-training-options"
-                  value={materialImportTrainingQuery}
-                  onChange={(event) => {
-                    const query = event.target.value;
-                    const selectedTraining = catalog.trainings.find(
-                      (item) => item.is_active && item.name === query
-                    );
-                    setMaterialImportTrainingQuery(query);
-                    setMaterialImportTrainingId(selectedTraining?.id ?? "");
+                <SearchableSelect
+                  value={materialImportTrainingId}
+                  onValueChange={(value) => {
+                    setMaterialImportTrainingId(value);
                     setMaterialImportRows([]);
                   }}
                   placeholder="Ketik atau pilih pelatihan"
                   required
+                  options={catalog.trainings.filter((item) => item.is_active).map((item) => ({ value: item.id, label: item.name }))}
                 />
-                <datalist id="import-training-options">
-                  {catalog.trainings
-                    .filter((item) => item.is_active)
-                    .map((item) => (
-                      <option value={item.name} key={item.id} />
-                    ))}
-                </datalist>
               </label>
               <div className="template-download-row">
                 <div>
@@ -1190,9 +1122,19 @@ export function TrainingCatalogPage() {
               )}
             </div>
           </section>
-        </div>,
-        document.body,
-      )}
+        </ModalPortal>}
+      <ConfirmDeleteModal
+        open={Boolean(deleteTarget)}
+        title={deleteTarget?.kind === "training" ? "Hapus Pelatihan?" : "Hapus Materi?"}
+        itemName={deleteTarget?.kind === "training" ? deleteTarget.training.name : deleteTarget?.kind === "material" ? deleteTarget.material.name : undefined}
+        description={deleteTarget?.kind === "training" ? "Pelatihan akan dihapus dari master data. Data historis yang pernah menggunakannya tetap disimpan." : "Materi akan dihapus dari daftar pelatihan. Materi yang sudah memiliki Bank Soal tetap mengikuti validasi yang berlaku."}
+        busy={deleting}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => {
+          if (deleteTarget?.kind === "training") void deleteTraining(deleteTarget.training);
+          else if (deleteTarget?.kind === "material") void deleteMaterial(deleteTarget.material);
+        }}
+      />
     </>
   );
 }
