@@ -1,5 +1,4 @@
 import { useEffect, useState, type FormEvent } from "react";
-import { createPortal } from "react-dom";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { X } from "lucide-react";
 import { adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
@@ -7,9 +6,11 @@ import type { PackageOverlap, TrainingBatch, TrainingDetail, TrainingPackage } f
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { formatDateTimeForApi, formatDateTimeForDisplay } from "../../features/dates/date-format";
 import { DateTimeInput } from "../../components/ui/DateTimeInput";
+import { ModalPortal } from "../../components/ui/ModalPortal";
 
 type ScheduleStatus = "SCHEDULED" | "OPEN_NOW" | "CLOSED";
 type ScheduleEditor = { stage: "PRE" | "POST"; status: ScheduleStatus; startAt: string; endAt: string };
+type PackageGenerator = { regenerate: boolean; questionCount: string };
 
 export function TrainingDetailPage() {
   const { sessionId = "" } = useParams();
@@ -25,7 +26,7 @@ export function TrainingDetailPage() {
   const [deleteImpact, setDeleteImpact] = useState<{ name: string; participantCount: number; attemptCount: number; answerCount: number } | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [scheduleEditor, setScheduleEditor] = useState<ScheduleEditor | null>(null);
-  const scheduleModalOpen = Boolean(scheduleEditor);
+  const [packageGenerator, setPackageGenerator] = useState<PackageGenerator | null>(null);
 
   type DetailPayload = { session: TrainingDetail; batches: TrainingBatch[]; packages: TrainingPackage[]; overlaps: PackageOverlap[] };
 
@@ -46,38 +47,19 @@ export function TrainingDetailPage() {
       .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Pelatihan tidak dapat dimuat."));
   }, [sessionId]);
 
-  useEffect(() => {
-    if (!scheduleModalOpen) return;
-    const scrollY = window.scrollY;
-    const body = document.body;
-    const previous = {
-      overflow: body.style.overflow, position: body.style.position, top: body.style.top,
-      width: body.style.width, paddingRight: body.style.paddingRight,
-    };
-    const scrollbarWidth = window.innerWidth - document.documentElement.clientWidth;
-    body.style.overflow = "hidden";
-    body.style.position = "fixed";
-    body.style.top = `-${scrollY}px`;
-    body.style.width = "100%";
-    if (scrollbarWidth > 0) body.style.paddingRight = `${scrollbarWidth}px`;
-    return () => {
-      body.style.overflow = previous.overflow;
-      body.style.position = previous.position;
-      body.style.top = previous.top;
-      body.style.width = previous.width;
-      body.style.paddingRight = previous.paddingRight;
-      window.scrollTo(0, scrollY);
-    };
-  }, [scheduleModalOpen]);
-
-  async function generatePackages() {
+  async function generatePackages(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (!packageGenerator || !session) return;
+    const questionCount = Number(packageGenerator.questionCount);
+    if (!Number.isInteger(questionCount) || questionCount < 1 || questionCount > session.availableQuestionCount) return;
     setBusy(true); setError(null); setMessage(null);
     try {
       const payload = await adminMutation<{ packages: TrainingPackage[]; overlaps: PackageOverlap[] }>(
-        `/api/admin/training/${sessionId}/generate-packages`, { method: "POST", body: "{}" },
+        `/api/admin/training/${sessionId}/generate-packages`, { method: "POST", body: JSON.stringify({ questionCount }) },
       );
       setPackages(payload.packages); setOverlaps(payload.overlaps);
       await reload();
+      setPackageGenerator(null);
       setMessage("Paket dan lima layout ujian untuk setiap angkatan berhasil dibuat.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Paket gagal dibuat."); }
     finally { setBusy(false); }
@@ -156,6 +138,13 @@ export function TrainingDetailPage() {
 
   if (error && !session) return <p className="form-message is-error">{error}</p>;
   if (!session) return <p className="muted">Memuat pelatihan…</p>;
+  const selectedQuestionCount = Number(packageGenerator?.questionCount ?? "");
+  const packageCountError = packageGenerator && (!Number.isInteger(selectedQuestionCount) || selectedQuestionCount < 1)
+    ? "Jumlah soal minimal 1."
+    : packageGenerator && selectedQuestionCount > session.availableQuestionCount
+      ? `Jumlah soal tidak boleh melebihi ${session.availableQuestionCount} soal aktif yang tersedia.`
+      : null;
+  const hasGeneratedPackages = packages.some((item) => item.questionIds.length);
 
   return <>
     <header className="admin-page-header"><div><Link className="back-link" to="/admin/pelatihan">← Pelatihan</Link><h1>{session.name}</h1></div><span className={`status-badge status-${session.status.toLowerCase()}`}>{session.status}</span></header>
@@ -168,10 +157,11 @@ export function TrainingDetailPage() {
     {error && <p className="form-message is-error">{error}</p>}
     {message && <p className="form-message is-success">{message}</p>}
     <section className="panel training-batches"><div className="package-heading"><div><p className="section-label">Angkatan</p><h2>Paket soal</h2></div>
-      {session.status === "DRAFT" && <div className="button-row"><button className="button button--secondary" disabled={busy} onClick={() => void generatePackages()}>{packages.some((item) => item.questionIds.length) ? "Regenerate paket" : "Generate paket"}</button><button className="button" disabled={busy || !packages.length || packages.some((item) => item.questionIds.length !== session.questionCount || item.layoutCount !== 5)} onClick={() => void activate()}>Aktifkan pelatihan</button></div>}</div>
+      {session.status === "DRAFT" && <div className="button-row"><button className="button button--secondary" disabled={busy} onClick={() => setPackageGenerator({ regenerate: hasGeneratedPackages, questionCount: String(session.questionCount) })}>{hasGeneratedPackages ? "Regenerate paket" : "Generate paket"}</button><button className="button" disabled={busy || !packages.length || packages.some((item) => item.questionIds.length !== session.questionCount || item.layoutCount !== 5)} onClick={() => void activate()}>Aktifkan pelatihan</button></div>}</div>
       {batches.map((batch) => { const item = packages.find((entry) => entry.batchId === batch.id); return <article key={batch.id}><div><strong>{batch.name}</strong><span>{item?.questionIds.length ? `${item.questionIds.length} soal · ${item.layoutCount}/5 layout` : "Paket belum dibuat"}</span></div>{item?.questionIds.length ? <ol className="question-id-list">{item.questionIds.map((id) => <li key={id}><code>{id}</code></li>)}</ol> : null}</article>; })}
       {overlaps.length > 0 && packages.every((item) => item.questionIds.length > 0) && <div className="overlap-list"><h3>Overlap antarangkatan</h3>{overlaps.map((item) => { const left = packages.find((entry) => entry.batchId === item.leftBatchId); const right = packages.find((entry) => entry.batchId === item.rightBatchId); return <p key={`${item.leftBatchId}-${item.rightBatchId}`}><span>{left?.batchName} ↔ {right?.batchName}</span><strong>{item.count} soal</strong></p>; })}</div>}
     </section>
+    {packageGenerator && <ModalPortal onClose={() => setPackageGenerator(null)} blocked={busy}><section className="participant-modal package-generator-modal" role="dialog" aria-modal="true" aria-labelledby="package-generator-title"><header className="participant-modal__header"><div><p className="section-label">Paket Soal</p><h2 id="package-generator-title">{packageGenerator.regenerate ? "Regenerate Paket Soal" : "Generate Paket Soal"}</h2><p>Tentukan jumlah soal untuk setiap paket angkatan.</p></div><button type="button" className="participant-modal__close" aria-label="Tutup generate paket soal" disabled={busy} onClick={() => setPackageGenerator(null)}><X /></button></header><form className="participant-modal__form package-generator-form" onSubmit={(event) => void generatePackages(event)}><label>Jumlah soal per paket<input type="number" min="1" max={session.availableQuestionCount} step="1" inputMode="numeric" required autoFocus value={packageGenerator.questionCount} onChange={(event) => setPackageGenerator((current) => current ? { ...current, questionCount: event.target.value } : current)} /></label><p className="package-generator-availability">Tersedia <strong>{session.availableQuestionCount}</strong> soal aktif</p>{packageGenerator.regenerate && <p className="package-generator-warning">Paket existing untuk seluruh angkatan akan dibuat ulang dengan jumlah soal ini.</p>}{packageCountError && <p className="form-message is-error" role="alert">{packageCountError}</p>}<footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={busy} onClick={() => setPackageGenerator(null)}>Batal</button><button className="button" disabled={busy || Boolean(packageCountError)}>{busy ? "Membuat paket…" : "Generate Paket"}</button></footer></form></section></ModalPortal>}
     <section className="schedule-control-grid">
       {(["PRE", "POST"] as const).map((stage) => {
         const schedule = stage === "PRE" ? session.pre : session.post;
@@ -179,7 +169,7 @@ export function TrainingDetailPage() {
         return <article className="panel" key={stage}><span>{stage === "PRE" ? "Pre-Test" : "Post-Test"}</span><strong>{statusLabel}</strong>{schedule.mode === "SCHEDULED" && <small>{formatDateTimeForDisplay(schedule.startAt)} – {formatDateTimeForDisplay(schedule.endAt)}</small>}<button className="button button--secondary" disabled={busy} onClick={() => editSchedule(stage)}>Edit Jadwal</button></article>;
       })}
     </section>
-    {scheduleEditor && createPortal(<div className="modal-backdrop participant-modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setScheduleEditor(null); }}><section className="participant-modal schedule-editor-modal" role="dialog" aria-modal="true" aria-labelledby="schedule-editor-title"><header className="participant-modal__header"><div><p className="section-label">Pengaturan Link Test</p><h2 id="schedule-editor-title">Edit Jadwal {scheduleEditor.stage === "PRE" ? "Pre-Test" : "Post-Test"}</h2></div><button type="button" className="participant-modal__close" aria-label="Tutup edit jadwal" disabled={busy} onClick={() => setScheduleEditor(null)}><X /></button></header><form className="participant-modal__form" onSubmit={(event) => void saveSchedule(event)}><label>Status<select value={scheduleEditor.status} onChange={(event) => setScheduleEditor((current) => current ? { ...current, status: event.target.value as ScheduleStatus } : current)}><option value="SCHEDULED">Terjadwal</option><option value="OPEN_NOW">Buka Sekarang</option><option value="CLOSED">Tutup</option></select></label>{scheduleEditor.status === "SCHEDULED" && <div className="schedule-editor-fields"><label>Tanggal/Jam Buka<DateTimeInput required value={scheduleEditor.startAt} onValueChange={(value) => setScheduleEditor((current) => current ? { ...current, startAt: value } : current)} aria-label="Tanggal dan jam buka" /></label><label>Tanggal/Jam Tutup<DateTimeInput required value={scheduleEditor.endAt} onValueChange={(value) => setScheduleEditor((current) => current ? { ...current, endAt: value } : current)} aria-label="Tanggal dan jam tutup" /></label></div>}<p className="muted">Perubahan ini hanya mengatur link untuk memulai. Attempt peserta yang sudah berjalan tetap berlangsung sampai deadline-nya.</p><footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={busy} onClick={() => setScheduleEditor(null)}>Batal</button><button className="button" disabled={busy}>{busy ? "Menyimpan…" : "Simpan Jadwal"}</button></footer></form></section></div>, document.body)}
+    {scheduleEditor && <ModalPortal onClose={() => setScheduleEditor(null)} blocked={busy}><section className="participant-modal schedule-editor-modal" role="dialog" aria-modal="true" aria-labelledby="schedule-editor-title"><header className="participant-modal__header"><div><p className="section-label">Pengaturan Link Test</p><h2 id="schedule-editor-title">Edit Jadwal {scheduleEditor.stage === "PRE" ? "Pre-Test" : "Post-Test"}</h2></div><button type="button" className="participant-modal__close" aria-label="Tutup edit jadwal" disabled={busy} onClick={() => setScheduleEditor(null)}><X /></button></header><form className="participant-modal__form" onSubmit={(event) => void saveSchedule(event)}><label>Status<select value={scheduleEditor.status} onChange={(event) => setScheduleEditor((current) => current ? { ...current, status: event.target.value as ScheduleStatus } : current)}><option value="SCHEDULED">Terjadwal</option><option value="OPEN_NOW">Buka Sekarang</option><option value="CLOSED">Tutup</option></select></label>{scheduleEditor.status === "SCHEDULED" && <div className="schedule-editor-fields"><label>Tanggal/Jam Buka<DateTimeInput required value={scheduleEditor.startAt} onValueChange={(value) => setScheduleEditor((current) => current ? { ...current, startAt: value } : current)} aria-label="Tanggal dan jam buka" /></label><label>Tanggal/Jam Tutup<DateTimeInput required value={scheduleEditor.endAt} onValueChange={(value) => setScheduleEditor((current) => current ? { ...current, endAt: value } : current)} aria-label="Tanggal dan jam tutup" /></label></div>}<p className="muted">Perubahan ini hanya mengatur link untuk memulai. Attempt peserta yang sudah berjalan tetap berlangsung sampai deadline-nya.</p><footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={busy} onClick={() => setScheduleEditor(null)}>Batal</button><button className="button" disabled={busy}>{busy ? "Menyimpan…" : "Simpan Jadwal"}</button></footer></form></section></ModalPortal>}
     <section className="panel public-link-panel"><div><span>Link peserta</span><code>{window.location.origin}/t/{session.slug}</code></div></section>
     <section className="panel danger-zone"><div><p className="section-label">Penghapusan data</p><h2>Hapus pelatihan dan seluruh hasil</h2><p>Bank Soal, gambar R2, dan statistik penggunaan soal tetap dipertahankan.</p></div>{!deleteImpact ? <button className="button danger-button" onClick={() => void loadDeleteImpact()}>Tinjau penghapusan</button> : <div className="delete-confirmation"><p><strong>{deleteImpact.participantCount}</strong> peserta, <strong>{deleteImpact.attemptCount}</strong> attempt, dan <strong>{deleteImpact.answerCount}</strong> detail jawaban akan dihapus dan tidak dapat dikembalikan.</p><label>Ketik <strong>{deleteImpact.name}</strong><input value={deleteConfirmation} onChange={(event) => setDeleteConfirmation(event.target.value)} /></label><div className="button-row"><button className="button button--secondary" onClick={() => { setDeleteImpact(null); setDeleteConfirmation(""); }}>Batal</button><button className="button danger-button" disabled={busy || deleteConfirmation !== deleteImpact.name} onClick={() => void removeTraining()}>Hapus seluruh data</button></div></div>}</section>
   </>;

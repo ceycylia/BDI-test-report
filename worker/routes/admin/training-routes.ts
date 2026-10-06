@@ -23,16 +23,17 @@ import {
 import { NORMAL_TEST_MINUTES } from "../../domain/attempts/timing";
 import type { AppEnvironment } from "../../types";
 
-const scheduleSchema = z
-  .object({
+const createStageScheduleSchema = z.discriminatedUnion("status", [
+  z.object({
+    status: z.literal("SCHEDULED"),
     startAt: z.string().datetime(),
     endAt: z.string().datetime(),
-  })
-  .superRefine((value, context) => {
-    if (value.endAt <= value.startAt) {
-      context.addIssue({ code: "custom", message: "Jadwal selesai harus setelah jadwal mulai." });
-    }
-  });
+  }).refine((value) => Date.parse(value.endAt) > Date.parse(value.startAt), {
+    message: "Waktu tutup harus setelah waktu buka.",
+    path: ["endAt"],
+  }),
+  z.object({ status: z.literal("OPEN_NOW") }),
+]);
 
 const createTrainingSchema = z
   .object({
@@ -40,8 +41,8 @@ const createTrainingSchema = z
     materialId: z.string().min(1),
     cohortId: z.string().min(1),
     passingScore: z.number().min(0).max(100),
-    pre: scheduleSchema,
-    post: scheduleSchema,
+    pre: createStageScheduleSchema,
+    post: createStageScheduleSchema,
   });
 
 const stageScheduleSchema = z.discriminatedUnion("status", [
@@ -113,14 +114,14 @@ trainingRoutes.post("/", requireSameOrigin, requireCsrf, async (context) => {
     passingScore: input.passingScore,
     trainingStartDate: selection.start_date,
     trainingEndDate: selection.end_date,
-    preMode: "SCHEDULED",
-    preStartAt: input.pre.startAt,
-    preEndAt: input.pre.endAt,
-    preManualOpen: false,
-    postMode: "SCHEDULED",
-    postStartAt: input.post.startAt,
-    postEndAt: input.post.endAt,
-    postManualOpen: false,
+    preMode: input.pre.status === "SCHEDULED" ? "SCHEDULED" : "MANUAL",
+    preStartAt: input.pre.status === "SCHEDULED" ? input.pre.startAt : null,
+    preEndAt: input.pre.status === "SCHEDULED" ? input.pre.endAt : null,
+    preManualOpen: input.pre.status === "OPEN_NOW",
+    postMode: input.post.status === "SCHEDULED" ? "SCHEDULED" : "MANUAL",
+    postStartAt: input.post.status === "SCHEDULED" ? input.post.startAt : null,
+    postEndAt: input.post.status === "SCHEDULED" ? input.post.endAt : null,
+    postManualOpen: input.post.status === "OPEN_NOW",
     batches: [{
       id: crypto.randomUUID(),
       number: 1,
@@ -163,6 +164,11 @@ function packageResponse(
 }
 
 trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireCsrf, async (context) => {
+  const parsed = z.object({ questionCount: z.number().int().min(1) })
+    .safeParse(await context.req.json().catch(() => null));
+  if (!parsed.success) {
+    throw new HttpError(422, "QUESTION_COUNT_INVALID", "Jumlah soal per paket minimal 1.");
+  }
   const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
   if (session.status !== "DRAFT") {
@@ -174,8 +180,8 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
     listActiveQuestionUsageForSession(context.env.DB, session.id),
     listExistingPackageAssignments(context.env.DB, session.id),
   ]);
-  if (questionRows.length < session.question_count) {
-    throw new HttpError(422, "QUESTION_COUNT_EXCEEDS_BANK", "Soal aktif tidak mencukupi untuk membuat paket.");
+  if (questionRows.length < parsed.data.questionCount) {
+    throw new HttpError(422, "QUESTION_COUNT_EXCEEDS_BANK", `Jumlah soal per paket maksimal ${questionRows.length} sesuai soal aktif yang tersedia.`);
   }
 
   const oldCountMap = countQuestionIds(previousAssignments);
@@ -185,7 +191,7 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
       timesAssigned: Math.max(0, question.times_assigned - (oldCountMap.get(question.id) ?? 0)),
     })),
     batches.map((batch) => batch.id),
-    session.question_count,
+    parsed.data.questionCount,
   );
   const assignments = packages.flatMap((item) =>
     item.questionIds.map((questionId) => ({ batchId: item.batchId, questionId })),
@@ -205,6 +211,7 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
   );
 
   await saveGeneratedPackages(context.env.DB, session.id, {
+    questionCount: parsed.data.questionCount,
     oldCounts: [...oldCountMap].map(([questionId, count]) => ({ questionId, count })),
     assignments,
     newCounts: [...newCountMap].map(([questionId, count]) => ({ questionId, count })),
@@ -288,8 +295,12 @@ trainingRoutes.delete("/:sessionId", requireSameOrigin, requireCsrf, async (cont
 trainingRoutes.get("/:sessionId", async (context) => {
   const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
-  const batches = await listBatches(context.env.DB, session.id);
-  const packagePreview = packageResponse(await getPackagePreview(context.env.DB, session.id));
+  const [batches, packageRows, availableQuestionCount] = await Promise.all([
+    listBatches(context.env.DB, session.id),
+    getPackagePreview(context.env.DB, session.id),
+    activeQuestionCount(context.env.DB, session.bank_id),
+  ]);
+  const packagePreview = packageResponse(packageRows);
   return context.json({
     session: {
       id: session.id,
@@ -298,6 +309,7 @@ trainingRoutes.get("/:sessionId", async (context) => {
       bankId: session.bank_id,
       bankName: session.bank_name,
       questionCount: session.question_count,
+      availableQuestionCount,
       durationMinutes: session.duration_minutes,
       passingScore: session.passing_score,
       trainingStartDate: session.training_start_date,

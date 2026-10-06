@@ -84,7 +84,7 @@ export async function listAdmins(database: D1Database): Promise<AdminRecord[]> {
       `SELECT id, name, username, password_hash, password_salt,
               password_iterations, is_active, role, created_at
          FROM admins
-        ORDER BY name COLLATE NOCASE ASC`,
+        ORDER BY created_at DESC, rowid DESC`,
     )
     .all<AdminRecord>();
 

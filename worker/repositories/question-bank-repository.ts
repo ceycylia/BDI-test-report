@@ -49,7 +49,7 @@ export async function listQuestionBanks(
          LEFT JOIN training_materials materials ON materials.id = banks.material_id
          LEFT JOIN trainings ON trainings.id = materials.training_id
         GROUP BY banks.id
-        ORDER BY banks.updated_at DESC, banks.name COLLATE NOCASE ASC`
+        ORDER BY banks.created_at DESC, banks.rowid DESC`
     )
     .all<QuestionBankSummaryRecord>();
 
@@ -87,6 +87,36 @@ export async function createQuestionBank(
     )
     .bind(input.id, input.name, input.materialId)
     .run();
+}
+
+export async function bulkCreateQuestionBanks(
+  database: D1Database,
+  banks: Array<{
+    id: string;
+    name: string;
+    materialId: string;
+  }>
+): Promise<number> {
+  if (banks.length === 0) return 0;
+
+  const result = await database
+    .prepare(
+      `INSERT INTO question_banks (id, name, material_id)
+       SELECT
+         json_extract(value, '$.id'),
+         json_extract(value, '$.name'),
+         json_extract(value, '$.materialId')
+       FROM json_each(?) AS requested
+       WHERE NOT EXISTS (
+         SELECT 1
+         FROM question_banks AS existing
+         WHERE existing.material_id = json_extract(requested.value, '$.materialId')
+       )`
+    )
+    .bind(JSON.stringify(banks))
+    .run();
+
+  return result.meta.changes ?? 0;
 }
 
 export async function updateQuestionBank(
@@ -147,7 +177,7 @@ export async function listQuestions(
               is_active, times_assigned, created_at, updated_at
          FROM questions
         WHERE bank_id = ?
-        ORDER BY created_at ASC, id ASC`
+        ORDER BY created_at DESC, rowid DESC`
     )
     .bind(bankId)
     .all<QuestionRecord>();

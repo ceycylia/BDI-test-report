@@ -1,3 +1,4 @@
+import { ArrowUp } from "lucide-react";
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
@@ -12,7 +13,10 @@ import type {
   QuestionInput,
 } from "../../features/question-banks/types";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
-import { createPortal } from "react-dom";
+import { QuestionImportModal } from "./QuestionImportPage";
+import { SearchInput } from "../../components/ui/SearchInput";
+import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
+import { ModalPortal } from "../../components/ui/ModalPortal";
 
 const emptyQuestion: QuestionInput = {
   questionText: "",
@@ -43,7 +47,10 @@ export function QuestionBankDetailPage() {
   useAutoDismiss(message, setMessage);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
+  const [questionToDelete, setQuestionToDelete] = useState<Question | null>(null);
   const [questionModalOpen, setQuestionModalOpen] = useState(false);
+  const [importModalOpen, setImportModalOpen] = useState(false);
+  const [showScrollTop, setShowScrollTop] = useState(false);
 
   const loadDetail = async () => {
     const payload = await adminQuery<{
@@ -65,6 +72,13 @@ export function QuestionBankDetailPage() {
       )
       .finally(() => setLoading(false));
   }, [bankId]);
+
+  useEffect(() => {
+    const updateVisibility = () => setShowScrollTop(window.scrollY >= 480);
+    updateVisibility();
+    window.addEventListener("scroll", updateVisibility, { passive: true });
+    return () => window.removeEventListener("scroll", updateVisibility);
+  }, []);
 
   const filteredQuestions = useMemo(() => {
     const needle = search.trim().toLowerCase();
@@ -136,6 +150,7 @@ export function QuestionBankDetailPage() {
         replace: true,
       });
     } catch (reason) {
+      setDeleteConfirmOpen(false);
       setError(
         reason instanceof Error
           ? reason.message
@@ -248,12 +263,7 @@ export function QuestionBankDetailPage() {
   };
 
   const removeQuestion = async (question: Question) => {
-    if (
-      !window.confirm(
-        "Hapus soal ini? Tindakan ini hanya dapat dilakukan jika soal belum digunakan."
-      )
-    )
-      return;
+    setDeleting(true);
     try {
       await adminMutation(
         `/api/admin/banks/${bankId}/questions/${question.id}`,
@@ -261,11 +271,15 @@ export function QuestionBankDetailPage() {
           method: "DELETE",
         }
       );
+      setQuestionToDelete(null);
       await loadDetail();
     } catch (reason) {
+      setQuestionToDelete(null);
       setError(
         reason instanceof Error ? reason.message : "Soal tidak dapat dihapus."
       );
+    } finally {
+      setDeleting(false);
     }
   };
 
@@ -287,7 +301,12 @@ export function QuestionBankDetailPage() {
 
           <div className="bank-detail-header__title-row">
             <div>
-              <h1>{bank.name}</h1>
+              <h1>{bank.materialName ?? bank.name}</h1>
+              {bank.trainingName && (
+                <p className="bank-detail-header__subtitle">
+                  Pelatihan: {bank.trainingName}
+                </p>
+              )}
             </div>
           </div>
         </div>
@@ -304,12 +323,13 @@ export function QuestionBankDetailPage() {
             + Tambah Soal
           </button>
 
-          <Link
+          <button
+            type="button"
             className="button button--secondary"
-            to={`/admin/bank-soal/${bankId}/import`}
+            onClick={() => setImportModalOpen(true)}
           >
             Upload Word
-          </Link>
+          </button>
 
           <span
             className={
@@ -341,9 +361,9 @@ export function QuestionBankDetailPage() {
 
             <label className="search-field">
               <span>Cari soal</span>
-              <input
+              <SearchInput
                 value={search}
-                onChange={(event) => setSearch(event.target.value)}
+                onValueChange={setSearch}
                 placeholder="Ketik pertanyaan atau jawaban"
               />
             </label>
@@ -446,7 +466,7 @@ export function QuestionBankDetailPage() {
                       <button
                         className="text-button is-danger"
                         type="button"
-                        onClick={() => void removeQuestion(question)}
+                        onClick={() => setQuestionToDelete(question)}
                       >
                         Hapus
                       </button>
@@ -503,83 +523,41 @@ export function QuestionBankDetailPage() {
           </section>
         </aside>
       </div>
-      {deleteConfirmOpen &&
-        createPortal(
-          <div
-            className="modal-backdrop participant-modal-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget && !deleting) {
-                setDeleteConfirmOpen(false);
-              }
-            }}
-          >
-            <section
-              className="participant-modal delete-confirm-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="delete-bank-title"
-            >
-              <header className="participant-modal__header">
-                <div>
-                  <p className="section-label">Konfirmasi</p>
+      {showScrollTop && <button
+        type="button"
+        className="bank-scroll-top"
+        aria-label="Kembali ke atas"
+        title="Kembali ke atas"
+        onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+      ><ArrowUp aria-hidden="true" /></button>}
+      <ConfirmDeleteModal
+        open={deleteConfirmOpen}
+        title="Hapus Bank Soal?"
+        itemName={bank.materialName ?? bank.name}
+        description="Bank Soal dan soal yang belum pernah digunakan akan dihapus. Tindakan ini tidak dapat dibatalkan."
+        busy={deleting}
+        onCancel={() => setDeleteConfirmOpen(false)}
+        onConfirm={() => void handleBankDelete()}
+      />
 
-                  <h2 id="delete-bank-title">Hapus Bank Soal?</h2>
-
-                  <p>
-                    Bank Soal <strong>{bank?.name}</strong> akan dihapus.
-                  </p>
-                </div>
-
-                <button
-                  type="button"
-                  className="participant-modal__close"
-                  aria-label="Tutup"
-                  disabled={deleting}
-                  onClick={() => setDeleteConfirmOpen(false)}
-                >
-                  ×
-                </button>
-              </header>
-
-              <div className="participant-modal__body">
-                <p>Tindakan ini tidak dapat dibatalkan.</p>
-              </div>
-
-              <footer className="participant-modal__actions">
-                <button
-                  type="button"
-                  className="button button--secondary"
-                  disabled={deleting}
-                  onClick={() => setDeleteConfirmOpen(false)}
-                >
-                  Batal
-                </button>
-
-                <button
-                  type="button"
-                  className="danger-button"
-                  disabled={deleting}
-                  onClick={() => void handleBankDelete()}
-                >
-                  {deleting ? "Menghapus…" : "Ya, Hapus Bank Soal"}
-                </button>
-              </footer>
-            </section>
-          </div>,
-          document.body
-        )}
+      <ConfirmDeleteModal
+        open={Boolean(questionToDelete)}
+        title="Hapus Soal?"
+        itemName={questionToDelete?.questionText}
+        description="Soal hanya dapat dihapus jika belum pernah digunakan. Tindakan ini tidak dapat dibatalkan."
+        busy={deleting}
+        onCancel={() => setQuestionToDelete(null)}
+        onConfirm={() => {
+          if (questionToDelete) void removeQuestion(questionToDelete);
+        }}
+      />
 
       {questionModalOpen &&
-        createPortal(
-          <div
-            className="modal-backdrop participant-modal-backdrop"
-            role="presentation"
-            onMouseDown={(event) => {
-              if (event.target === event.currentTarget && !submitting) {
-                setQuestionModalOpen(false);
-                resetQuestionEditor();
-              }
+          <ModalPortal
+            blocked={submitting}
+            onClose={() => {
+              setQuestionModalOpen(false);
+              resetQuestionEditor();
             }}
           >
             <section
@@ -739,9 +717,16 @@ export function QuestionBankDetailPage() {
                 </footer>
               </form>
             </section>
-          </div>,
-          document.body
-        )}
+          </ModalPortal>}
+      {importModalOpen && <QuestionImportModal
+        bankId={bankId}
+        onClose={() => setImportModalOpen(false)}
+        onImported={async (count) => {
+          await loadDetail();
+          setMessage(`${count} soal berhasil diimport.`);
+          setImportModalOpen(false);
+        }}
+      />}
     </>
   );
 }

@@ -200,6 +200,7 @@ export async function saveGeneratedPackages(
   database: D1Database,
   sessionId: string,
   input: {
+    questionCount: number;
     oldCounts: Array<{ questionId: string; count: number }>;
     assignments: Array<{ batchId: string; questionId: string }>;
     newCounts: Array<{ questionId: string; count: number }>;
@@ -213,6 +214,13 @@ export async function saveGeneratedPackages(
   },
 ): Promise<void> {
   await database.batch([
+    database
+      .prepare(
+        `UPDATE training_sessions
+            SET question_count = ?, updated_at = CURRENT_TIMESTAMP
+          WHERE id = ? AND status = 'DRAFT'`,
+      )
+      .bind(input.questionCount, sessionId),
     database
       .prepare(
         `UPDATE questions

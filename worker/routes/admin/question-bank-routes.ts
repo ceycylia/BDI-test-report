@@ -9,6 +9,7 @@ import {
 import {
   createQuestion,
   bulkCreateQuestions,
+  bulkCreateQuestionBanks,
   createQuestionBank,
   deleteQuestion,
   deleteQuestionBank,
@@ -33,6 +34,14 @@ const ALLOWED_IMAGE_TYPES = new Map([
 
 const bankSchema = z.object({
   materialId: z.string().min(1, "Materi wajib dipilih."),
+});
+
+const bulkBankSchema = z.object({
+  trainingId: z.string().min(1, "Pelatihan wajib dipilih."),
+  materialIds: z
+    .array(z.string().min(1))
+    .min(1, "Pilih minimal satu materi.")
+    .max(500),
 });
 
 const updateBankSchema = z.object({
@@ -155,6 +164,68 @@ questionBankRoutes.post(
     }
 
     return context.json({ bank: { id, ...parsed.data, isActive: true } }, 201);
+  }
+);
+
+questionBankRoutes.post(
+  "/bulk",
+  requireSameOrigin,
+  requireCsrf,
+  async (context) => {
+    const parsed = bulkBankSchema.safeParse(
+      await context.req.json().catch(() => null)
+    );
+    if (!parsed.success) {
+      throw new HttpError(
+        422,
+        "BANK_BULK_INVALID",
+        parsed.error.issues[0]?.message ?? "Data Bank Soal tidak valid."
+      );
+    }
+
+    const materialIds = [...new Set(parsed.data.materialIds)];
+    const materialResult = await context.env.DB.prepare(
+      `SELECT materials.id, trainings.name AS training_name,
+              EXISTS(
+                SELECT 1 FROM question_banks
+                WHERE question_banks.material_id = materials.id
+              ) AS has_bank
+         FROM training_materials AS materials
+         JOIN trainings ON trainings.id = materials.training_id
+         JOIN json_each(?) AS selected ON selected.value = materials.id
+        WHERE materials.training_id = ?
+          AND trainings.is_active = 1`
+    )
+      .bind(JSON.stringify(materialIds), parsed.data.trainingId)
+      .all<{ id: string; training_name: string; has_bank: number }>();
+
+    if (materialResult.results.length !== materialIds.length) {
+      throw new HttpError(
+        422,
+        "MATERIAL_UNAVAILABLE",
+        "Sebagian materi tidak ditemukan, tidak sesuai pelatihan, atau pelatihannya tidak aktif."
+      );
+    }
+
+    const newBanks = materialResult.results
+      .filter((material) => material.has_bank === 0)
+      .map((material) => ({
+        id: crypto.randomUUID(),
+        name: material.training_name,
+        materialId: material.id,
+      }));
+    const createdCount = await bulkCreateQuestionBanks(
+      context.env.DB,
+      newBanks
+    );
+
+    return context.json(
+      {
+        createdCount,
+        skippedCount: materialIds.length - createdCount,
+      },
+      createdCount > 0 ? 201 : 200
+    );
   }
 );
 
