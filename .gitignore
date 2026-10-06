@@ -8,3 +8,8 @@ dist/
 .DS_Store
 Thumbs.db
 
+
+# Local D1 database exports
+/bdi-before-survey.sql
+/bdi-local.sql
+/bdi-team-local.sql
