@@ -19,6 +19,8 @@ import { TrainingEntryFoundationPage } from "../pages/participant/TrainingEntryF
 import { AttemptPage } from "../pages/participant/AttemptPage";
 import { ParticipantsPage } from "../pages/admin/ParticipantsPage";
 import { TrainingCatalogPage } from "../pages/admin/TrainingCatalogPage";
+import { SurveyTemplateListPage } from "../pages/admin/SurveyTemplateListPage";
+import { SurveyTemplateDetailPage } from "../pages/admin/SurveyTemplateDetailPage";
 
 export function AppRouter() {
   return (
@@ -30,18 +32,37 @@ export function AppRouter() {
       <Route element={<ProtectedAdminRoute />}>
         <Route path="/admin" element={<AdminLayout />}>
           <Route index element={<AdminFoundationPage />} />
+
           <Route path="admins" element={<AdminManagementPage />} />
           <Route path="akun" element={<AdminAccountPage />} />
+
           <Route path="bank-soal" element={<QuestionBankListPage />} />
-          <Route path="bank-soal/:bankId" element={<QuestionBankDetailPage />} />
-          <Route path="bank-soal/:bankId/import" element={<QuestionImportPage />} />
+          <Route
+            path="bank-soal/:bankId"
+            element={<QuestionBankDetailPage />}
+          />
+          <Route
+            path="bank-soal/:bankId/import"
+            element={<QuestionImportPage />}
+          />
+
+          <Route path="evaluasi" element={<SurveyTemplateListPage />} />
+          <Route
+            path="evaluasi/:templateId"
+            element={<SurveyTemplateDetailPage />}
+          />
+
           <Route path="pelatihan" element={<TrainingListPage />} />
           <Route path="master-pelatihan" element={<TrainingCatalogPage />} />
           <Route path="pelatihan/baru" element={<TrainingCreatePage />} />
           <Route path="pelatihan/:sessionId" element={<TrainingDetailPage />} />
+
           <Route path="hasil" element={<ResultsPage />} />
           <Route path="peserta" element={<ParticipantsPage />} />
-          <Route path="hasil/:participantId" element={<ParticipantResultDetailPage />} />
+          <Route
+            path="hasil/:participantId"
+            element={<ParticipantResultDetailPage />}
+          />
         </Route>
       </Route>
       <Route path="*" element={<NotFoundPage />} />

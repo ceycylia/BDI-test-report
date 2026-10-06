@@ -10,6 +10,7 @@ import { attemptRoutes } from "./routes/public/attempt-routes";
 import { resultRoutes } from "./routes/admin/result-routes";
 import { dashboardRoutes } from "./routes/admin/dashboard-routes";
 import { participantAdminRoutes } from "./routes/admin/participant-admin-routes";
+import { surveyTemplateRoutes } from "./routes/admin/survey-template-routes";
 import type { AppEnvironment } from "./types";
 
 export const app = new Hono<AppEnvironment>();
@@ -38,6 +39,8 @@ app.route("/api/admin/dashboard", dashboardRoutes);
 app.route("/api/admin/participants", participantAdminRoutes);
 app.route("/api/public/training", trainingEntryRoutes);
 app.route("/api/public/training/:slug/attempts", attemptRoutes);
+
+app.route("/api/admin/survey-templates", surveyTemplateRoutes);
 
 app.notFound((context) =>
   context.json(
