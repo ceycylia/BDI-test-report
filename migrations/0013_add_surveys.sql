@@ -1,11 +1,11 @@
 -- =========================================================
--- 0011_add_surveys.sql
+-- 0013_add_surveys.sql
 --
 -- Fondasi modul Evaluasi / Survey Pelatihan.
 --
 -- Survey berlaku per cohort / angkatan.
 -- Tahun tidak disimpan secara terpisah.
--- Tahun diperoleh dari training_cohorts.created_at.
+-- Tahun diperoleh dari training_cohorts.start_date.
 --
 -- Status survey tidak disimpan sebagai kolom.
 --

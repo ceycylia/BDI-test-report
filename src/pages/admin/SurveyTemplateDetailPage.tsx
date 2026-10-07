@@ -346,7 +346,7 @@ export function SurveyTemplateDetailPage() {
       );
 
       navigate(
-        `/admin/evaluasi/${payload.template.id}`
+        `/admin/evaluasi/template/${payload.template.id}`
       );
     } catch (reason) {
       setError(
@@ -962,7 +962,7 @@ export function SurveyTemplateDetailPage() {
         <div className="bank-detail-header__main">
           <Link
             className="back-link"
-            to="/admin/evaluasi"
+            to="/admin/evaluasi?tab=templates"
           >
             ← Template Survey
           </Link>

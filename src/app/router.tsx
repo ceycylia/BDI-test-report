@@ -19,8 +19,10 @@ import { TrainingEntryFoundationPage } from "../pages/participant/TrainingEntryF
 import { AttemptPage } from "../pages/participant/AttemptPage";
 import { ParticipantsPage } from "../pages/admin/ParticipantsPage";
 import { TrainingCatalogPage } from "../pages/admin/TrainingCatalogPage";
-import { SurveyTemplateListPage } from "../pages/admin/SurveyTemplateListPage";
 import { SurveyTemplateDetailPage } from "../pages/admin/SurveyTemplateDetailPage";
+import { EvaluationPage } from "../pages/admin/EvaluationPage";
+import { EvaluationDetailPage } from "../pages/admin/EvaluationDetailPage";
+import { EvaluationParticipantPage } from "../pages/participant/EvaluationParticipantPage";
 
 export function AppRouter() {
   return (
@@ -28,6 +30,7 @@ export function AppRouter() {
       <Route path="/" element={<PublicHomePage />} />
       <Route path="/t/:slug" element={<TrainingEntryFoundationPage />} />
       <Route path="/t/:slug/attempt/:attemptId" element={<AttemptPage />} />
+      <Route path="/e/:slug" element={<EvaluationParticipantPage />} />
       <Route path="/admin/login" element={<AdminLoginFoundationPage />} />
       <Route element={<ProtectedAdminRoute />}>
         <Route path="/admin" element={<AdminLayout />}>
@@ -46,10 +49,14 @@ export function AppRouter() {
             element={<QuestionImportPage />}
           />
 
-          <Route path="evaluasi" element={<SurveyTemplateListPage />} />
+          <Route path="evaluasi" element={<EvaluationPage />} />
           <Route
-            path="evaluasi/:templateId"
+            path="evaluasi/template/:templateId"
             element={<SurveyTemplateDetailPage />}
+          />
+          <Route
+            path="evaluasi/pelaksanaan/:campaignId"
+            element={<EvaluationDetailPage />}
           />
 
           <Route path="pelatihan" element={<TrainingListPage />} />

@@ -1091,3 +1091,47 @@ surveyTemplateRoutes.post(
     });
   }
 );
+
+
+// =========================================================
+// DELETE UNUSED DRAFT TEMPLATE
+// =========================================================
+
+surveyTemplateRoutes.delete(
+  "/:templateId",
+  requireSameOrigin,
+  requireCsrf,
+  async (context) => {
+    const templateId = context.req.param("templateId");
+    const template = await context.env.DB.prepare(
+      `SELECT templates.id, templates.name, templates.version, templates.status,
+              COUNT(campaigns.id) AS campaign_count
+       FROM survey_templates templates
+       LEFT JOIN survey_campaigns campaigns ON campaigns.survey_template_id = templates.id
+       WHERE templates.id = ?
+       GROUP BY templates.id
+       LIMIT 1`,
+    ).bind(templateId).first<{ id: string; name: string; version: number; status: string; campaign_count: number }>();
+
+    if (!template) {
+      throw new HttpError(404, "SURVEY_TEMPLATE_NOT_FOUND", "Template Evaluasi tidak ditemukan.");
+    }
+    if (template.status !== "DRAFT") {
+      throw new HttpError(409, "SURVEY_TEMPLATE_DELETE_FORBIDDEN", "Hanya Template Evaluasi berstatus Draft yang boleh dihapus.");
+    }
+    if (Number(template.campaign_count) > 0) {
+      throw new HttpError(409, "SURVEY_TEMPLATE_IN_USE", "Draft ini sudah digunakan pada Pelaksanaan Evaluasi dan tidak dapat dihapus.");
+    }
+
+    const deleted = await context.env.DB.prepare(
+      `DELETE FROM survey_templates
+       WHERE id = ? AND status = 'DRAFT'
+         AND NOT EXISTS (SELECT 1 FROM survey_campaigns WHERE survey_template_id = ?)`,
+    ).bind(templateId, templateId).run();
+    if (!deleted.meta.changes) {
+      throw new HttpError(409, "SURVEY_TEMPLATE_DELETE_CONFLICT", "Draft tidak dapat dihapus karena status atau dependency-nya telah berubah.");
+    }
+
+    return context.json({ deleted: true, template: { id: template.id, name: template.name, version: template.version } });
+  },
+);

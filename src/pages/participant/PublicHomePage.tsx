@@ -7,6 +7,11 @@ type OpenTest = {
   cohortName: string; stage: "PRE" | "POST"; closeAt: string | null;
 };
 
+type OpenEvaluation = {
+  id: string; slug: string; name: string; trainingName: string;
+  cohortNames: string[]; closeAt: string | null;
+};
+
 function closeTime(value: string | null) {
   if (!value) return "ditutup panitia";
   return new Intl.DateTimeFormat("id-ID", { hour: "2-digit", minute: "2-digit", hour12: false }).format(new Date(value)).replace(".", ":");
@@ -14,6 +19,7 @@ function closeTime(value: string | null) {
 
 export function PublicHomePage() {
   const [tests, setTests] = useState<OpenTest[]>([]);
+  const [evaluations, setEvaluations] = useState<OpenEvaluation[]>([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
@@ -23,17 +29,18 @@ export function PublicHomePage() {
       try {
         const response = await fetch("/api/public/training", { headers: { Accept: "application/json" } });
         if (!response.ok) throw new Error("Pelatihan tidak dapat dimuat.");
-        const payload = await response.json() as { tests: OpenTest[] };
+        const payload = await response.json() as { tests: OpenTest[]; evaluations: OpenEvaluation[] };
         if (!active) return;
         setTests(payload.tests);
-        const nextCloseAt = payload.tests
-          .map((test) => test.closeAt ? Date.parse(test.closeAt) : Number.POSITIVE_INFINITY)
+        setEvaluations(payload.evaluations ?? []);
+        const nextCloseAt = [...payload.tests, ...(payload.evaluations ?? [])]
+          .map((item) => item.closeAt ? Date.parse(item.closeAt) : Number.POSITIVE_INFINITY)
           .filter((value) => Number.isFinite(value) && value > Date.now())
           .sort((left, right) => left - right)[0];
         if (expiryRefresh) window.clearTimeout(expiryRefresh);
         if (nextCloseAt) expiryRefresh = window.setTimeout(() => void load(), Math.max(0, nextCloseAt - Date.now() + 250));
       } catch {
-        if (active) setTests([]);
+        if (active) { setTests([]); setEvaluations([]); }
       } finally {
         if (active) setLoading(false);
       }
@@ -88,9 +95,36 @@ export function PublicHomePage() {
               </>
             )}
 
-            {!loading && tests.length === 0 && (
+            {!loading && evaluations.length > 0 && (
+              <>
+                <p className="public-training-title">
+                  Evaluasi yang sedang dibuka
+                </p>
+
+                <div className="public-training-list">
+                  {evaluations.map((evaluation) => (
+                    <Link
+                      key={evaluation.id}
+                      className="public-training-link"
+                      to={`/e/${evaluation.slug}`}
+                    >
+                      <span>
+                        <strong>{evaluation.name} — Evaluasi</strong>
+                        <small>{evaluation.trainingName} · {evaluation.cohortNames.join(" & ")} · Tersedia sampai {closeTime(evaluation.closeAt)}</small>
+                      </span>
+
+                      <span className="public-training-link__arrow">
+                        →
+                      </span>
+                    </Link>
+                  ))}
+                </div>
+              </>
+            )}
+
+            {!loading && tests.length === 0 && evaluations.length === 0 && (
               <p className="public-training-empty">
-                Belum ada Test yang sedang dibuka.
+                Belum ada Test atau Evaluasi yang sedang dibuka.
               </p>
             )}
           </div>
