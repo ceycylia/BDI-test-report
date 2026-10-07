@@ -8,7 +8,7 @@ PRAGMA defer_foreign_keys = ON;
 -- 2026 -> Angkatan 1
 -- 2027 -> Angkatan 1
 --
--- Tahun diambil dari created_at, tidak disimpan pada
+-- Tahun diambil dari start_date, tidak disimpan pada
 -- kolom khusus.
 -- =========================================================
 
@@ -75,7 +75,7 @@ CREATE UNIQUE INDEX uq_training_cohorts_name_year
 ON training_cohorts (
   training_id,
   name,
-  substr(created_at, 1, 4)
+  substr(start_date, 1, 4)
 );
 
 
@@ -87,7 +87,7 @@ ON training_cohorts(training_id);
 -- 6. Index filter tahun
 CREATE INDEX idx_training_cohorts_year
 ON training_cohorts(
-  substr(created_at, 1, 4)
+  substr(start_date, 1, 4)
 );
 
 

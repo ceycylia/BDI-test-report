@@ -3,6 +3,7 @@ import { z } from "zod";
 import { normalizeParticipantName } from "../../domain/participants/normalize-name";
 import { normalizeNik } from "../../domain/participants/normalize-nik";
 import { isTestOpen } from "../../domain/scheduling/test-availability";
+import { isEvaluationOpen } from "../../domain/surveys/evaluation";
 import { HttpError } from "../../http/errors";
 import { findOrCreateExamParticipant, findRegisteredProfile, findPublicTraining, listParticipantAttempts, listPublicBatches } from "../../repositories/participant-repository";
 import type { AppEnvironment } from "../../types";
@@ -23,7 +24,7 @@ function schedules(session: NonNullable<Awaited<ReturnType<typeof findPublicTrai
 }
 
 trainingEntryRoutes.get("/", async (context) => {
-  const result = await context.env.DB.prepare(
+  const [result, evaluationResult] = await Promise.all([context.env.DB.prepare(
     `SELECT sessions.id, sessions.name, sessions.slug, sessions.question_count, sessions.duration_minutes,
             sessions.passing_score, sessions.training_start_date, sessions.training_end_date, sessions.status,
             sessions.pre_mode, sessions.pre_start_at, sessions.pre_end_at, sessions.pre_manual_open,
@@ -36,7 +37,26 @@ trainingEntryRoutes.get("/", async (context) => {
        LEFT JOIN trainings ON trainings.id = sessions.training_id
       WHERE sessions.status = 'ACTIVE'
       ORDER BY sessions.training_start_date DESC, sessions.name COLLATE NOCASE ASC`,
-  ).all<NonNullable<Awaited<ReturnType<typeof findPublicTraining>>> & { batch_id: string; batch_name: string }>();
+  ).all<NonNullable<Awaited<ReturnType<typeof findPublicTraining>>> & { batch_id: string; batch_name: string }>(),
+  context.env.DB.prepare(
+    `SELECT campaigns.id, campaigns.slug, campaigns.mode, campaigns.opens_at,
+            campaigns.closes_at, campaigns.opened_manually_at, campaigns.manual_open,
+            campaigns.closed_at, templates.name AS evaluation_name,
+            trainings.name AS training_name,
+            GROUP_CONCAT(cohorts.name, ' · ') AS cohort_names
+       FROM survey_campaigns campaigns
+       JOIN survey_templates templates ON templates.id = campaigns.survey_template_id
+       JOIN survey_campaign_cohorts links ON links.survey_campaign_id = campaigns.id
+       JOIN training_cohorts cohorts ON cohorts.id = links.cohort_id
+       JOIN trainings ON trainings.id = cohorts.training_id
+      WHERE templates.status IN ('PUBLISHED', 'ARCHIVED')
+      GROUP BY campaigns.id
+      ORDER BY campaigns.created_at DESC`,
+  ).all<{
+    id: string; slug: string; mode: "MANUAL" | "SCHEDULED"; opens_at: string | null;
+    closes_at: string | null; opened_manually_at: string | null; manual_open: number;
+    closed_at: string | null; evaluation_name: string; training_name: string; cohort_names: string;
+  }>()]);
   const tests = result.results
     .map((session) => ({ session, availability: schedules(session) }))
     .filter(({ availability }) => availability.preOpen || availability.postOpen)
@@ -44,7 +64,24 @@ trainingEntryRoutes.get("/", async (context) => {
       ...(availability.preOpen ? [{ id: `${session.id}-${session.batch_id}-PRE`, sessionId: session.id, slug: session.slug, trainingName: session.training_name ?? session.name, materialName: session.material_name ?? session.name, cohortName: session.batch_name, stage: "PRE" as const, closeAt: session.pre_end_at }] : []),
       ...(availability.postOpen ? [{ id: `${session.id}-${session.batch_id}-POST`, sessionId: session.id, slug: session.slug, trainingName: session.training_name ?? session.name, materialName: session.material_name ?? session.name, cohortName: session.batch_name, stage: "POST" as const, closeAt: session.post_end_at }] : []),
     ]));
-  return context.json({ tests });
+  const evaluations = evaluationResult.results
+    .filter((evaluation) => isEvaluationOpen({
+      mode: evaluation.mode,
+      manualOpen: evaluation.manual_open === 1,
+      opensAt: evaluation.opens_at,
+      closesAt: evaluation.closes_at,
+      openedManuallyAt: evaluation.opened_manually_at,
+      closedAt: evaluation.closed_at,
+    }))
+    .map((evaluation) => ({
+      id: evaluation.id,
+      slug: evaluation.slug,
+      name: evaluation.evaluation_name,
+      trainingName: evaluation.training_name,
+      cohortNames: evaluation.cohort_names.split(" · "),
+      closeAt: evaluation.mode === "SCHEDULED" ? evaluation.closes_at : null,
+    }));
+  return context.json({ tests, evaluations });
 });
 
 trainingEntryRoutes.get("/:slug", async (context) => {

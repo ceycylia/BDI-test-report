@@ -13,3 +13,7 @@ Thumbs.db
 /bdi-before-survey.sql
 /bdi-local.sql
 /bdi-team-local.sql
+
+# Generated local backups and document previews
+/tmp/db-backups/
+/tmp/pdfs/

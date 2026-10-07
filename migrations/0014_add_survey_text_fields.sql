@@ -1,5 +1,5 @@
 -- =========================================================
--- 0012_add_survey_text_fields.sql
+-- 0014_add_survey_text_fields.sql
 --
 -- Menambahkan teks pendukung agar Survey dapat mengikuti
 -- Google Form client dengan lebih lengkap.
