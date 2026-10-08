@@ -3500,6 +3500,68 @@ textarea:focus-visible {
   font-size: .82rem;
 }
 
+.participant-pagination__controls,
+.participant-pagination__pages {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+
+.participant-pagination__pages {
+  flex-wrap: wrap;
+  justify-content: center;
+}
+
+.pagination-page {
+  display: inline-grid;
+  width: 36px;
+  height: 36px;
+  place-items: center;
+  padding: 0;
+  border: 1px solid #c9deed;
+  border-radius: 10px;
+  background: #fff;
+  color: #175d91;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.pagination-page:hover:not(:disabled),
+.pagination-page.is-active {
+  border-color: var(--blue-700);
+  background: var(--blue-700);
+  color: #fff;
+}
+
+.pagination-page:disabled {
+  cursor: wait;
+  opacity: .65;
+}
+
+.pagination-ellipsis {
+  min-width: 24px;
+  color: var(--color-muted);
+  text-align: center;
+}
+
+@media (max-width: 720px) {
+  .participant-pagination__controls {
+    align-items: stretch;
+    flex-wrap: wrap;
+    width: 100%;
+  }
+
+  .participant-pagination__controls > .button {
+    flex: 1 1 130px;
+  }
+
+  .participant-pagination__pages {
+    flex: 1 0 100%;
+    order: -1;
+  }
+}
+
 .entity-list {
   display: grid;
   margin-top: 1rem;
@@ -4381,23 +4443,18 @@ textarea:focus-visible {
 }
 
 .time-picker-24 {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  position: relative;
+  display: flex;
   align-items: center;
+  width: 100%;
   min-width: 0;
-  gap: .35rem;
 }
 
-.time-picker-24>span {
-  color: #315574;
-  font-weight: 800;
-}
-
-.time-picker-24 select {
+.time-picker-24 > input {
   width: 100%;
   min-width: 0;
   min-height: 46px;
-  padding: .68rem .55rem;
+  padding: .68rem 2.75rem .68rem .8rem;
   border: 1px solid #cbdce8;
   border-radius: 10px;
   background: #fbfdff;
@@ -4406,10 +4463,132 @@ textarea:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 
-.time-picker-24 select:focus {
+.time-picker-24 > input::placeholder {
+  color: #8396a7;
+}
+
+.time-picker-24 > input:focus {
   border-color: #278fd0;
   outline: 0;
   box-shadow: 0 0 0 4px rgb(39 143 208 / 13%);
+}
+
+.time-picker-24__trigger {
+  position: absolute;
+  right: 4px;
+  display: grid;
+  width: 38px;
+  height: 38px;
+  place-items: center;
+  padding: 0;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--blue-700);
+  cursor: pointer;
+}
+
+.time-picker-24__trigger:hover,
+.time-picker-24__trigger:focus-visible {
+  outline: 0;
+  background: var(--blue-50);
+}
+
+.time-picker-24__trigger svg {
+  width: 19px;
+}
+
+.time-picker-popover {
+  position: fixed;
+  z-index: 110;
+  width: min(340px, calc(100vw - 24px));
+  max-height: min(330px, calc(100dvh - 24px));
+  overflow: hidden;
+  border: 1px solid #c8dbe8;
+  border-radius: 13px;
+  background: #fff;
+  box-shadow: 0 16px 38px rgb(19 61 92 / 22%);
+}
+
+.time-picker-popover__heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .75rem .85rem;
+  border-bottom: 1px solid var(--color-border);
+}
+
+.time-picker-popover__heading strong {
+  color: var(--color-text);
+  font-size: .9rem;
+}
+
+.time-picker-popover__heading span,
+.time-picker-popover__body section > span {
+  color: var(--color-muted);
+  font-size: .76rem;
+  font-weight: 700;
+}
+
+.time-picker-popover__body {
+  display: grid;
+  grid-template-columns: minmax(0, .8fr) minmax(0, 1.2fr);
+  gap: .75rem;
+  padding: .75rem;
+}
+
+.time-picker-popover__body section {
+  display: grid;
+  min-width: 0;
+  gap: .45rem;
+}
+
+.time-picker-popover__hours,
+.time-picker-popover__minutes {
+  display: grid;
+  max-height: 225px;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  gap: .3rem;
+  padding-right: .2rem;
+}
+
+.time-picker-popover__hours {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.time-picker-popover__minutes {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.time-picker-popover__hours button,
+.time-picker-popover__minutes button {
+  min-height: 34px;
+  padding: .3rem;
+  border: 1px solid #d8e5ee;
+  border-radius: 7px;
+  background: #fff;
+  color: #24425b;
+  font: inherit;
+  font-size: .78rem;
+  font-variant-numeric: tabular-nums;
+  cursor: pointer;
+}
+
+.time-picker-popover__hours button:hover:not(:disabled),
+.time-picker-popover__minutes button:hover:not(:disabled),
+.time-picker-popover__hours button.is-selected,
+.time-picker-popover__minutes button.is-selected {
+  border-color: var(--blue-700);
+  background: var(--blue-700);
+  color: #fff;
+}
+
+.time-picker-popover__minutes button:disabled {
+  opacity: .4;
+  cursor: not-allowed;
 }
 
 .participant-modal-backdrop {
@@ -6600,10 +6779,30 @@ select:not([multiple]):disabled {
   width: min(720px, calc(100vw - 32px));
 }
 
+.evaluation-create-modal,
+.evaluation-schedule-modal {
+  max-height: min(90dvh, calc(100dvh - 32px));
+}
+
+.evaluation-create-modal .participant-modal__form,
+.evaluation-schedule-modal .participant-modal__form {
+  display: grid;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-content: start;
+  overflow-y: auto;
+}
+
 .evaluation-cohort-picker {
   display: grid;
-  max-height: 260px;
+  min-width: 0;
+  min-height: 152px;
+  max-height: min(260px, 34dvh);
   overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+  align-content: start;
+  flex-shrink: 0;
   gap: .5rem;
   padding: .6rem;
   border: 1px solid #c9dae7;
@@ -6613,6 +6812,7 @@ select:not([multiple]):disabled {
 
 .evaluation-cohort-picker label {
   display: flex;
+  flex: 0 0 auto;
   align-items: center;
   min-height: 44px;
   padding: .45rem .6rem;
@@ -6625,15 +6825,43 @@ select:not([multiple]):disabled {
 }
 
 .evaluation-cohort-picker input {
+  flex: 0 0 auto;
   width: 20px;
   height: 20px;
   margin: 0 .7rem 0 0;
+}
+
+.evaluation-create-modal .participant-modal__actions,
+.evaluation-schedule-modal .participant-modal__actions {
+  flex: 0 0 auto;
 }
 
 .schedule-editor-fields {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 1rem;
+}
+
+.evaluation-schedule-fields {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 1rem;
+}
+
+.evaluation-schedule-fields > label,
+.evaluation-create-modal .date-time-picker,
+.evaluation-schedule-modal .date-time-picker,
+.evaluation-create-modal .date-picker-control,
+.evaluation-schedule-modal .date-picker-control {
+  min-width: 0;
+}
+
+.evaluation-create-modal .date-time-picker,
+.evaluation-schedule-modal .date-time-picker {
+  grid-template-columns: minmax(0, 1fr) minmax(145px, 165px);
+}
+
+.evaluation-schedule-mode {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .evaluation-detail-controls {
@@ -6715,79 +6943,111 @@ select:not([multiple]):disabled {
   background: linear-gradient(135deg, #f4fbff, #eaf6fd);
 }
 
-.evaluation-indicator-table table {
+.evaluation-result-actions {
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+}
+
+.evaluation-result-table {
+  overflow-x: auto;
+  overscroll-behavior-inline: contain;
+  border: 1px solid #b8c9d6;
+  border-radius: var(--radius-sm);
+  background: #fff;
+  scrollbar-gutter: stable;
+}
+
+.evaluation-result-table table {
+  width: 100%;
+  border-collapse: collapse;
   table-layout: fixed;
 }
 
-.evaluation-col-number {
-  width: 64px;
+.evaluation-result-table th,
+.evaluation-result-table td {
+  padding: .78rem .85rem;
+  border-right: 1px solid #d4e0e8;
+  border-bottom: 1px solid #d4e0e8;
+  color: #17324a;
+  line-height: 1.42;
+  vertical-align: middle;
 }
 
-.evaluation-col-section {
+.evaluation-result-table th {
+  background: #eaf4fa;
+  color: #2d526d;
+  font-size: .82rem;
+  font-weight: 800;
+  letter-spacing: .01em;
+}
+
+.evaluation-result-table th:last-child,
+.evaluation-result-table td:last-child {
+  border-right: 0;
+}
+
+.evaluation-result-table tbody tr:last-child td {
+  border-bottom: 0;
+}
+
+.evaluation-result-table tbody tr:hover {
+  background: #f8fbfd;
+}
+
+.evaluation-report-table table {
+  min-width: 920px;
+}
+
+.evaluation-report-table__number {
+  width: 58px;
+}
+
+.evaluation-report-table__section {
   width: 21%;
 }
 
-.evaluation-col-value {
-  width: 110px;
+.evaluation-report-table__value {
+  width: 102px;
 }
 
-.evaluation-col-distribution {
-  width: 230px;
+.evaluation-report-table__score {
+  width: 48px;
 }
 
-.evaluation-indicator-table th,
-.evaluation-indicator-table td,
-.evaluation-choice-table th,
-.evaluation-choice-table td,
-.evaluation-participant-table th,
-.evaluation-participant-table td {
-  vertical-align: top;
+.evaluation-report-table th:first-child,
+.evaluation-report-table td:first-child,
+.evaluation-report-table th:nth-child(4),
+.evaluation-report-table td:nth-child(n + 4) {
+  text-align: center;
 }
 
-.evaluation-indicator-table td {
-  overflow-wrap: anywhere;
+.evaluation-report-table__distribution-heading {
+  border-bottom-color: #b8c9d6;
+  text-align: center;
 }
 
-.evaluation-distribution-chips {
-  display: flex;
-  flex-wrap: wrap;
-  gap: .4rem;
-}
-
-.evaluation-distribution-chips > span {
-  padding: .3rem .5rem;
-  border: 1px solid #d6e5ef;
-  border-radius: 999px;
-  background: #f5f9fc;
-  color: #45647c;
+.evaluation-report-table__score-headings th {
+  padding-block: .42rem;
+  background: #f6fafc;
+  color: #49667d;
   font-size: .8rem;
-  white-space: nowrap;
+  text-align: center;
 }
 
-.evaluation-section-chart {
-  display: grid;
-  gap: 1.15rem;
+.evaluation-report-table__score-cell {
+  color: #294a63;
+  font-variant-numeric: tabular-nums;
 }
 
-.evaluation-section-chart > div > div:first-child {
-  display: flex;
-  justify-content: space-between;
-  gap: 1rem;
-  margin-bottom: .45rem;
+.evaluation-report-table td:nth-child(2) {
+  color: #4a687e;
+  font-size: .86rem;
+  font-weight: 600;
 }
 
-.evaluation-section-chart__track {
-  height: 14px;
-  overflow: hidden;
-  border-radius: 999px;
-  background: #e7eff5;
-}
-
-.evaluation-section-chart__track span {
-  display: block;
-  height: 100%;
-  border-radius: inherit;
-  background: linear-gradient(90deg, var(--blue-700), #42aee8);
+.evaluation-report-table td:nth-child(3) {
+  overflow-wrap: anywhere;
 }
 
 .evaluation-distribution {
@@ -6799,12 +7059,67 @@ select:not([multiple]):disabled {
   margin-top: .35rem;
 }
 
+.evaluation-choice-table table {
+  min-width: 560px;
+}
+
+.evaluation-choice-table__count {
+  width: 130px;
+}
+
+.evaluation-choice-table__percentage {
+  width: 150px;
+}
+
 .evaluation-choice-table th:nth-child(2),
 .evaluation-choice-table th:nth-child(3),
 .evaluation-choice-table td:nth-child(2),
 .evaluation-choice-table td:nth-child(3) {
-  width: 130px;
-  text-align: right;
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.evaluation-participant-table table {
+  min-width: 860px;
+}
+
+.evaluation-participant-table__name {
+  width: 28%;
+}
+
+.evaluation-participant-table__nik {
+  width: 20%;
+}
+
+.evaluation-participant-table__cohort {
+  width: 17%;
+}
+
+.evaluation-participant-table__status {
+  width: 16%;
+}
+
+.evaluation-participant-table__submitted {
+  width: 19%;
+}
+
+.evaluation-participant-table th:nth-child(n + 2),
+.evaluation-participant-table td:nth-child(n + 2) {
+  text-align: center;
+}
+
+.evaluation-participant-table td:first-child {
+  font-weight: 650;
+}
+
+.evaluation-participant-table td:nth-child(2),
+.evaluation-participant-table td:nth-child(5) {
+  font-variant-numeric: tabular-nums;
+}
+
+.evaluation-participant-table .status-badge {
+  justify-content: center;
+  white-space: nowrap;
 }
 
 .evaluation-comments {
@@ -7119,6 +7434,27 @@ select:not([multiple]):disabled {
 }
 
 @media (max-width: 700px) {
+  .evaluation-create-modal,
+  .evaluation-schedule-modal {
+    width: min(100%, calc(100vw - 20px));
+    max-height: calc(100dvh - 20px);
+  }
+
+  .evaluation-create-modal .participant-modal__form,
+  .evaluation-schedule-modal .participant-modal__form {
+    padding: 1rem;
+  }
+
+  .evaluation-cohort-picker {
+    min-height: 136px;
+    max-height: min(240px, 32dvh);
+  }
+
+  .evaluation-create-modal .date-time-picker,
+  .evaluation-schedule-modal .date-time-picker {
+    grid-template-columns: minmax(0, 1fr) minmax(140px, 155px);
+  }
+
   .section-tabs {
     display: grid;
     width: 100%;
@@ -7171,69 +7507,67 @@ select:not([multiple]):disabled {
     min-height: 50px;
   }
 
-  .evaluation-indicator-table,
-  .evaluation-choice-table,
-  .evaluation-participant-table {
-    overflow: visible;
+  .evaluation-report-table-panel .panel-heading {
+    align-items: stretch;
   }
 
-  .evaluation-indicator-table table,
-  .evaluation-indicator-table tbody,
-  .evaluation-indicator-table tr,
-  .evaluation-indicator-table td,
-  .evaluation-choice-table table,
-  .evaluation-choice-table tbody,
-  .evaluation-choice-table tr,
-  .evaluation-choice-table td,
-  .evaluation-participant-table table,
-  .evaluation-participant-table tbody,
-  .evaluation-participant-table tr,
-  .evaluation-participant-table td {
-    display: block;
+  .evaluation-result-actions {
+    display: grid;
+    width: 100%;
+    grid-template-columns: minmax(0, 1fr);
+    align-items: stretch;
+  }
+
+  .evaluation-result-actions .status-badge {
+    justify-self: start;
+  }
+
+  .evaluation-result-actions .button {
     width: 100%;
   }
 
-  .evaluation-indicator-table thead,
-  .evaluation-choice-table thead,
-  .evaluation-participant-table thead,
-  .evaluation-indicator-table colgroup {
-    display: none;
+  .evaluation-report-table table {
+    min-width: 820px;
   }
 
-  .evaluation-indicator-table tr,
-  .evaluation-choice-table tr,
-  .evaluation-participant-table tr {
-    margin-bottom: .75rem;
-    padding: .8rem;
-    border: 1px solid #d8e5ee;
-    border-radius: 12px;
-    background: #fff;
+  .evaluation-report-table__number {
+    width: 48px;
   }
 
-  .evaluation-indicator-table td,
-  .evaluation-choice-table td,
-  .evaluation-participant-table td,
-  .evaluation-choice-table td:nth-child(2),
-  .evaluation-choice-table td:nth-child(3) {
-    display: grid;
-    grid-template-columns: minmax(90px, .38fr) minmax(0, 1fr);
-    gap: .65rem;
-    padding: .42rem 0;
-    border: 0;
-    text-align: left;
+  .evaluation-report-table__value {
+    width: 84px;
   }
 
-  .evaluation-indicator-table td::before,
-  .evaluation-choice-table td::before,
-  .evaluation-participant-table td::before {
-    content: attr(data-label);
-    color: var(--color-muted);
-    font-size: .78rem;
-    font-weight: 700;
+  .evaluation-report-table__score {
+    width: 44px;
+  }
+
+  .evaluation-result-table th,
+  .evaluation-result-table td {
+    padding: .58rem .38rem;
+    font-size: .8rem;
+  }
+
+  .evaluation-report-table__score-headings th {
+    padding: .35rem .2rem;
+    font-size: .75rem;
+  }
+}
+
+@media (max-width: 520px) {
+  .evaluation-create-modal .date-time-picker,
+  .evaluation-schedule-modal .date-time-picker,
+  .evaluation-schedule-mode {
+    grid-template-columns: minmax(0, 1fr);
   }
 }
 
 @media (max-width: 430px) {
+  .evaluation-create-modal .date-time-picker,
+  .evaluation-schedule-modal .date-time-picker {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
   .evaluation-summary-grid,
   .schedule-mode-control {
     grid-template-columns: minmax(0, 1fr);

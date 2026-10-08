@@ -777,3 +777,68 @@ export async function publishSurveyTemplate(
       .bind(input.templateId),
   ]);
 }
+
+
+export async function archiveSurveyTemplate(
+  database: D1Database,
+  templateId: string,
+): Promise<number> {
+  const result = await database
+    .prepare(
+      `UPDATE survey_templates
+       SET
+         status = 'ARCHIVED',
+         is_active = 0,
+         updated_at = CURRENT_TIMESTAMP
+       WHERE id = ?
+         AND UPPER(status) = 'PUBLISHED'`,
+    )
+    .bind(templateId)
+    .run();
+
+  return Number(result.meta.changes ?? 0);
+}
+
+
+export async function reactivateSurveyTemplate(
+  database: D1Database,
+  input: {
+    templateId: string;
+    templateName: string;
+  },
+): Promise<number> {
+  const results = await database.batch([
+    database
+      .prepare(
+        `UPDATE survey_templates
+         SET
+           status = 'ARCHIVED',
+           is_active = 0,
+           updated_at = CURRENT_TIMESTAMP
+         WHERE name = ?
+           AND UPPER(status) = 'PUBLISHED'
+           AND id <> ?
+           AND EXISTS (
+             SELECT 1
+             FROM survey_templates target
+             WHERE target.id = ?
+               AND UPPER(target.status) = 'ARCHIVED'
+           )`,
+      )
+      .bind(input.templateName, input.templateId, input.templateId),
+    database
+      .prepare(
+        `UPDATE survey_templates
+         SET
+           status = 'PUBLISHED',
+           is_active = 1,
+           published_at = COALESCE(published_at, CURRENT_TIMESTAMP),
+           updated_at = CURRENT_TIMESTAMP
+         WHERE id = ?
+           AND UPPER(status) = 'ARCHIVED'`,
+      )
+      .bind(input.templateId),
+  ]);
+
+  return Number(results[1]?.meta.changes ?? 0);
+}

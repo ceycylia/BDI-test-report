@@ -1,7 +1,7 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { evaluationStatus, indicatorPercentage, sectionPercentage } from "../../domain/surveys/evaluation";
-import { createXlsx } from "../../export/xlsx";
+import { createEvaluationIndicatorReportDocx } from "../../export/evaluation-report-docx";
 import { HttpError } from "../../http/errors";
 import { requireAdmin, requireCsrf, requireSameOrigin } from "../../middleware/admin-auth";
 import {
@@ -21,6 +21,24 @@ function activeYear(value: string | undefined) {
   const parsed = Number(value);
   if (Number.isInteger(parsed) && parsed >= 2000 && parsed <= 2200) return parsed;
   return Number(new Intl.DateTimeFormat("en-US", { year: "numeric", timeZone: "Asia/Jakarta" }).format(new Date()));
+}
+
+function formatCohortList(names: string[]) {
+  if (!names.length) return "";
+  const cohortNumbers = names.map((name) => name.match(/^Angkatan\s+(.+)$/i)?.[1] ?? null);
+  const parts = cohortNumbers.every((value): value is string => value !== null) ? cohortNumbers : names;
+  const list = parts.length === 1 ? parts[0] : `${parts.slice(0, -1).join(", ")} dan ${parts.at(-1)}`;
+  return cohortNumbers.every((value) => value !== null) ? `Angkatan ${list}` : list;
+}
+
+function cohortFilePart(names: string[]) {
+  return names
+    .map((name) => name.replace(/^Angkatan\s+/i, ""))
+    .join("-")
+    .normalize("NFKD")
+    .replace(/[^a-zA-Z0-9-]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLowerCase();
 }
 
 function scheduleOf(campaign: SurveyCampaignRecord) {
@@ -296,49 +314,22 @@ surveyCampaignRoutes.get("/:campaignId/results", async (context) => {
   return context.json({ campaign: mapped, results: { ...data, template: undefined } });
 });
 
-surveyCampaignRoutes.get("/:campaignId/export", async (context) => {
+surveyCampaignRoutes.get("/:campaignId/export-word", async (context) => {
   const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
   if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
   await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
   const cohortId = context.req.query("cohortId") || undefined;
   const data = await resultData(context.env.DB, campaign, cohortId);
   const selectedCohortNames = (cohortId ? data.cohorts.filter((item) => item.id === cohortId) : data.cohorts).map((item) => item.name);
-  const cohortNames = selectedCohortNames.join(", ");
-  const cohortNumberLabels = selectedCohortNames.map((name) => name.match(/^Angkatan\s+(.+)$/i)?.[1] ?? null);
-  const chartCohortParts = cohortNumberLabels.every((value): value is string => value !== null) ? cohortNumberLabels : selectedCohortNames;
-  const chartCohortList = chartCohortParts.length <= 1
-    ? chartCohortParts[0] ?? ""
-    : `${chartCohortParts.slice(0, -1).join(", ")} dan ${chartCohortParts.at(-1)}`;
-  const chartCohortNames = chartCohortList && cohortNumberLabels.every((value) => value !== null) ? `Angkatan ${chartCohortList}` : chartCohortList;
-  const validSectionValues = data.sections.flatMap((section) => section.value === null ? [] : [section.value]);
-  const lowestSectionValue = validSectionValues.length ? Math.min(...validSectionValues) : 90;
-  const chartAxisMin = Math.min(90, Math.max(0, Math.floor(lowestSectionValue / 5) * 5));
-  const workbook = createXlsx([
-    { name: "Ringkasan Evaluasi", autoFilter: false, percentageColumns: [1], hiddenColumns: [2], headerRows: [6, 7], tableStartRow: 7, tableEndRow: 7 + data.sections.length, columnWidths: [42, 20, 2], rows: [
-      ["HASIL EVALUASI PENYELENGGARAAN PELATIHAN", null, null],
-      ["Nama Pelatihan", campaign.training_name, null],
-      ["Angkatan", cohortNames, null],
-      ["Jumlah Responden", data.respondentCount, null],
-      ["Nilai Keseluruhan", data.overallValue === null ? null : data.overallValue / 100, null],
-      [null, null, null],
-      ["NILAI PER BAGIAN", null, null],
-      ["Bagian", "Nilai (%)", "Nilai grafik"],
-      ...data.sections.map((section) => [section.title, section.value === null ? null : section.value / 100, section.value]),
-    ], charts: [{
-      type: "bar", title: `Hasil Evaluasi Penyelenggaraan Pelatihan Vokasi${chartCohortNames ? ` ${chartCohortNames}` : ""}`,
-      categoryColumn: 0, valueColumn: 2, startRow: 8, endRow: 7 + data.sections.length,
-      from: { row: 1, col: 3 }, to: { row: 18, col: 11 }, percentage: false,
-      axisMin: chartAxisMin, axisMax: 100, majorUnit: 2, axisTitle: "Nilai (%)", dataLabelFormat: "0.00\\%",
-      caption: "Gambar 1. Hasil Evaluasi Penyelenggaraan Pelatihan Vokasi",
-    }] },
-    { name: "Rincian Indikator", percentageColumns: [3], tableStartRow: 0, tableEndRow: data.indicators.length, columnWidths: [8, 32, 78, 18], rows: [
-      ["No", "Bagian", "Indikator Penilaian", "Nilai (%)"],
-      ...data.indicators.map((item) => [item.no, `${item.sectionCode}. ${item.sectionTitle}`, item.indicator, item.value === null ? null : item.value / 100]),
-    ] },
-  ]);
-  return new Response(workbook.slice().buffer as ArrayBuffer, { headers: {
-    "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "Content-Disposition": `attachment; filename="hasil-evaluasi-${campaign.slug}.xlsx"`,
+  const cohortLabel = formatCohortList(selectedCohortNames);
+  const cohortSlug = cohortFilePart(selectedCohortNames);
+  const report = await createEvaluationIndicatorReportDocx({
+    title: `Tabel. Rincian Nilai Per Indikator pada Penyelenggaraan Diklat ${campaign.training_name}${cohortLabel ? ` ${cohortLabel}` : ""}`,
+    rows: data.indicators.map((item) => ({ no: item.no, indicator: item.indicator, value: item.value })),
+  });
+  return new Response(report, { headers: {
+    "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "Content-Disposition": `attachment; filename="tabel-evaluasi-${campaign.slug}${cohortSlug ? `-angkatan-${cohortSlug}` : ""}.docx"`,
     "Cache-Control": "no-store",
   } });
 });

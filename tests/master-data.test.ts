@@ -3,6 +3,7 @@ import { normalizeNik, maskNik, participantIdentityMatches } from "../worker/dom
 import { duplicateNiks, parseImportedNik } from "../worker/domain/participants/import-validation";
 import { isCertificateEligible, totalTrainingJp } from "../worker/domain/certificates/eligibility";
 import { createXlsx } from "../worker/export/xlsx";
+import { createEvaluationIndicatorReportDocx } from "../worker/export/evaluation-report-docx";
 import { strFromU8, unzipSync } from "fflate";
 
 describe("registrasi peserta", () => {
@@ -40,30 +41,31 @@ describe("registrasi peserta", () => {
     expect(styles).toContain('numFmtId="49"');
   });
 
-  it("membuat chart bar horizontal native dan format persen pada laporan Evaluasi", () => {
-    const workbook = createXlsx([{
-      name: "Ringkasan Evaluasi",
-      rows: [["Bagian", "Nilai (%)", "Nilai grafik"], ["Program Pelatihan", 0.9816, 98.16], ["Instruktur", 0.9868, 98.68]],
-      percentageColumns: [1], hiddenColumns: [2], tableStartRow: 0, tableEndRow: 2,
-      charts: [{ type: "bar", title: "Hasil Evaluasi Penyelenggaraan Pelatihan Vokasi Angkatan 3 dan 4", categoryColumn: 0, valueColumn: 2, startRow: 1, endRow: 2, from: { row: 1, col: 3 }, to: { row: 12, col: 10 }, axisMin: 90, axisMax: 100, majorUnit: 2, axisTitle: "Nilai (%)", dataLabelFormat: "0.00\\%", caption: "Gambar 1. Hasil Evaluasi Penyelenggaraan Pelatihan Vokasi" }],
-    }]);
-    const files = unzipSync(workbook);
-    const sheet = strFromU8(files["xl/worksheets/sheet1.xml"]!);
-    const chart = strFromU8(files["xl/charts/chart1.xml"]!);
-    const relationships = strFromU8(files["xl/drawings/_rels/drawing1.xml.rels"]!);
-    expect(sheet).toContain('<drawing r:id="rId1"/>');
-    expect(chart).toContain('<c:barDir val="bar"/>');
-    expect(chart).toContain("Hasil Evaluasi Penyelenggaraan Pelatihan Vokasi Angkatan 3 dan 4");
-    expect(chart).toContain("'Ringkasan Evaluasi'!$A$2:$A$3");
-    expect(chart).toContain("'Ringkasan Evaluasi'!$C$2:$C$3");
-    expect(chart).toContain('<c:min val="90"/>');
-    expect(chart).toContain('<c:max val="100"/>');
-    expect(chart).toContain('<c:majorUnit val="2"/>');
-    expect(chart).toContain('formatCode="0.00\\%"');
-    expect(chart).toContain("Nilai (%)");
-    expect(sheet).toContain('<col min="3" max="3" width="20" customWidth="1" hidden="1"');
-    expect(strFromU8(files["xl/drawings/drawing1.xml"]!)).toContain("Gambar 1. Hasil Evaluasi Penyelenggaraan Pelatihan Vokasi");
-    expect(relationships).toContain("../charts/chart1.xml");
+  it("membuat Word laporan yang hanya berisi tabel 17 indikator", async () => {
+    const indicators = Array.from({ length: 17 }, (_, index) => ({
+      no: index + 1,
+      indicator: `Indikator Penilaian ${index + 1}`,
+      value: 96 + index / 10,
+    }));
+    const report = await createEvaluationIndicatorReportDocx({
+      title: "Tabel. Rincian Nilai Per Indikator pada Penyelenggaraan Diklat Operator Angkatan 3 dan 4",
+      rows: indicators,
+    });
+    const files = unzipSync(new Uint8Array(await report.arrayBuffer()));
+    const document = strFromU8(files["word/document.xml"]!);
+
+    expect(document).toContain("Tabel. Rincian Nilai Per Indikator pada Penyelenggaraan Diklat Operator Angkatan 3 dan 4");
+    expect(document).toContain("No.");
+    expect(document).toContain("Indikator Penilaian");
+    expect(document).toContain("Nilai");
+    expect(document.match(/<w:tr\b/g)).toHaveLength(18);
+    expect(document).toContain("Indikator Penilaian 17");
+    expect(document).toContain("96,00%");
+    expect(document).toContain('w:w="11906"');
+    expect(document).toContain('w:h="16838"');
+    expect(document).not.toContain("NIK");
+    expect(document).not.toContain("Distribusi");
+    expect(document).not.toContain("Waktu Submit");
   });
 });
 

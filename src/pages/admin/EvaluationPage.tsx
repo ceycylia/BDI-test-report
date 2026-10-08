@@ -70,6 +70,10 @@ export function EvaluationPage() {
   }, [campaigns, cohortId, search, status, trainingId]);
 
   const availableDraftCohorts = catalog.cohorts.filter((cohort) => cohort.trainingId === draft.trainingId);
+  const scheduledOpensAt = draft.mode === "SCHEDULED" ? formatDateTimeForApi(draft.opensAt) : null;
+  const scheduledClosesAt = draft.mode === "SCHEDULED" ? formatDateTimeForApi(draft.closesAt) : null;
+  const scheduleIncomplete = draft.mode === "SCHEDULED" && (!scheduledOpensAt || !scheduledClosesAt);
+  const scheduleInvalid = draft.mode === "SCHEDULED" && scheduledOpensAt !== null && scheduledClosesAt !== null && Date.parse(scheduledClosesAt) <= Date.parse(scheduledOpensAt);
 
   async function createCampaign(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(null);
@@ -93,7 +97,7 @@ export function EvaluationPage() {
     <nav className="section-tabs" aria-label="Bagian Evaluasi"><button className={tab === "campaigns" ? "is-active" : ""} onClick={() => setParams({})}>Pelaksanaan Evaluasi</button><button className={tab === "templates" ? "is-active" : ""} onClick={() => setParams({ tab: "templates" })}>Template Evaluasi</button></nav>
     {notice && <p className="form-message is-success" role="status">{notice}</p>}
     {error && <p className="form-message is-error" role="alert">{error}</p>}
-    {tab === "templates" ? <SurveyTemplateListPage embedded /> : <>
+    {tab === "templates" ? <SurveyTemplateListPage embedded onTemplatesChanged={load} /> : <>
       <section className="panel evaluation-filters">
         <label>Cari Evaluasi<SearchInput value={search} onValueChange={setSearch} placeholder="Nama pelatihan atau angkatan" /></label>
         <label>Pelatihan<SearchableSelect value={trainingId} placeholder="Semua pelatihan" options={catalog.trainings.map((item) => ({ value: item.id, label: item.name }))} onValueChange={(value) => { setTrainingId(value); setCohortId(""); }} /></label>
@@ -108,8 +112,8 @@ export function EvaluationPage() {
       <fieldset className="evaluation-cohort-picker"><legend>Angkatan</legend>{!draft.trainingId ? <p className="muted">Pilih Pelatihan terlebih dahulu.</p> : availableDraftCohorts.length ? availableDraftCohorts.map((cohort) => <label className={cohort.hasCampaign ? "is-disabled" : ""} key={cohort.id}><input type="checkbox" disabled={cohort.hasCampaign} checked={draft.cohortIds.includes(cohort.id)} onChange={(event) => setDraft((current) => ({ ...current, cohortIds: event.target.checked ? [...current.cohortIds, cohort.id] : current.cohortIds.filter((id) => id !== cohort.id) }))} /><span><strong>{cohort.name}</strong>{cohort.hasCampaign && <small>Sudah memiliki Evaluasi</small>}</span></label>) : <p className="muted">Belum ada Angkatan pada Pelatihan ini.</p>}</fieldset>
       <label>Template Evaluasi<SearchableSelect required value={draft.templateId} placeholder="Pilih Template Published" options={catalog.templates.map((item) => ({ value: item.id, label: `${item.name} · Versi ${item.version}` }))} onValueChange={(value) => setDraft((current) => ({ ...current, templateId: value }))} /></label>
       <fieldset className="schedule-mode-control"><legend>Mode buka</legend><button type="button" className={draft.mode === "OPEN_NOW" ? "is-active" : ""} onClick={() => setDraft((current) => ({ ...current, mode: "OPEN_NOW" }))}>Buka Sekarang</button><button type="button" className={draft.mode === "SCHEDULED" ? "is-active" : ""} onClick={() => setDraft((current) => ({ ...current, mode: "SCHEDULED" }))}>Set Jadwal</button></fieldset>
-      {draft.mode === "SCHEDULED" && <div className="schedule-editor-fields"><label>Tanggal/Jam Buka<DateTimeInput required value={draft.opensAt} onValueChange={(value) => setDraft((current) => ({ ...current, opensAt: value }))} /></label><label>Tanggal/Jam Tutup<DateTimeInput required value={draft.closesAt} onValueChange={(value) => setDraft((current) => ({ ...current, closesAt: value }))} /></label></div>}
-      <footer className="participant-modal__actions"><button type="button" className="button button--secondary" onClick={() => setCreateOpen(false)}>Batal</button><button className="button" disabled={busy || !draft.trainingId || !draft.templateId || !draft.cohortIds.length}>{busy ? "Menyimpan…" : "Buat Evaluasi"}</button></footer>
+      {draft.mode === "SCHEDULED" && <><div className="schedule-editor-fields evaluation-schedule-fields"><label>Tanggal/Jam Buka<DateTimeInput required value={draft.opensAt} aria-label="Tanggal dan jam buka Evaluasi" onValueChange={(value) => setDraft((current) => ({ ...current, opensAt: value }))} /></label><label>Tanggal/Jam Tutup<DateTimeInput required value={draft.closesAt} aria-label="Tanggal dan jam tutup Evaluasi" onValueChange={(value) => setDraft((current) => ({ ...current, closesAt: value }))} /></label></div>{scheduleInvalid && <p className="form-message is-error" role="alert">Waktu tutup harus setelah waktu buka.</p>}</>}
+      <footer className="participant-modal__actions"><button type="button" className="button button--secondary" onClick={() => setCreateOpen(false)}>Batal</button><button className="button" disabled={busy || !draft.trainingId || !draft.templateId || !draft.cohortIds.length || scheduleIncomplete || scheduleInvalid}>{busy ? "Menyimpan…" : "Buat Evaluasi"}</button></footer>
     </form></section></ModalPortal>}
   </>;
 }

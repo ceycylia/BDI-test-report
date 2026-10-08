@@ -112,6 +112,45 @@ const allowedParticipantImages = new Map([
   ["image/png", "png"],
 ]);
 
+type ParticipantListFilters = {
+  year?: string;
+  trainingId?: string;
+  cohortId?: string;
+  status?: "true" | "false";
+  search?: string;
+};
+
+function participantListWhere(filters: ParticipantListFilters) {
+  const conditions: string[] = [];
+  const bindings: Array<string | number> = [];
+
+  if (filters.year && /^\d{4}$/u.test(filters.year)) {
+    conditions.push("SUBSTR(cohorts.start_date,1,4)=?");
+    bindings.push(filters.year);
+  }
+  if (filters.trainingId) {
+    conditions.push("profiles.training_id=?");
+    bindings.push(filters.trainingId);
+  }
+  if (filters.cohortId) {
+    conditions.push("profiles.cohort_id=?");
+    bindings.push(filters.cohortId);
+  }
+  if (filters.status === "true" || filters.status === "false") {
+    conditions.push("profiles.is_active=?");
+    bindings.push(filters.status === "true" ? 1 : 0);
+  }
+  if (filters.search?.trim()) {
+    conditions.push("profiles.normalized_name LIKE ?");
+    bindings.push(`%${normalizeParticipantName(filters.search)}%`);
+  }
+
+  return {
+    where: conditions.length ? `WHERE ${conditions.join(" AND ")}` : "",
+    bindings,
+  };
+}
+
 function validationError(parsed: { success: false; error: z.ZodError }) {
   return new HttpError(
     422,
@@ -759,36 +798,51 @@ participantAdminRoutes.delete(
 );
 
 participantAdminRoutes.get("/participants", async (c) => {
-  const conditions: string[] = [];
-  const bindings: string[] = [];
-  if (c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!)) {
-    conditions.push("SUBSTR(cohorts.start_date,1,4)=?");
-    bindings.push(c.req.query("year")!);
-  }
-  if (c.req.query("trainingId")) {
-    conditions.push("profiles.training_id=?");
-    bindings.push(c.req.query("trainingId")!);
-  }
-  if (c.req.query("cohortId")) {
-    conditions.push("profiles.cohort_id=?");
-    bindings.push(c.req.query("cohortId")!);
-  }
-  if (c.req.query("search")) {
-    conditions.push("profiles.normalized_name LIKE ?");
-    bindings.push(`%${normalizeParticipantName(c.req.query("search")!)}%`);
-  }
-  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const result = await c.env.DB.prepare(
-    `SELECT profiles.*, trainings.name training_name, cohorts.name cohort_name FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id ${where} ORDER BY profiles.created_at DESC, profiles.rowid DESC`
-  )
-    .bind(...bindings)
-    .all<Record<string, unknown>>();
+  const requestedPage = Number(c.req.query("page") ?? "1");
+  const requestedPageSize = Number(c.req.query("pageSize") ?? "20");
+  const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
+  const pageSize = Number.isInteger(requestedPageSize)
+    ? Math.min(100, Math.max(1, requestedPageSize))
+    : 20;
+  const offset = (page - 1) * pageSize;
+  const { where, bindings } = participantListWhere({
+    year: c.req.query("year"),
+    trainingId: c.req.query("trainingId"),
+    cohortId: c.req.query("cohortId"),
+    status: c.req.query("status") as ParticipantListFilters["status"],
+    search: c.req.query("search"),
+  });
+  const [count, result] = await Promise.all([
+    c.env.DB.prepare(
+      `SELECT COUNT(*) AS total
+       FROM participant_profiles profiles
+       JOIN trainings ON trainings.id=profiles.training_id
+       JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
+       ${where}`,
+    ).bind(...bindings).first<{ total: number }>(),
+    c.env.DB.prepare(
+      `SELECT profiles.*, trainings.name training_name, cohorts.name cohort_name
+       FROM participant_profiles profiles
+       JOIN trainings ON trainings.id=profiles.training_id
+       JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
+       ${where}
+       ORDER BY profiles.created_at DESC, profiles.rowid DESC
+       LIMIT ? OFFSET ?`,
+    ).bind(...bindings, pageSize, offset).all<Record<string, unknown>>(),
+  ]);
+  const total = Number(count?.total ?? 0);
   return c.json({
     participants: result.results.map((r) => ({
       ...r,
       nik_masked: maskNik(String(r.nik)),
       nik: undefined,
     })),
+    pagination: {
+      page,
+      pageSize,
+      total,
+      totalPages: Math.max(1, Math.ceil(total / pageSize)),
+    },
   });
 });
 participantAdminRoutes.delete(
@@ -797,16 +851,49 @@ participantAdminRoutes.delete(
   requireCsrf,
   async (c) => {
     const parsed = z
-      .object({ participantIds: z.array(z.string().uuid()).min(1).max(5000) })
+      .union([
+        z.object({ participantIds: z.array(z.string().uuid()).min(1).max(5000) }),
+        z.object({
+          filters: z.object({
+            year: z.number().int().min(2000).max(2200),
+            trainingId: z.string().min(1).optional(),
+            cohortId: z.string().min(1).optional(),
+            status: z.boolean().optional(),
+            search: z.string().trim().max(150).optional(),
+          }),
+        }),
+      ])
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
-    const participantIds = [...new Set(parsed.data.participantIds)];
-    const idsJson = JSON.stringify(participantIds);
-    const profiles = await c.env.DB.prepare(
-      `SELECT id,photo_key FROM participant_profiles WHERE id IN (SELECT value FROM json_each(?))`
-    )
-      .bind(idsJson)
-      .all<{ id: string; photo_key: string | null }>();
+    let profiles: D1Result<{ id: string; photo_key: string | null }>;
+    if ("participantIds" in parsed.data) {
+      const participantIds = [...new Set(parsed.data.participantIds)];
+      const idsJson = JSON.stringify(participantIds);
+      profiles = await c.env.DB.prepare(
+        `SELECT id,photo_key FROM participant_profiles WHERE id IN (SELECT value FROM json_each(?))`,
+      ).bind(idsJson).all<{ id: string; photo_key: string | null }>();
+    } else {
+      const filters = parsed.data.filters;
+      const { where, bindings } = participantListWhere({
+        year: String(filters.year),
+        trainingId: filters.trainingId,
+        cohortId: filters.cohortId,
+        status: filters.status === undefined ? undefined : String(filters.status) as "true" | "false",
+        search: filters.search,
+      });
+      profiles = await c.env.DB.prepare(
+        `SELECT profiles.id, profiles.photo_key
+         FROM participant_profiles profiles
+         JOIN trainings ON trainings.id=profiles.training_id
+         JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
+         ${where}
+         ORDER BY profiles.created_at DESC, profiles.rowid DESC
+         LIMIT 5001`,
+      ).bind(...bindings).all<{ id: string; photo_key: string | null }>();
+      if (profiles.results.length > 5000) {
+        throw new HttpError(422, "TOO_MANY_PARTICIPANTS", "Hasil filter melebihi 5.000 peserta. Persempit filter sebelum menghapus data.");
+      }
+    }
     if (!profiles.results.length)
       throw new HttpError(
         404,

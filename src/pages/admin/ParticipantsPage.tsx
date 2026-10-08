@@ -22,6 +22,9 @@ type CertificateSettings = { certificate_prefix: string; signer_name: string; si
 const emptyCertificateSettings: CertificateSettings = { certificate_prefix: "", signer_name: "", signer_title: "", signer_nip: "", issue_place: "", issue_date: "" };
 type BulkDocumentNumberEntry = { participantId: string; certificateNumber?: string; completionLetterNumber?: string };
 type BulkNumberMode = "overwrite" | "empty";
+type ParticipantPagination = { page: number; pageSize: number; total: number; totalPages: number };
+type ParticipantFilters = { year: number; trainingId?: string; cohortId?: string; status?: boolean; search?: string };
+const PARTICIPANTS_PER_PAGE = 20;
 const romanMonths = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"];
 
 function documentNumberPeriod(issueDate: string) {
@@ -47,7 +50,19 @@ type DeleteTarget =
   | { kind: "training"; training: Training }
   | { kind: "material"; material: Material }
   | { kind: "cohort"; cohort: Cohort }
-  | { kind: "participants"; participantIds: string[]; count: number; filterDescription: string };
+  | { kind: "participants"; filters: ParticipantFilters; count: number; filterDescription: string };
+
+function participantPageItems(currentPage: number, totalPages: number) {
+  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
+  const items: Array<number | string> = [1];
+  const start = Math.max(2, currentPage - 1);
+  const end = Math.min(totalPages - 1, currentPage + 1);
+  if (start > 2) items.push("start-ellipsis");
+  for (let page = start; page <= end; page += 1) items.push(page);
+  if (end < totalPages - 1) items.push("end-ellipsis");
+  items.push(totalPages);
+  return items;
+}
 
 const tabs = [
   { id: "data", label: "Data Peserta", icon: Users },
@@ -70,6 +85,11 @@ export function ParticipantsPage() {
   const [listCohortId, setListCohortId] = useState("");
   const [listStatus, setListStatus] = useState("");
   const [search, setSearch] = useState("");
+  const [debouncedSearch, setDebouncedSearch] = useState("");
+  const [participantPage, setParticipantPage] = useState(1);
+  const [participantPagination, setParticipantPagination] = useState<ParticipantPagination>({ page: 1, pageSize: PARTICIPANTS_PER_PAGE, total: 0, totalPages: 1 });
+  const [participantsLoading, setParticipantsLoading] = useState(false);
+  const participantRequestRef = useRef(0);
   const [message, setMessage] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
   const [error, setError] = useState<string | null>(null);
@@ -100,14 +120,44 @@ export function ParticipantsPage() {
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deletingRecord, setDeletingRecord] = useState(false);
 
-  const load = useCallback(async () => {
-    const [cat, people, certs] = await Promise.all([
+  const loadSupportingData = useCallback(async () => {
+    const [cat, certs] = await Promise.all([
       adminQuery<Catalog>(withActiveYear("/api/admin/participants/catalog", activeYear)),
-      adminQuery<{ participants: Participant[] }>(withActiveYear("/api/admin/participants/participants", activeYear)),
       adminQuery<{ certificates: Certificate[] }>(withActiveYear("/api/admin/participants/certificates", activeYear)),
     ]);
-    setCatalog(cat); setParticipants(people.participants); setCertificates(certs.certificates);
+    setCatalog(cat); setCertificates(certs.certificates);
   }, [activeYear]);
+
+  const loadParticipants = useCallback(async () => {
+    const requestId = participantRequestRef.current + 1;
+    participantRequestRef.current = requestId;
+    setParticipantsLoading(true);
+    const query = new URLSearchParams({
+      year: String(activeYear),
+      page: String(participantPage),
+      pageSize: String(PARTICIPANTS_PER_PAGE),
+    });
+    if (listTrainingId) query.set("trainingId", listTrainingId);
+    if (listCohortId) query.set("cohortId", listCohortId);
+    if (listStatus) query.set("status", listStatus);
+    if (debouncedSearch.trim()) query.set("search", debouncedSearch.trim());
+    try {
+      const result = await adminQuery<{ participants: Participant[]; pagination: ParticipantPagination }>(`/api/admin/participants/participants?${query.toString()}`);
+      if (requestId !== participantRequestRef.current) return;
+      if (participantPage > result.pagination.totalPages) {
+        setParticipantPage(result.pagination.totalPages);
+        return;
+      }
+      setParticipants(result.participants);
+      setParticipantPagination(result.pagination);
+    } finally {
+      if (requestId === participantRequestRef.current) setParticipantsLoading(false);
+    }
+  }, [activeYear, debouncedSearch, listCohortId, listStatus, listTrainingId, participantPage]);
+
+  const load = useCallback(async () => {
+    await Promise.all([loadSupportingData(), loadParticipants()]);
+  }, [loadParticipants, loadSupportingData]);
   function fail(processError: unknown, target: "global" | "material" | "cohort" = "global") {
     setNoticeTarget(target);
     setMessage(null);
@@ -122,19 +172,24 @@ export function ParticipantsPage() {
 
   useEffect(() => {
     setTrainingId(""); setCohortId(""); setListTrainingId(""); setListCohortId(""); setCertificateTrainingId(""); setCertificateCohort("");
-    void load().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Data tidak dapat dimuat."));
-  }, [load]);
+    setListStatus(""); setSearch(""); setDebouncedSearch(""); setParticipantPage(1);
+    void loadSupportingData().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Data tidak dapat dimuat."));
+  }, [activeYear, loadSupportingData]);
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setParticipantPage(1);
+      setDebouncedSearch(search);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [search]);
+  useEffect(() => {
+    void loadParticipants().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Data peserta tidak dapat dimuat."));
+  }, [loadParticipants]);
   useEffect(() => {
     void adminQuery<{ settings: CertificateSettings }>("/api/admin/participants/certificate-settings").then((result) => setCertificateSettings(result.settings)).catch(fail);
   }, []);
 
   const cohorts = useMemo(() => catalog.cohorts.filter((cohort) => !trainingId || cohort.training_id === trainingId), [catalog, trainingId]);
-  const filteredParticipants = useMemo(() => participants.filter((participant) =>
-    (!listTrainingId || participant.training_id === listTrainingId) &&
-    (!listCohortId || participant.cohort_id === listCohortId) &&
-    (!listStatus || String(Boolean(participant.is_active)) === listStatus) &&
-    (!search || participant.name.toLocaleLowerCase("id").includes(search.toLocaleLowerCase("id")))),
-  [participants, listTrainingId, listCohortId, listStatus, search]);
   const filteredCertificates = useMemo(() => certificates.filter((participant) =>
     (!certificateTrainingId || participant.training_id === certificateTrainingId) &&
     (!certificateCohort || participant.cohort_id === certificateCohort) &&
@@ -302,21 +357,32 @@ export function ParticipantsPage() {
     try { const result = await adminMutation<{ generated: number }>("/api/admin/participants/certificates/generate-all", { method: "POST", body: JSON.stringify({ trainingId: certificateTrainingId, cohortId: certificateCohort, side: "BOTH" }) }); report(`${result.generated} sertifikat peserta lulus berhasil dibuat.`); } catch (processError) { fail(processError); }
   }
   function requestDeleteFilteredParticipants() {
-    if (!filteredParticipants.length) return setError("Tidak ada peserta pada hasil filter yang dapat dihapus.");
+    if (!participantPagination.total) return setError("Tidak ada peserta pada hasil filter yang dapat dihapus.");
     const filterDescription = [
       listTrainingId ? "pelatihan terpilih" : null,
       listCohortId ? "angkatan terpilih" : null,
       listStatus ? `status ${listStatus === "true" ? "aktif" : "nonaktif"}` : null,
-      search ? `pencarian “${search}”` : null,
+      debouncedSearch ? `pencarian “${debouncedSearch}”` : null,
     ].filter(Boolean).join(", ");
-    setDeleteTarget({ kind: "participants", participantIds: filteredParticipants.map((participant) => participant.id), count: filteredParticipants.length, filterDescription });
+    setDeleteTarget({
+      kind: "participants",
+      filters: {
+        year: activeYear,
+        trainingId: listTrainingId || undefined,
+        cohortId: listCohortId || undefined,
+        status: listStatus ? listStatus === "true" : undefined,
+        search: debouncedSearch.trim() || undefined,
+      },
+      count: participantPagination.total,
+      filterDescription,
+    });
   }
-  async function deleteFilteredParticipants(participantIds: string[]) {
+  async function deleteFilteredParticipants(filters: ParticipantFilters) {
     setDeletingParticipants(true);
     try {
       const result = await adminMutation<{ deleted: number }>("/api/admin/participants/participants/bulk", {
         method: "DELETE",
-        body: JSON.stringify({ participantIds }),
+        body: JSON.stringify({ filters }),
       });
       setSelectedParticipant(null);
       setDeleteTarget(null);
@@ -339,15 +405,26 @@ export function ParticipantsPage() {
 
     {tab === "data" && <>
       <section className="panel participant-data-panel">
-        <div className="panel-heading"><div><p className="section-label">Terdaftar</p><h2>Data Peserta</h2></div><div className="participant-table-actions"><span className="status-badge is-active">{filteredParticipants.length} peserta</span><button type="button" className="button danger-button button--small" disabled={!filteredParticipants.length || deletingParticipants} onClick={requestDeleteFilteredParticipants}><Trash2 />{deletingParticipants ? "Menghapus..." : "Hapus Hasil Filter"}</button></div></div>
+        <div className="panel-heading"><div><p className="section-label">Terdaftar</p><h2>Data Peserta</h2></div><div className="participant-table-actions"><span className="status-badge is-active">{participantPagination.total} peserta</span><button type="button" className="button danger-button button--small" disabled={!participantPagination.total || deletingParticipants} onClick={requestDeleteFilteredParticipants}><Trash2 />{deletingParticipants ? "Menghapus..." : "Hapus Hasil Filter"}</button></div></div>
         <div className="participant-list-filters">
           <label className="filter-search"><span>Cari nama</span><SearchInput value={search} onValueChange={setSearch} placeholder="Cari nama peserta" /></label>
-          <label>Pelatihan<SearchableSelect value={listTrainingId} placeholder="Semua pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setListTrainingId(value); setListCohortId(""); }} /></label>
-          <label>Angkatan<select value={listCohortId} onChange={(event) => setListCohortId(event.target.value)}><option value="">Semua Angkatan</option>{catalog.cohorts.filter((cohort) => !listTrainingId || cohort.training_id === listTrainingId).map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label>
-          <label>Status<select value={listStatus} onChange={(event) => setListStatus(event.target.value)}><option value="">Semua Status</option><option value="true">Aktif</option><option value="false">Nonaktif</option></select></label>
+          <label>Pelatihan<SearchableSelect value={listTrainingId} placeholder="Semua pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setParticipantPage(1); setListTrainingId(value); setListCohortId(""); }} /></label>
+          <label>Angkatan<select value={listCohortId} onChange={(event) => { setParticipantPage(1); setListCohortId(event.target.value); }}><option value="">Semua Angkatan</option>{catalog.cohorts.filter((cohort) => !listTrainingId || cohort.training_id === listTrainingId).map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label>
+          <label>Status<select value={listStatus} onChange={(event) => { setParticipantPage(1); setListStatus(event.target.value); }}><option value="">Semua Status</option><option value="true">Aktif</option><option value="false">Nonaktif</option></select></label>
         </div>
-        <div className="data-table-wrap"><table className="clean-table participant-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{filteredParticipants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}><td>{index + 1}</td><td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{participant.birth_place}, {formatDateForDisplay(participant.birth_date)}</small></span></span></td><td>{participant.nik_masked}</td><td>{participant.training_name}</td><td>{participant.cohort_name}</td><td><span className={participant.is_active ? "status-badge is-active" : "status-badge"}>{participant.is_active ? "Aktif" : "Nonaktif"}</span></td><td><button type="button" className="button button--secondary button--small" onClick={() => setSelectedParticipant(participant.id)}><Eye /> Lihat</button></td></tr>)}</tbody></table>{!filteredParticipants.length && <div className="empty-state">Belum ada peserta terdaftar.</div>}</div>
-        <p className="table-summary">Menampilkan {filteredParticipants.length} dari {participants.length} peserta</p>
+        <div className="data-table-wrap"><table className="clean-table participant-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}><td>{(participantPagination.page - 1) * participantPagination.pageSize + index + 1}</td><td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{participant.birth_place}, {formatDateForDisplay(participant.birth_date)}</small></span></span></td><td>{participant.nik_masked}</td><td>{participant.training_name}</td><td>{participant.cohort_name}</td><td><span className={participant.is_active ? "status-badge is-active" : "status-badge"}>{participant.is_active ? "Aktif" : "Nonaktif"}</span></td><td><button type="button" className="button button--secondary button--small" onClick={() => setSelectedParticipant(participant.id)}><Eye /> Lihat</button></td></tr>)}</tbody></table>{participantsLoading && !participants.length ? <div className="empty-state">Memuat peserta…</div> : !participants.length && <div className="empty-state">Tidak ada peserta yang sesuai pencarian atau filter.</div>}</div>
+        <footer className="table-pagination participant-pagination">
+          <span>Menampilkan {participantPagination.total ? (participantPagination.page - 1) * participantPagination.pageSize + 1 : 0}–{Math.min(participantPagination.page * participantPagination.pageSize, participantPagination.total)} dari {participantPagination.total} peserta</span>
+          <div className="participant-pagination__controls" aria-label="Navigasi halaman peserta">
+            <button type="button" className="button button--secondary button--small" disabled={participantPagination.page <= 1 || participantsLoading} onClick={() => setParticipantPage((current) => Math.max(1, current - 1))}>‹ Sebelumnya</button>
+            <div className="participant-pagination__pages">
+              {participantPageItems(participantPagination.page, participantPagination.totalPages).map((item) => typeof item === "number" ? (
+                <button key={item} type="button" className={item === participantPagination.page ? "pagination-page is-active" : "pagination-page"} aria-label={`Halaman ${item}`} aria-current={item === participantPagination.page ? "page" : undefined} disabled={participantsLoading} onClick={() => setParticipantPage(item)}>{item}</button>
+              ) : <span key={item} className="pagination-ellipsis" aria-hidden="true">…</span>)}
+            </div>
+            <button type="button" className="button button--secondary button--small" disabled={participantPagination.page >= participantPagination.totalPages || participantsLoading} onClick={() => setParticipantPage((current) => Math.min(participantPagination.totalPages, current + 1))}>Selanjutnya ›</button>
+          </div>
+        </footer>
       </section>
       {selectedParticipant && <ParticipantEditor id={selectedParticipant} activeYear={activeYear} catalog={catalog} onCancel={() => setSelectedParticipant(null)} onSaved={() => { setSelectedParticipant(null); report("Data peserta diperbarui."); }} onError={fail} />}
       {participantCreateOpen && <ModalPortal onClose={() => setParticipantCreateOpen(false)}><section className="participant-modal" role="dialog" aria-modal="true" aria-labelledby="add-participant-title">
@@ -436,7 +513,7 @@ export function ParticipantsPage() {
           if (deleteTarget?.kind === "training") void deleteTraining(deleteTarget.training);
           else if (deleteTarget?.kind === "material") void deleteMaterial(deleteTarget.material);
           else if (deleteTarget?.kind === "cohort") void deleteCohort(deleteTarget.cohort);
-          else if (deleteTarget?.kind === "participants") void deleteFilteredParticipants(deleteTarget.participantIds);
+          else if (deleteTarget?.kind === "participants") void deleteFilteredParticipants(deleteTarget.filters);
         }}
       />
   </>;

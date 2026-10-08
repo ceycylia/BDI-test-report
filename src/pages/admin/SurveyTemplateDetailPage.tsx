@@ -244,10 +244,6 @@ export function SurveyTemplateDetailPage() {
   const [publishConfirmOpen, setPublishConfirmOpen] =
     useState(false);
 
-  const [previewOpen, setPreviewOpen] =
-    useState(false);
-
-
   const isDraft =
     template?.status === "DRAFT";
 
@@ -1018,30 +1014,18 @@ export function SurveyTemplateDetailPage() {
           )}
 
           {isDraft && (
-            <>
-              <button
-                className="button button--secondary"
-                type="button"
-                onClick={() =>
-                  setPreviewOpen(true)
-                }
-              >
-                Preview
-              </button>
-
-              <button
-                className="button"
-                type="button"
-                disabled={publishing}
-                onClick={() =>
-                  setPublishConfirmOpen(
-                    true
-                  )
-                }
-              >
-                Publish
-              </button>
-            </>
+            <button
+              className="button"
+              type="button"
+              disabled={publishing}
+              onClick={() =>
+                setPublishConfirmOpen(
+                  true
+                )
+              }
+            >
+              Publish
+            </button>
           )}
         </div>
       </header>
@@ -2185,223 +2169,6 @@ export function SurveyTemplateDetailPage() {
                     : "Ya, Publish"}
                 </button>
               </footer>
-            </section>
-          </div>,
-          document.body
-        )}
-
-
-      {/* =================================================
-          PREVIEW
-      ================================================= */}
-
-      {previewOpen &&
-        createPortal(
-          <div
-            className="participant-modal-backdrop"
-            role="presentation"
-          >
-            <section
-              className="participant-modal question-editor-modal"
-              role="dialog"
-              aria-modal="true"
-              aria-labelledby="survey-preview-title"
-            >
-              <header className="participant-modal__header">
-                <div>
-                  <p className="section-label">
-                    Preview Peserta
-                  </p>
-
-                  <h2 id="survey-preview-title">
-                    {template.name}
-                  </h2>
-                </div>
-
-                <button
-                  className="icon-button"
-                  type="button"
-                  aria-label="Tutup preview"
-                  onClick={() =>
-                    setPreviewOpen(false)
-                  }
-                >
-                  ×
-                </button>
-              </header>
-
-
-              <div className="participant-modal__form">
-                {template.description && (
-                  <p className="muted">
-                    {
-                      template.description
-                    }
-                  </p>
-                )}
-
-
-                <div className="question-list-section">
-                  {template.sections.map(
-                    (section) => (
-                      <section
-                        className="panel"
-                        key={
-                          section.id
-                        }
-                      >
-                        <div className="panel-header">
-                          <p className="section-label">
-                            Bagian{" "}
-                            {
-                              section.sectionCode
-                            }
-                          </p>
-
-                          <h3>
-                            {
-                              section.title
-                            }
-                          </h3>
-
-                          {section.description && (
-                            <p>
-                              {
-                                section.description
-                              }
-                            </p>
-                          )}
-                        </div>
-
-
-                        <div className="question-list">
-                          {section.questions.map(
-                            (
-                              question
-                            ) => (
-                              <article
-                                className="question-card"
-                                key={
-                                  question.id
-                                }
-                              >
-                                <p className="question-card__text">
-                                  {
-                                    question.questionText
-                                  }{" "}
-                                  <strong>
-                                    *
-                                  </strong>
-                                </p>
-
-
-                                {question.helperText && (
-                                  <p className="muted">
-                                    {
-                                      question.helperText
-                                    }
-                                  </p>
-                                )}
-
-
-                                {question.questionType ===
-                                  "SCALE" && (
-                                  <div className="button-row">
-                                    {Array.from(
-                                      {
-                                        length:
-                                          (question.scaleMax ??
-                                            4) -
-                                          (question.scaleMin ??
-                                            1) +
-                                          1,
-                                      },
-                                      (
-                                        _,
-                                        index
-                                      ) =>
-                                        (question.scaleMin ??
-                                          1) +
-                                        index
-                                    ).map(
-                                      (
-                                        value
-                                      ) => (
-                                        <label
-                                          key={
-                                            value
-                                          }
-                                        >
-                                          <input
-                                            type="radio"
-                                            disabled
-                                          />{" "}
-                                          {
-                                            value
-                                          }
-                                        </label>
-                                      )
-                                    )}
-                                  </div>
-                                )}
-
-
-                                {question.questionType ===
-                                  "SINGLE_CHOICE" && (
-                                  <div className="form-stack">
-                                    {question.options.map(
-                                      (
-                                        option
-                                      ) => (
-                                        <label
-                                          key={
-                                            option.id
-                                          }
-                                        >
-                                          <input
-                                            type="radio"
-                                            disabled
-                                          />{" "}
-                                          {
-                                            option.label
-                                          }
-                                        </label>
-                                      )
-                                    )}
-                                  </div>
-                                )}
-
-
-                                {question.questionType ===
-                                  "LONG_TEXT" && (
-                                  <textarea
-                                    rows={3}
-                                    disabled
-                                    placeholder="Jawaban peserta"
-                                  />
-                                )}
-                              </article>
-                            )
-                          )}
-                        </div>
-                      </section>
-                    )
-                  )}
-                </div>
-
-
-                <footer className="participant-modal__actions">
-                  <button
-                    className="button"
-                    type="button"
-                    onClick={() =>
-                      setPreviewOpen(false)
-                    }
-                  >
-                    Tutup Preview
-                  </button>
-                </footer>
-              </div>
             </section>
           </div>,
           document.body

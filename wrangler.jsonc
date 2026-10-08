@@ -42,8 +42,8 @@
 			"d1_databases": [
 				{
 					"binding": "DB",
-					"database_name": "bdi-test-db-production",
-					"database_id": "4aba574a-3f23-4e94-afb1-5d94bee054cc",
+					"database_name": "bdi-test-db-production-v2",
+					"database_id": "e5a44760-93ec-4016-b466-60628bf5b94d",
 					"migrations_dir": "migrations"
 				}
 			],

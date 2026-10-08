@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { ClipboardList, Trash2 } from "lucide-react";
+import { Archive, ClipboardList, RefreshCcw, Trash2, X } from "lucide-react";
 import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
+import { ModalPortal } from "../../components/ui/ModalPortal";
 import {
   adminMutation,
   adminQuery,
@@ -22,6 +23,13 @@ type SurveyTemplateSummary = {
   sectionCount: number;
   questionCount: number;
   campaignCount: number;
+  canDelete: boolean;
+  deleteBlockedReason: string | null;
+};
+
+type LifecycleTarget = {
+  action: "archive" | "reactivate";
+  template: SurveyTemplateSummary;
 };
 
 function statusLabel(status: SurveyTemplateSummary["status"]) {
@@ -30,12 +38,21 @@ function statusLabel(status: SurveyTemplateSummary["status"]) {
   return "Archived";
 }
 
-export function SurveyTemplateListPage({ embedded = false }: { embedded?: boolean }) {
+export function SurveyTemplateListPage({
+  embedded = false,
+  onTemplatesChanged,
+}: {
+  embedded?: boolean;
+  onTemplatesChanged?: () => Promise<void> | void;
+}) {
   const [templates, setTemplates] = useState<SurveyTemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SurveyTemplateSummary | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [lifecycleTarget, setLifecycleTarget] = useState<LifecycleTarget | null>(null);
+  const [updatingLifecycle, setUpdatingLifecycle] = useState(false);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -52,17 +69,51 @@ export function SurveyTemplateListPage({ embedded = false }: { embedded?: boolea
 
   useEffect(() => { void load(); }, [load]);
 
-  async function deleteDraft() {
+  async function deleteTemplate() {
     if (!deleteTarget) return;
-    setDeleting(true); setError(null);
+    setDeleting(true); setError(null); setNotice(null);
     try {
       await adminMutation(`/api/admin/survey-templates/${deleteTarget.id}`, { method: "DELETE" });
+      setNotice(`Template Evaluasi versi ${deleteTarget.version} berhasil dihapus.`);
       setDeleteTarget(null);
       await load();
+      await onTemplatesChanged?.();
     } catch (reason) {
-      setError(reason instanceof AdminApiError ? reason.message : "Draft Template Evaluasi tidak dapat dihapus.");
+      setError(reason instanceof AdminApiError ? reason.message : "Template Evaluasi tidak dapat dihapus.");
       setDeleteTarget(null);
     } finally { setDeleting(false); }
+  }
+
+  async function updateLifecycle() {
+    if (!lifecycleTarget) return;
+    const { action, template } = lifecycleTarget;
+    setUpdatingLifecycle(true);
+    setError(null);
+    setNotice(null);
+    try {
+      await adminMutation(`/api/admin/survey-templates/${template.id}/${action}`, {
+        method: "POST",
+      });
+      setNotice(
+        action === "archive"
+          ? `Template Evaluasi versi ${template.version} berhasil di-Archive.`
+          : `Template Evaluasi versi ${template.version} berhasil diaktifkan kembali.`,
+      );
+      setLifecycleTarget(null);
+      await load();
+      await onTemplatesChanged?.();
+    } catch (reason) {
+      setError(
+        reason instanceof AdminApiError
+          ? reason.message
+          : action === "archive"
+            ? "Template Evaluasi tidak dapat di-Archive."
+            : "Template Evaluasi tidak dapat diaktifkan kembali.",
+      );
+      setLifecycleTarget(null);
+    } finally {
+      setUpdatingLifecycle(false);
+    }
   }
 
   if (loading) {
@@ -87,6 +138,11 @@ export function SurveyTemplateListPage({ embedded = false }: { embedded?: boolea
           {error}
         </p>
       )}
+      {notice && (
+        <p className="form-message is-success" role="status">
+          {notice}
+        </p>
+      )}
 
       <section className="panel">
         {templates.length === 0 ? (
@@ -97,63 +153,151 @@ export function SurveyTemplateListPage({ embedded = false }: { embedded?: boolea
           </div>
         ) : (
           <div className="entity-list">
-            {templates.map((template) => (
-              <article key={template.id}>
-                <div>
-                  <strong>{template.name}</strong>
+            {templates.map((template) => {
+              const templateStatus = String(template.status).trim().toUpperCase();
+              return (
+                <article key={template.id}>
+                  <div>
+                    <strong>{template.name}</strong>
 
-                  <small>
-                    Versi {template.version} · {template.sectionCount} bagian ·{" "}
-                    {template.questionCount} pertanyaan
-                  </small>
+                    <small>
+                      Versi {template.version} · {template.sectionCount} bagian ·{" "}
+                      {template.questionCount} pertanyaan
+                    </small>
 
-                  <small>
-                    Digunakan pada {template.campaignCount} Pelaksanaan Evaluasi
-                  </small>
-                </div>
+                    <small>
+                      Digunakan pada {template.campaignCount} Pelaksanaan Evaluasi
+                    </small>
+                    {!template.canDelete && template.deleteBlockedReason && (
+                      <small className="muted">{template.deleteBlockedReason}</small>
+                    )}
+                  </div>
 
-                <div className="button-row">
-                  <span
-                    className={
-                      template.status === "PUBLISHED"
-                        ? "status-badge is-active"
-                        : "status-badge"
-                    }
-                  >
-                    {statusLabel(template.status)}
-                  </span>
-
-                  <Link
-                    className="button button--secondary"
-                    to={`/admin/evaluasi/template/${template.id}`}
-                  >
-                    Lihat Template
-                  </Link>
-                  {template.status === "DRAFT" && template.campaignCount === 0 && (
-                    <button
-                      type="button"
-                      className="icon-button is-danger"
-                      aria-label={`Hapus Draft versi ${template.version} ${template.name}`}
-                      title="Hapus Draft"
-                      onClick={() => setDeleteTarget(template)}
+                  <div className="button-row">
+                    <span
+                      className={
+                        templateStatus === "PUBLISHED"
+                          ? "status-badge is-active"
+                          : "status-badge"
+                      }
                     >
-                      <Trash2 aria-hidden="true" />
-                    </button>
-                  )}
-                </div>
-              </article>
-            ))}
+                      {statusLabel(templateStatus as SurveyTemplateSummary["status"])}
+                    </span>
+
+                    {templateStatus === "PUBLISHED" && (
+                      <button
+                        type="button"
+                        className="button button--secondary button--small"
+                        onClick={() => setLifecycleTarget({ action: "archive", template })}
+                      >
+                        <Archive aria-hidden="true" /> Archive
+                      </button>
+                    )}
+                    {templateStatus === "ARCHIVED" && (
+                      <button
+                        type="button"
+                        className="button button--secondary button--small"
+                        onClick={() => setLifecycleTarget({ action: "reactivate", template })}
+                      >
+                        <RefreshCcw aria-hidden="true" /> Aktifkan Kembali
+                      </button>
+                    )}
+                    <Link
+                      className="button button--secondary"
+                      to={`/admin/evaluasi/template/${template.id}`}
+                    >
+                      Lihat Template
+                    </Link>
+                    {template.canDelete && (
+                      <button
+                        type="button"
+                        className="text-button is-danger"
+                        aria-label={`Hapus Template Evaluasi versi ${template.version} ${template.name}`}
+                        title="Hapus Template"
+                        onClick={() => setDeleteTarget(template)}
+                      >
+                        <Trash2 aria-hidden="true" /> Hapus
+                      </button>
+                    )}
+                  </div>
+                </article>
+              );
+            })}
           </div>
         )}
       </section>
       <ConfirmDeleteModal
         open={Boolean(deleteTarget)}
         title="Hapus Template Evaluasi?"
-        description={deleteTarget ? <>Draft versi {deleteTarget.version} dari <strong>{deleteTarget.name}</strong> akan dihapus. Tindakan ini tidak dapat dibatalkan.</> : undefined}
+        description={deleteTarget ? <><p><strong>{deleteTarget.name}</strong></p><p>Versi {deleteTarget.version}</p><p>Template ini belum pernah digunakan dan akan dihapus permanen.</p></> : undefined}
         busy={deleting}
         onCancel={() => setDeleteTarget(null)}
-        onConfirm={() => void deleteDraft()}
+        onConfirm={() => void deleteTemplate()}
       />
+      {lifecycleTarget && (
+        <ModalPortal
+          onClose={() => setLifecycleTarget(null)}
+          blocked={updatingLifecycle}
+        >
+          <section
+            className="participant-modal delete-confirm-modal"
+            role="alertdialog"
+            aria-modal="true"
+            aria-labelledby="template-lifecycle-confirm-title"
+          >
+            <header className="participant-modal__header">
+              <div>
+                <p className="section-label">Konfirmasi</p>
+                <h2 id="template-lifecycle-confirm-title">
+                  {lifecycleTarget.action === "archive"
+                    ? "Archive Template Evaluasi?"
+                    : "Aktifkan Kembali Template?"}
+                </h2>
+              </div>
+              <button
+                type="button"
+                className="participant-modal__close"
+                aria-label="Tutup konfirmasi"
+                disabled={updatingLifecycle}
+                onClick={() => setLifecycleTarget(null)}
+              >
+                <X aria-hidden="true" />
+              </button>
+            </header>
+            <div className="participant-modal__body">
+              <p><strong>{lifecycleTarget.template.name}</strong></p>
+              <p>Versi {lifecycleTarget.template.version}</p>
+              <p>
+                {lifecycleTarget.action === "archive"
+                  ? "Template tidak akan tersedia untuk Pelaksanaan Evaluasi baru. Campaign dan hasil lama tetap tersimpan."
+                  : "Template akan kembali tersedia untuk Pelaksanaan Evaluasi baru."}
+              </p>
+            </div>
+            <footer className="participant-modal__actions">
+              <button
+                type="button"
+                className="button button--secondary"
+                disabled={updatingLifecycle}
+                onClick={() => setLifecycleTarget(null)}
+              >
+                Batal
+              </button>
+              <button
+                type="button"
+                className="button"
+                disabled={updatingLifecycle}
+                onClick={() => void updateLifecycle()}
+              >
+                {updatingLifecycle
+                  ? "Menyimpan…"
+                  : lifecycleTarget.action === "archive"
+                    ? "Archive"
+                    : "Aktifkan"}
+              </button>
+            </footer>
+          </section>
+        </ModalPortal>
+      )}
     </>
   );
 }

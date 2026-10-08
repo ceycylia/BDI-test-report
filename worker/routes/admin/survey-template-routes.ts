@@ -1,5 +1,6 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { surveyTemplateDeletionPolicy } from "../../domain/surveys/template-deletion";
 import { HttpError } from "../../http/errors";
 import {
   requireAdmin,
@@ -8,6 +9,7 @@ import {
 } from "../../middleware/admin-auth";
 import {
   cloneSurveyTemplateVersion,
+  archiveSurveyTemplate,
   createSurveyQuestion,
   createSurveySection,
   deleteSurveyQuestion,
@@ -19,6 +21,7 @@ import {
   getSurveyTemplateDetail,
   listSurveyTemplates,
   publishSurveyTemplate,
+  reactivateSurveyTemplate,
   updateSurveyQuestion,
   updateSurveySection,
   type SurveyQuestionDetail,
@@ -312,13 +315,19 @@ surveyTemplateRoutes.get("/", async (context) => {
   context.header("Cache-Control", "no-store");
 
   return context.json({
-    templates: templates.map((template) => ({
-      ...mapTemplate(template),
-
-      sectionCount: template.section_count,
-      questionCount: template.question_count,
-      campaignCount: template.campaign_count,
-    })),
+    templates: templates.map((template) => {
+      const deletion = surveyTemplateDeletionPolicy({
+        campaignCount: Number(template.campaign_count),
+      });
+      return {
+        ...mapTemplate(template),
+        sectionCount: template.section_count,
+        questionCount: template.question_count,
+        campaignCount: template.campaign_count,
+        canDelete: deletion.canDelete,
+        deleteBlockedReason: deletion.reason,
+      };
+    }),
   });
 });
 
@@ -1094,7 +1103,63 @@ surveyTemplateRoutes.post(
 
 
 // =========================================================
-// DELETE UNUSED DRAFT TEMPLATE
+// ARCHIVE / REACTIVATE TEMPLATE
+// =========================================================
+
+surveyTemplateRoutes.post(
+  "/:templateId/archive",
+  requireSameOrigin,
+  requireCsrf,
+  async (context) => {
+    const templateId = context.req.param("templateId");
+    const detail = await getSurveyTemplateDetail(context.env.DB, templateId);
+
+    if (!detail) {
+      throw new HttpError(404, "SURVEY_TEMPLATE_NOT_FOUND", "Template Evaluasi tidak ditemukan.");
+    }
+    if (detail.template.status.toUpperCase() !== "PUBLISHED") {
+      throw new HttpError(409, "SURVEY_TEMPLATE_NOT_PUBLISHED", "Hanya template Published yang dapat di-Archive.");
+    }
+
+    const changed = await archiveSurveyTemplate(context.env.DB, templateId);
+    if (!changed) {
+      throw new HttpError(409, "SURVEY_TEMPLATE_ARCHIVE_CONFLICT", "Status template telah berubah. Muat ulang halaman lalu coba kembali.");
+    }
+
+    return context.json({ success: true, status: "ARCHIVED" });
+  },
+);
+
+surveyTemplateRoutes.post(
+  "/:templateId/reactivate",
+  requireSameOrigin,
+  requireCsrf,
+  async (context) => {
+    const templateId = context.req.param("templateId");
+    const detail = await getSurveyTemplateDetail(context.env.DB, templateId);
+
+    if (!detail) {
+      throw new HttpError(404, "SURVEY_TEMPLATE_NOT_FOUND", "Template Evaluasi tidak ditemukan.");
+    }
+    if (detail.template.status.toUpperCase() !== "ARCHIVED") {
+      throw new HttpError(409, "SURVEY_TEMPLATE_NOT_ARCHIVED", "Hanya template Archived yang dapat diaktifkan kembali.");
+    }
+
+    const changed = await reactivateSurveyTemplate(context.env.DB, {
+      templateId,
+      templateName: detail.template.name,
+    });
+    if (!changed) {
+      throw new HttpError(409, "SURVEY_TEMPLATE_REACTIVATE_CONFLICT", "Status template telah berubah. Muat ulang halaman lalu coba kembali.");
+    }
+
+    return context.json({ success: true, status: "PUBLISHED" });
+  },
+);
+
+
+// =========================================================
+// DELETE UNUSED TEMPLATE
 // =========================================================
 
 surveyTemplateRoutes.delete(
@@ -1104,32 +1169,41 @@ surveyTemplateRoutes.delete(
   async (context) => {
     const templateId = context.req.param("templateId");
     const template = await context.env.DB.prepare(
-      `SELECT templates.id, templates.name, templates.version, templates.status,
-              COUNT(campaigns.id) AS campaign_count
+      `SELECT templates.id, templates.name, templates.version,
+              (SELECT COUNT(*) FROM survey_campaigns campaigns
+               WHERE campaigns.survey_template_id = templates.id) AS campaign_count,
+              (SELECT COUNT(*) FROM survey_responses responses
+               JOIN survey_campaigns campaigns ON campaigns.id = responses.survey_campaign_id
+               WHERE campaigns.survey_template_id = templates.id) AS response_count
        FROM survey_templates templates
-       LEFT JOIN survey_campaigns campaigns ON campaigns.survey_template_id = templates.id
        WHERE templates.id = ?
-       GROUP BY templates.id
        LIMIT 1`,
-    ).bind(templateId).first<{ id: string; name: string; version: number; status: string; campaign_count: number }>();
+    ).bind(templateId).first<{
+      id: string;
+      name: string;
+      version: number;
+      campaign_count: number;
+      response_count: number;
+    }>();
 
     if (!template) {
       throw new HttpError(404, "SURVEY_TEMPLATE_NOT_FOUND", "Template Evaluasi tidak ditemukan.");
     }
-    if (template.status !== "DRAFT") {
-      throw new HttpError(409, "SURVEY_TEMPLATE_DELETE_FORBIDDEN", "Hanya Template Evaluasi berstatus Draft yang boleh dihapus.");
-    }
-    if (Number(template.campaign_count) > 0) {
-      throw new HttpError(409, "SURVEY_TEMPLATE_IN_USE", "Draft ini sudah digunakan pada Pelaksanaan Evaluasi dan tidak dapat dihapus.");
+    const deletion = surveyTemplateDeletionPolicy({
+      campaignCount: Number(template.campaign_count),
+      responseCount: Number(template.response_count),
+    });
+    if (!deletion.canDelete) {
+      throw new HttpError(409, "SURVEY_TEMPLATE_DELETE_FORBIDDEN", deletion.reason ?? "Template Evaluasi tidak dapat dihapus.");
     }
 
     const deleted = await context.env.DB.prepare(
       `DELETE FROM survey_templates
-       WHERE id = ? AND status = 'DRAFT'
+       WHERE id = ?
          AND NOT EXISTS (SELECT 1 FROM survey_campaigns WHERE survey_template_id = ?)`,
     ).bind(templateId, templateId).run();
     if (!deleted.meta.changes) {
-      throw new HttpError(409, "SURVEY_TEMPLATE_DELETE_CONFLICT", "Draft tidak dapat dihapus karena status atau dependency-nya telah berubah.");
+      throw new HttpError(409, "SURVEY_TEMPLATE_DELETE_CONFLICT", "Template tidak dapat dihapus karena dependency-nya telah berubah.");
     }
 
     return context.json({ deleted: true, template: { id: template.id, name: template.name, version: template.version } });
