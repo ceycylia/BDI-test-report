@@ -7,6 +7,8 @@ export type ResultFilters = {
   cohortId?: string;
   status?: string;
   search?: string;
+  page?: number;
+  pageSize?: number;
 };
 
 export async function listResultSummaries(database: D1Database, filters: ResultFilters) {
@@ -19,9 +21,12 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
   if (filters.status) { conditions.push("result_status = ?"); bindings.push(filters.status); }
   if (filters.search) { conditions.push("normalized_name LIKE ?"); bindings.push(`%${normalizeParticipantName(filters.search)}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const pageSize = Math.min(50, Math.max(1, Math.floor(filters.pageSize ?? 20)));
+  const page = Math.max(1, Math.floor(filters.page ?? 1));
+  const pagination = filters.page === undefined && filters.pageSize === undefined ? "" : ` LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`;
   const result = await database.prepare(
     `WITH summary AS (
-      SELECT participants.id, participants.name, participants.normalized_name,
+      SELECT COALESCE(participants.id, profiles.id) AS id, COALESCE(participants.name, profiles.name) AS name, profiles.normalized_name,
         batches.id AS batch_id, batches.batch_name,
         sessions.id AS training_session_id,
         sessions.training_id AS training_id, trainings.name AS training_name,
@@ -33,20 +38,25 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
         MAX(CASE WHEN attempts.stage = 'POST' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS post_score,
         MAX(CASE WHEN attempts.stage = 'REMEDIAL_1' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS remedial_1_score,
         MAX(CASE WHEN attempts.stage = 'REMEDIAL_2' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS remedial_2_score,
-        MAX(CASE WHEN attempts.stage = 'REMEDIAL_3' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS remedial_3_score,
-        MAX(CASE WHEN attempts.stage <> 'PRE' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS final_post_score
-      FROM participants JOIN batches ON batches.id = participants.batch_id
-      JOIN training_sessions AS sessions ON sessions.id = batches.training_session_id
-      JOIN trainings ON trainings.id = sessions.training_id
+        MAX(CASE WHEN attempts.stage <> 'PRE' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS final_post_score,
+        MAX(CASE WHEN attempts.status = 'IN_PROGRESS' THEN attempts.stage END) AS active_stage
+      FROM participant_profiles AS profiles
+      JOIN trainings ON trainings.id = profiles.training_id
+      JOIN training_cohorts AS cohorts ON cohorts.id = profiles.cohort_id
+      JOIN training_sessions AS sessions ON sessions.training_id = profiles.training_id
+      JOIN batches ON batches.training_session_id = sessions.id AND batches.cohort_id = profiles.cohort_id
       JOIN training_materials AS materials ON materials.id = sessions.material_id
-      JOIN training_cohorts AS cohorts ON cohorts.id = batches.cohort_id
+      LEFT JOIN participants ON participants.profile_id = profiles.id AND participants.batch_id = batches.id
       LEFT JOIN attempts ON attempts.participant_id = participants.id AND attempts.status <> 'RESET'
-      GROUP BY participants.id
+      WHERE profiles.is_active = 1
+      GROUP BY profiles.id, sessions.id
     ), results AS (
-      SELECT *, CASE WHEN final_post_score IS NULL THEN 'BELUM_POST'
+      SELECT *, CASE WHEN active_stage IS NOT NULL THEN 'SEDANG_MENGERJAKAN'
+        WHEN pre_score IS NULL THEN 'BELUM_PRE'
+        WHEN final_post_score IS NULL THEN 'BELUM_POST'
         WHEN final_post_score >= passing_score THEN 'LULUS' ELSE 'BELUM_LULUS' END AS result_status
-      FROM summary
-    ) SELECT * FROM results ${where} ORDER BY training_name, material_name, cohort_name, name`,
+        FROM summary
+    ) SELECT *, COUNT(*) OVER() AS total_count FROM results ${where} ORDER BY training_name, material_name, cohort_name, name${pagination}`,
   ).bind(...bindings).all<Record<string, string | number | null>>();
   return result.results;
 }
@@ -88,19 +98,21 @@ export async function listResultFilterOptions(database: D1Database, year: number
 
 export async function getParticipantResult(database: D1Database, participantId: string, year?: number) {
   return database.prepare(
-    `SELECT participants.id, participants.name, participants.normalized_name,
+    `SELECT COALESCE(participants.id, profiles.id) AS id, COALESCE(participants.name, profiles.name) AS name, profiles.normalized_name,
       batches.id AS batch_id, batches.batch_name,
       sessions.training_id AS training_id, trainings.name AS training_name,
       sessions.material_id AS material_id, materials.name AS material_name,
       batches.cohort_id AS cohort_id, cohorts.name AS cohort_name,
       sessions.passing_score
-      FROM participants JOIN batches ON batches.id = participants.batch_id
-      JOIN training_sessions AS sessions ON sessions.id = batches.training_session_id
+      FROM participant_profiles AS profiles
+      JOIN training_sessions AS sessions ON sessions.training_id = profiles.training_id
+      JOIN batches ON batches.training_session_id = sessions.id AND batches.cohort_id = profiles.cohort_id
+      LEFT JOIN participants ON participants.profile_id = profiles.id AND participants.batch_id = batches.id
       JOIN trainings ON trainings.id = sessions.training_id
       JOIN training_materials AS materials ON materials.id = sessions.material_id
       JOIN training_cohorts AS cohorts ON cohorts.id = batches.cohort_id
-      WHERE participants.id = ?${year ? " AND SUBSTR(cohorts.start_date, 1, 4) = ?" : ""} LIMIT 1`,
-  ).bind(...(year ? [participantId, String(year)] : [participantId])).first<{
+      WHERE (participants.id = ? OR profiles.id = ?)${year ? " AND SUBSTR(cohorts.start_date, 1, 4) = ?" : ""} LIMIT 1`,
+  ).bind(...(year ? [participantId, participantId, String(year)] : [participantId, participantId])).first<{
     id: string; name: string; normalized_name: string; batch_id: string; batch_name: string;
     training_id: string; training_name: string; material_id: string; material_name: string;
     cohort_id: string; cohort_name: string; passing_score: number;
@@ -142,6 +154,19 @@ export async function resetAttempt(database: D1Database, attemptId: string, part
       `INSERT INTO audit_logs (id, admin_id, action, entity_type, entity_id, metadata_json)
        VALUES (?, ?, 'RESET_ATTEMPT', 'attempt', ?, json_object('participantId', ?, 'reason', ?))`,
     ).bind(crypto.randomUUID(), adminId, attemptId, participantId, reason),
+  ]);
+}
+
+export async function adjustFinalAttemptScore(database: D1Database, attemptId: string, participantId: string, adminId: string, score: number) {
+  await database.batch([
+    database.prepare(
+      `UPDATE attempts SET score = ?, updated_at = CURRENT_TIMESTAMP
+       WHERE id = ? AND participant_id = ? AND stage = 'REMEDIAL_2' AND status = 'SUBMITTED'`,
+    ).bind(score, attemptId, participantId),
+    database.prepare(
+      `INSERT INTO audit_logs (id, admin_id, action, entity_type, entity_id, metadata_json)
+       VALUES (?, ?, 'ADJUST_FINAL_SCORE', 'attempt', ?, json_object('participantId', ?, 'score', ?))`,
+    ).bind(crypto.randomUUID(), adminId, attemptId, participantId, score),
   ]);
 }
 

@@ -1,6 +1,6 @@
 import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
-import { X } from "lucide-react";
+import { Download, Eye, X } from "lucide-react";
 import { adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
 import type { PackageOverlap, TrainingBatch, TrainingDetail, TrainingPackage } from "../../features/training/types";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
@@ -12,6 +12,7 @@ import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../featur
 type ScheduleStatus = "SCHEDULED" | "OPEN_NOW" | "CLOSED";
 type ScheduleEditor = { stage: "PRE" | "POST"; status: ScheduleStatus; startAt: string; endAt: string };
 type PackageGenerator = { regenerate: boolean; questionCount: string };
+type GeneratedQuestion = { id: string; question_text: string; option_a: string; option_b: string; option_c: string; option_d: string; correct_option_key: string };
 const scheduleStatusLabels: Record<TrainingDetail["scheduleStatus"], string> = {
   NOT_OPEN: "Belum Dibuka",
   ONGOING: "Sedang Berlangsung",
@@ -34,6 +35,7 @@ export function TrainingDetailPage() {
   const [deleteConfirmation, setDeleteConfirmation] = useState("");
   const [scheduleEditor, setScheduleEditor] = useState<ScheduleEditor | null>(null);
   const [packageGenerator, setPackageGenerator] = useState<PackageGenerator | null>(null);
+  const [questionViewer, setQuestionViewer] = useState<{ batchName: string; questions: GeneratedQuestion[] } | null>(null);
 
   type DetailPayload = { session: TrainingDetail; batches: TrainingBatch[]; packages: TrainingPackage[]; overlaps: PackageOverlap[] };
 
@@ -67,9 +69,24 @@ export function TrainingDetailPage() {
       setPackages(payload.packages); setOverlaps(payload.overlaps);
       await reload();
       setPackageGenerator(null);
-      setMessage("Paket dan lima layout ujian berhasil dibuat dan langsung siap digunakan sesuai jadwal Test.");
+      setMessage("Paket dan empat layout ujian berhasil dibuat dan langsung siap digunakan sesuai jadwal Test.");
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Paket gagal dibuat."); }
     finally { setBusy(false); }
+  }
+
+  async function viewGeneratedQuestions(batchId: string, batchName: string) {
+    try {
+      const payload = await adminQuery<{ questions: GeneratedQuestion[] }>(`/api/admin/training/${sessionId}/packages/${batchId}/questions`);
+      setQuestionViewer({ batchName, questions: payload.questions });
+    } catch (reason) { setError(reason instanceof Error ? reason.message : "Soal tidak dapat dimuat."); }
+  }
+
+  function downloadGeneratedQuestions() {
+    if (!questionViewer) return;
+    const rows = [["No", "Soal", "Pilihan A", "Pilihan B", "Pilihan C", "Pilihan D", "Jawaban benar"], ...questionViewer.questions.map((question, index) => [String(index + 1), question.question_text, question.option_a, question.option_b, question.option_c, question.option_d, question.correct_option_key])];
+    const csv = rows.map((row) => row.map((value) => `"${String(value).replace(/"/gu, '""')}"`).join(",")).join("\r\n");
+    const url = URL.createObjectURL(new Blob([`\ufeff${csv}`], { type: "text/csv;charset=utf-8" }));
+    const link = document.createElement("a"); link.href = url; link.download = `soal-${questionViewer.batchName.replace(/[^a-z0-9]+/gi, "-").toLowerCase()}.csv`; link.click(); URL.revokeObjectURL(url);
   }
 
   async function setStage(stage: "PRE" | "POST", open: boolean) {
@@ -148,17 +165,18 @@ export function TrainingDetailPage() {
     <section className="training-overview-grid">
       <article className="panel"><span>Bank Soal</span><strong>{session.bankName}</strong></article>
       <article className="panel"><span>Jumlah soal</span><strong>{session.questionCount}</strong></article>
-      <article className="panel"><span>Durasi</span><strong>15 menit</strong></article>
+      <article className="panel"><span>Durasi</span><strong>{session.durationMinutes} menit</strong></article>
       <article className="panel"><span>Passing grade</span><strong>{session.passingScore}</strong></article>
     </section>
     {error && <p className="form-message is-error">{error}</p>}
     {message && <p className="form-message is-success">{message}</p>}
     <section className="panel training-batches"><div className="package-heading"><div><p className="section-label">Angkatan</p><h2>Paket soal</h2></div>
       {session.status !== "COMPLETED" && <div className="button-row"><button className="button button--secondary" disabled={busy} onClick={() => setPackageGenerator({ regenerate: hasGeneratedPackages, questionCount: String(Math.min(10, session.availableQuestionCount)) })}>{hasGeneratedPackages ? "Regenerate paket" : "Generate paket"}</button></div>}</div>
-      {batches.map((batch) => { const item = packages.find((entry) => entry.batchId === batch.id); return <article key={batch.id}><div><strong>{batch.name}</strong><span>{item?.questionIds.length ? `${item.questionIds.length} soal · ${item.layoutCount}/5 layout` : "Paket belum dibuat"}</span></div>{item?.questionIds.length ? <ol className="question-id-list">{item.questionIds.map((id) => <li key={id}><code>{id}</code></li>)}</ol> : null}</article>; })}
+      {batches.map((batch) => { const item = packages.find((entry) => entry.batchId === batch.id); return <article key={batch.id}><div><strong>{batch.name}</strong><span>{item?.questionIds.length ? `${item.questionIds.length} soal · ${item.layoutCount}/4 layout` : "Paket belum dibuat"}</span></div>{item?.questionIds.length ? <div className="button-row"><button type="button" className="button button--secondary button--small" onClick={() => void viewGeneratedQuestions(batch.id, batch.name)}><Eye />Lihat soal</button></div> : null}</article>; })}
       {overlaps.length > 0 && packages.every((item) => item.questionIds.length > 0) && <div className="overlap-list"><h3>Overlap antarangkatan</h3>{overlaps.map((item) => { const left = packages.find((entry) => entry.batchId === item.leftBatchId); const right = packages.find((entry) => entry.batchId === item.rightBatchId); return <p key={`${item.leftBatchId}-${item.rightBatchId}`}><span>{left?.batchName} ↔ {right?.batchName}</span><strong>{item.count} soal</strong></p>; })}</div>}
     </section>
     {packageGenerator && <ModalPortal onClose={() => setPackageGenerator(null)} blocked={busy}><section className="participant-modal package-generator-modal" role="dialog" aria-modal="true" aria-labelledby="package-generator-title"><header className="participant-modal__header"><div><p className="section-label">Paket Soal</p><h2 id="package-generator-title">{packageGenerator.regenerate ? "Regenerate Paket Soal" : "Generate Paket Soal"}</h2><p>Tentukan jumlah soal untuk setiap paket angkatan.</p></div><button type="button" className="participant-modal__close" aria-label="Tutup generate paket soal" disabled={busy} onClick={() => setPackageGenerator(null)}><X /></button></header><form className="participant-modal__form package-generator-form" onSubmit={(event) => void generatePackages(event)}><label>Jumlah soal per paket<input type="number" min="1" max={session.availableQuestionCount} step="1" inputMode="numeric" required autoFocus value={packageGenerator.questionCount} onChange={(event) => setPackageGenerator((current) => current ? { ...current, questionCount: event.target.value } : current)} /></label><p className="package-generator-availability">Tersedia <strong>{session.availableQuestionCount}</strong> soal</p>{packageGenerator.regenerate && <p className="package-generator-warning">Paket existing untuk seluruh angkatan akan dibuat ulang dengan jumlah soal ini.</p>}{packageCountError && <p className="form-message is-error" role="alert">{packageCountError}</p>}<footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={busy} onClick={() => setPackageGenerator(null)}>Batal</button><button className="button" disabled={busy || Boolean(packageCountError)}>{busy ? "Membuat paket…" : "Generate Paket"}</button></footer></form></section></ModalPortal>}
+    {questionViewer && <ModalPortal onClose={() => setQuestionViewer(null)}><section className="participant-modal question-viewer-modal" role="dialog" aria-modal="true" aria-labelledby="question-viewer-title"><header className="participant-modal__header"><div><p className="section-label">Paket Soal</p><h2 id="question-viewer-title">{questionViewer.batchName} · {questionViewer.questions.length} soal</h2><p>Soal yang benar-benar dipilih saat generate paket.</p></div><button type="button" className="participant-modal__close" aria-label="Tutup daftar soal" onClick={() => setQuestionViewer(null)}><X /></button></header><div className="question-viewer-list">{questionViewer.questions.map((question, index) => <article key={question.id}><strong>{index + 1}. {question.question_text}</strong><ol type="A"><li>{question.option_a}</li><li>{question.option_b}</li><li>{question.option_c}</li><li>{question.option_d}</li></ol><small>Kunci jawaban: {question.correct_option_key}</small></article>)}</div><footer className="participant-modal__actions"><button type="button" className="button" onClick={downloadGeneratedQuestions}><Download />Download {questionViewer.questions.length} soal</button></footer></section></ModalPortal>}
     <section className="schedule-control-grid">
       {(["PRE", "POST"] as const).map((stage) => {
         const schedule = stage === "PRE" ? session.pre : session.post;

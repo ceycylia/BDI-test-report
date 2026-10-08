@@ -21,7 +21,7 @@ type Draft = {
 type ScheduleMode = "OPEN_NOW" | "SCHEDULED";
 
 const initialDraft: Draft = {
-  trainingId: "", materialId: "", cohortId: "", passingScore: 75,
+  trainingId: "", materialId: "", cohortId: "", passingScore: 80,
   preMode: "SCHEDULED", postMode: "SCHEDULED",
   preStartAt: "", preEndAt: "", postStartAt: "", postEndAt: "",
 };
@@ -114,7 +114,7 @@ export function TrainingCreatePage() {
         <label>Angkatan<select required disabled={!draft.trainingId} value={draft.cohortId} onChange={(event) => update("cohortId", event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>
         <label>Passing Grade<input type="number" min={0} max={100} step="0.01" required value={draft.passingScore} onChange={(event) => update("passingScore", Number(event.target.value))} /></label>
       </div>{draft.trainingId && !materials.length && <p className="form-message is-error">Pelatihan ini belum mempunyai materi dengan Bank Soal.</p>}{draft.trainingId && !cohorts.length && <p className="form-message is-error">Pelatihan ini belum mempunyai angkatan aktif.</p>}</fieldset>
-      <div className="fixed-test-rule"><Clock3 /><div><strong>Durasi pengerjaan otomatis</strong><span>15 menit untuk setiap tes. Remedial maksimal 3 kali.</span></div></div>
+      <div className="fixed-test-rule"><Clock3 /><div><strong>Durasi pengerjaan otomatis</strong><span>7 menit untuk setiap tes. Tambahan waktu maksimal 1 menit.</span></div></div>
       <section className="test-schedule-section" aria-labelledby="test-schedule-title"><div className="test-schedule-section__heading"><span>02</span><div><h2 id="test-schedule-title">Jadwal Pelaksanaan</h2><p>Pre-Test dan Post-Test dapat memakai mode akses yang berbeda.</p></div></div><div className="test-schedule-grid">
         <fieldset><legend><CalendarClock /> Pre-Test</legend><ScheduleModeControl value={draft.preMode} onChange={(value) => update("preMode", value)} label="Pre-Test" />{draft.preMode === "SCHEDULED" ? <div className="test-schedule-fields"><label>Tanggal dan jam buka<DateTimeInput required value={draft.preStartAt} onValueChange={(value) => update("preStartAt", value)} aria-label="Tanggal buka Pre-Test" /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.preEndAt} onValueChange={(value) => update("preEndAt", value)} aria-label="Tanggal tutup Pre-Test" /></label></div> : <p className="test-schedule-open-note">Pre-Test langsung terbuka setelah disimpan dan tetap terbuka sampai ditutup manual.</p>}</fieldset>
         <fieldset><legend><CalendarClock /> Post-Test</legend><ScheduleModeControl value={draft.postMode} onChange={(value) => update("postMode", value)} label="Post-Test" />{draft.postMode === "SCHEDULED" ? <div className="test-schedule-fields"><label>Tanggal dan jam buka<DateTimeInput required value={draft.postStartAt} onValueChange={(value) => update("postStartAt", value)} aria-label="Tanggal buka Post-Test" /></label><label>Tanggal dan jam tutup<DateTimeInput required value={draft.postEndAt} onValueChange={(value) => update("postEndAt", value)} aria-label="Tanggal tutup Post-Test" /></label></div> : <p className="test-schedule-open-note">Post-Test langsung terbuka setelah disimpan dan tetap terbuka sampai ditutup manual.</p>}</fieldset>

@@ -78,7 +78,7 @@ export function TrainingEntryFoundationPage() {
         <Link className="participant-home-back" to="/" aria-label="Kembali ke menu utama peserta">← Kembali</Link>
         <div className="entry-card__eyebrow">Pelatihan BDI</div>
         <h1 id="training-title">{data?.training.name ?? "Memuat pelatihan…"}</h1>
-        {data && <p className="entry-card__lead">{data.training.questionCount} soal · 15 menit<br />Periode {formatDateForDisplay(data.training.startDate)} sampai {formatDateForDisplay(data.training.endDate)}</p>}
+        {data && <p className="entry-card__lead">{data.training.questionCount} soal · {data.training.durationMinutes} menit<br />Periode {formatDateForDisplay(data.training.startDate)} sampai {formatDateForDisplay(data.training.endDate)}</p>}
         {error && <p className="form-message is-error" role="alert">{error}</p>}
         {data && !identity && <form className="participant-entry-form" autoComplete="off" onSubmit={(event) => void identify(event)}>
           <label>Nama Lengkap<input name="participantName" value={name} onChange={(event) => setName(event.target.value)} autoComplete="name" placeholder="Masukkan nama lengkap" required minLength={2} maxLength={150} /></label>
@@ -89,7 +89,7 @@ export function TrainingEntryFoundationPage() {
         </form>}
         {identity && <div className="participant-confirmation">
           <p className="section-label">Data peserta</p><h2>{identity.participant.name}</h2>
-          <dl><div><dt>Angkatan</dt><dd>{identity.batch.name}</dd></div><div><dt>Jumlah soal</dt><dd>{identity.training.questionCount}</dd></div><div><dt>Durasi</dt><dd>15 menit</dd></div></dl>
+          <dl><div><dt>Angkatan</dt><dd>{identity.batch.name}</dd></div><div><dt>Jumlah soal</dt><dd>{identity.training.questionCount}</dd></div><div><dt>Durasi</dt><dd>{identity.training.durationMinutes} menit</dd></div></dl>
           {(() => {
             const pre = identity.availability.attempts.find((attempt) => attempt.stage === "PRE");
             if (pre?.status === "IN_PROGRESS") return <button className="button participant-primary-button" disabled={busy} onClick={() => void startTest("PRE")}>{busy ? "Menyiapkan…" : "LANJUTKAN PRE-TEST"}</button>;

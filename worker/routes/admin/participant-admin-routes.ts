@@ -45,6 +45,7 @@ const trainingInput = z.object({
 });
 const materialInput = z.object({
   trainingId: z.string().min(1),
+  unitCode: z.string().trim().max(100).nullable().optional(),
   name: z.string().trim().min(2).max(200),
   jp: z.number().int().positive().max(999),
   sortOrder: z.number().int().positive().max(999),
@@ -55,6 +56,7 @@ const materialImportInput = z.object({
     .array(
       z.object({
         row: z.number().int().positive(),
+        unitCode: z.string().trim().max(100).optional(),
         name: z.string(),
         jp: z.number(),
         sortOrder: z.number(),
@@ -294,13 +296,15 @@ participantAdminRoutes.post(
     );
     if (!parsed.success) throw validationError(parsed);
     const id = crypto.randomUUID();
+    const unitCode = parsed.data.unitCode?.trim() || null;
     try {
       await c.env.DB.prepare(
-        `INSERT INTO training_materials(id,training_id,name,jp,sort_order) VALUES(?,?,?,?,?)`
+        `INSERT INTO training_materials(id,training_id,unit_code,name,jp,sort_order) VALUES(?,?,?,?,?,?)`
       )
         .bind(
           id,
           parsed.data.trainingId,
+          unitCode,
           parsed.data.name,
           parsed.data.jp,
           parsed.data.sortOrder
@@ -328,6 +332,11 @@ participantAdminRoutes.put(
     );
     if (!parsed.success) throw validationError(parsed);
     const id = c.req.param("id");
+    const hasUnitCode = Object.prototype.hasOwnProperty.call(
+      parsed.data,
+      "unitCode"
+    );
+    const unitCode = parsed.data.unitCode?.trim() || null;
     const current = await c.env.DB.prepare(
       `SELECT training_id,sort_order,EXISTS(SELECT 1 FROM question_banks WHERE material_id=training_materials.id) has_bank FROM training_materials WHERE id=?`
     )
@@ -358,19 +367,36 @@ participantAdminRoutes.put(
             `UPDATE training_materials SET sort_order=? WHERE id=?`
           ).bind(maximum?.temporary_order ?? 1000000, conflict.id),
           c.env.DB.prepare(
-            `UPDATE training_materials SET name=?,jp=?,sort_order=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`
-          ).bind(parsed.data.name, parsed.data.jp, parsed.data.sortOrder, id),
+            `UPDATE training_materials
+                SET name=?,
+                    unit_code=CASE WHEN ?=1 THEN ? ELSE unit_code END,
+                    jp=?,sort_order=?,updated_at=CURRENT_TIMESTAMP
+              WHERE id=?`
+          ).bind(
+            parsed.data.name,
+            hasUnitCode ? 1 : 0,
+            unitCode,
+            parsed.data.jp,
+            parsed.data.sortOrder,
+            id
+          ),
           c.env.DB.prepare(
             `UPDATE training_materials SET sort_order=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`
           ).bind(current.sort_order, conflict.id),
         ]);
       } else {
         await c.env.DB.prepare(
-          `UPDATE training_materials SET training_id=?,name=?,jp=?,sort_order=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`
+          `UPDATE training_materials
+              SET training_id=?,name=?,
+                  unit_code=CASE WHEN ?=1 THEN ? ELSE unit_code END,
+                  jp=?,sort_order=?,updated_at=CURRENT_TIMESTAMP
+            WHERE id=?`
         )
           .bind(
             parsed.data.trainingId,
             parsed.data.name,
+            hasUnitCode ? 1 : 0,
+            unitCode,
             parsed.data.jp,
             parsed.data.sortOrder,
             id
@@ -469,25 +495,37 @@ participantAdminRoutes.post(
           .trim()
           .toLocaleLowerCase("id")
       ) ?? [];
-    if (
-      header[0] !== "nama materi" ||
-      header[1] !== "jumlah jp" ||
-      header[2] !== "urutan"
-    )
+    const hasUnitCodeColumn =
+      header[0] === "kode unit" &&
+      header[1] === "nama materi" &&
+      header[2] === "jumlah jp" &&
+      header[3] === "urutan";
+    const usesLegacyColumns =
+      header[0] === "nama materi" &&
+      header[1] === "jumlah jp" &&
+      header[2] === "urutan";
+    if (!hasUnitCodeColumn && !usesLegacyColumns)
       throw new HttpError(
         422,
         "MATERIAL_TEMPLATE_INVALID",
-        "Header template harus: Nama Materi, Jumlah JP, Urutan."
+        "Header template harus: Kode Unit, Nama Materi, Jumlah JP, Urutan."
       );
     const rows = values
       .slice(1)
       .map((value, index) => {
-        const name = String(value[0] ?? "").trim();
-        const jpCell = String(value[1] ?? "").trim();
-        const sortOrderCell = String(value[2] ?? "").trim();
+        const unitCode = hasUnitCodeColumn
+          ? String(value[0] ?? "").trim()
+          : "";
+        const name = String(value[hasUnitCodeColumn ? 1 : 0] ?? "").trim();
+        const jpCell = String(value[hasUnitCodeColumn ? 2 : 1] ?? "").trim();
+        const sortOrderCell = String(
+          value[hasUnitCodeColumn ? 3 : 2] ?? ""
+        ).trim();
         const jp = jpCell ? Number(jpCell) : Number.NaN;
         const sortOrder = sortOrderCell ? Number(sortOrderCell) : Number.NaN;
         const errors: string[] = [];
+        if (unitCode.length > 100)
+          errors.push("Kode unit maksimal 100 karakter.");
         if (!name) errors.push("Nama materi wajib diisi.");
         else if (name.length > 200)
           errors.push("Nama materi maksimal 200 karakter.");
@@ -497,11 +535,12 @@ participantAdminRoutes.post(
           errors.push("Urutan harus bilangan 1–999.");
         return {
           row: index + 2,
+          unitCode,
           name,
           jp,
           sortOrder,
           errors,
-          hasValue: Boolean(name || jpCell || sortOrderCell),
+          hasValue: Boolean(unitCode || name || jpCell || sortOrderCell),
         };
       })
       .filter((row) => row.hasValue)
@@ -558,6 +597,7 @@ participantAdminRoutes.post(
     for (const row of data.rows) {
       const check = materialInput.safeParse({
         trainingId: data.trainingId,
+        unitCode: row.unitCode ?? "",
         name: row.name,
         jp: row.jp,
         sortOrder: row.sortOrder,
@@ -577,10 +617,11 @@ participantAdminRoutes.post(
       await c.env.DB.batch(
         data.rows.map((row) =>
           c.env.DB.prepare(
-            `INSERT INTO training_materials(id,training_id,name,jp,sort_order) VALUES(?,?,?,?,?)`
+            `INSERT INTO training_materials(id,training_id,unit_code,name,jp,sort_order) VALUES(?,?,?,?,?,?)`
           ).bind(
             crypto.randomUUID(),
             data.trainingId,
+            row.unitCode?.trim() || null,
             row.name.trim(),
             row.jp,
             row.sortOrder
@@ -1387,7 +1428,7 @@ participantAdminRoutes.put(
         signerTitle: z.string().max(150),
         signerNip: z.string().max(80),
         issuePlace: z.string().max(120),
-        issueDate: z.string().date(),
+        issueDate: z.string().date().or(z.literal("")).optional().default(""),
       })
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
@@ -1423,9 +1464,7 @@ participantAdminRoutes.post(
     }> = [];
     for (const [field, column] of [
       ["signature", "signature_key"],
-      ["stamp", "stamp_key"],
-      ["frontTemplate", "front_template_key"],
-      ["backTemplate", "back_template_key"],
+      // Stamp and preview backgrounds are intentionally no longer configurable.
     ] as const) {
       const file = form.get(field);
       if (file instanceof File && file.size) {
@@ -1433,7 +1472,7 @@ participantAdminRoutes.post(
           throw new HttpError(
             422,
             "IMAGE_INVALID",
-            "Tanda tangan, stempel, atau template harus berupa gambar maksimal 8 MB."
+            "Tanda tangan harus berupa gambar maksimal 8 MB."
           );
         const ext = file.type.includes("png") ? "png" : "jpg";
         const key = `certificates/assets/global/${field}-${crypto.randomUUID()}.${ext}`;
@@ -1468,12 +1507,15 @@ function fontBytes(dataUri: string) {
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 function cohortLabel(value: unknown) {
-  const name = String(value ?? "").trim();
-  return /^angkatan\b/i.test(name) ? name : `Angkatan ${name}`;
+  const name = upperName(value);
+  return /^ANGKATAN\b/u.test(name) ? name : `ANGKATAN ${name}`;
 }
 function trainingLabel(value: unknown) {
-  const name = String(value ?? "").trim();
-  return /^pelatihan\b/i.test(name) ? name : `Pelatihan ${name}`;
+  const name = upperName(value);
+  return /^PELATIHAN\b/u.test(name) ? name : `PELATIHAN ${name}`;
+}
+function upperName(value: unknown) {
+  return String(value ?? "").trim().toLocaleUpperCase("id-ID");
 }
 function formatLongDate(value: string) {
   const date = new Date(`${value}T00:00:00Z`);
@@ -1500,7 +1542,7 @@ function formatLongDate(value: string) {
 async function certificateData(db: D1Database, profileId: string) {
   return db
     .prepare(
-      `WITH score AS (SELECT MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id=?) SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date,(SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,score.final_score,score.passing_score,settings.signer_name,settings.signer_title,settings.signer_nip,settings.issue_place,settings.issue_date,settings.signature_key,settings.stamp_key,settings.front_template_key,settings.back_template_key FROM participant_profiles p JOIN trainings t ON t.id=p.training_id JOIN training_cohorts c ON c.id=p.cohort_id CROSS JOIN score LEFT JOIN global_certificate_settings settings ON settings.id=1 WHERE p.id=?`
+      `WITH score AS (SELECT MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id=?) SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date AS issue_date,(SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,score.final_score,score.passing_score,settings.signer_name,settings.signer_title,settings.signer_nip,settings.issue_place,settings.signature_key FROM participant_profiles p JOIN trainings t ON t.id=p.training_id JOIN training_cohorts c ON c.id=p.cohort_id CROSS JOIN score LEFT JOIN global_certificate_settings settings ON settings.id=1 WHERE p.id=?`
     )
     .bind(profileId, profileId)
     .first<Record<string, unknown>>();
@@ -1795,7 +1837,7 @@ async function renderCertificate(
       d
     );
     const rows = [
-      ["Nama", String(d.name)],
+      ["Nama", upperName(d.name)],
       ["NIK", String(d.nik)],
       [
         "Tempat, tanggal lahir",
@@ -1851,14 +1893,12 @@ async function renderCertificate(
       12,
       d
     );
-    const stamp = await embedImage(c, pdf, d.stamp_key);
-    if (stamp) drawImageContained(page, stamp, l.stamp, d);
     const signature = await embedImage(c, pdf, d.signature_key);
     if (signature) drawImageContained(page, signature, l.signature, d);
     drawCentered(
       page,
       bold,
-      String(d.signer_name || ""),
+      upperName(d.signer_name),
       l.signerName.x,
       l.signerName.y,
       12,
@@ -1885,10 +1925,10 @@ async function renderCertificate(
       d
     );
     const materials = await c.env.DB.prepare(
-      `SELECT name,jp FROM training_materials WHERE training_id=? ORDER BY sort_order`
+      `SELECT unit_code,name FROM training_materials WHERE training_id=? ORDER BY sort_order`
     )
       .bind(d.training_id)
-      .all<{ name: string; jp: number }>();
+      .all<{ name: string; unit_code: string | null }>();
     const rowHeight = 8;
     const rows = Math.max(materials.results.length, 1);
     const headerBottom = l.table.top + l.table.headerHeight;
@@ -1897,7 +1937,7 @@ async function renderCertificate(
       l.table.number.left,
       l.table.number.right,
       l.table.material.right,
-      l.table.jp.right,
+      l.table.unitCode.right,
       l.table.result.right,
     ];
     drawRule(
@@ -1939,18 +1979,17 @@ async function renderCertificate(
     for (const [text, left, right] of [
       ["No", l.table.number.left, l.table.number.right],
       ["Unit Kompetensi", l.table.material.left, l.table.material.right],
-      ["Jam Pelajaran\n(JP)", l.table.jp.left, l.table.jp.right],
+      ["Kode Unit", l.table.unitCode.left, l.table.unitCode.right],
       ["Hasil", l.table.result.left, l.table.result.right],
     ] as const) {
       const lines = text.split("\n");
-      const yOffset = text.startsWith("Jam Pelajaran") ? -2 : 0;
       lines.forEach((line, index) =>
         drawCentered(
           page,
           bold,
           line,
           (left + right) / 2,
-          headerY + yOffset + index * 4.2,
+          headerY + index * 4.2,
           10,
           d
         )
@@ -1970,7 +2009,7 @@ async function renderCertificate(
       drawTextAt(
         page,
         regular,
-        material.name,
+        upperName(material.name),
         l.table.material.left + 1.5,
         y,
         9.5,
@@ -1979,10 +2018,10 @@ async function renderCertificate(
       drawCentered(
         page,
         regular,
-        String(material.jp),
-        (l.table.jp.left + l.table.jp.right) / 2,
+        material.unit_code ? String(material.unit_code).trim().toLocaleUpperCase("id-ID") : "",
+        (l.table.unitCode.left + l.table.unitCode.right) / 2,
         y,
-        9.5,
+        8.5,
         d
       );
       drawCentered(
@@ -2046,7 +2085,7 @@ async function renderCompletionLetter(
 
   drawTextAt(page, regular, "Yang bertanda tangan di bawah ini:", 25, 81, bodySize, d);
   const officialRows = [
-    ["Nama", String(d.signer_name || "")],
+    ["Nama", upperName(d.signer_name)],
     ["NIP", String(d.signer_nip || "")],
     ["Jabatan", String(d.signer_title || "")],
   ];
@@ -2059,7 +2098,7 @@ async function renderCompletionLetter(
 
   drawTextAt(page, regular, "menerangkan bahwa:", 25, 115, bodySize, d);
   const participantRows = [
-    ["Nama", String(d.name || "")],
+    ["Nama", upperName(d.name)],
     ["NIK", String(d.nik || "")],
     ["Tanggal, tempat lahir", `${formatLongDate(String(d.birth_date))}, ${String(d.birth_place || "")}`],
   ];
@@ -2076,7 +2115,7 @@ async function renderCompletionLetter(
   drawJustified(
     page,
     regular,
-    `telah menyelesaikan ${trainingLabel(d.training_name)} yang dilaksanakan pada tanggal ${formatLongDate(String(d.start_date))} s.d. ${formatLongDate(String(d.end_date))} selama ${d.total_jp} jam pelatihan.`,
+    `telah menyelesaikan ${trainingLabel(d.training_name)} yang dilaksanakan pada tanggal ${formatLongDate(String(d.start_date))} s.d. ${formatLongDate(String(d.end_date))} selama ${d.total_jp} JPL.`,
     25,
     169,
     160,
@@ -2100,11 +2139,9 @@ async function renderCompletionLetter(
   const issueText = `${String(d.issue_place || "Medan")}, ${d.issue_date ? formatLongDate(String(d.issue_date)) : "Tanggal penerbitan belum diisi"}`;
   drawCentered(page, regular, issueText, 145, 204, bodySize, d);
   drawCentered(page, regular, String(d.signer_title || ""), 145, 211, bodySize, d);
-  const stamp = await embedImage(c, pdf, d.stamp_key);
-  if (stamp) drawImageContained(page, stamp, { x: 127, y: 214, width: 36, height: 22 }, d);
   const signature = await embedImage(c, pdf, d.signature_key);
   if (signature) drawImageContained(page, signature, { x: 122, y: 216, width: 46, height: 14 }, d);
-  const signerName = String(d.signer_name || "");
+  const signerName = upperName(d.signer_name);
   drawCentered(page, bold, signerName, 145, 237, bodySize, d);
   const signerNameWidth = bold.widthOfTextAtSize(safeText(signerName), bodySize) / mm(1);
   if (signerName) drawRule(page, 145 - signerNameWidth / 2, 238.2, 145 + signerNameWidth / 2, 238.2, d);
@@ -2128,7 +2165,7 @@ async function combinePdfDocuments(documents: Uint8Array[]) {
 }
 
 function safeDocumentName(value: string) {
-  return value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-|-$/g, "") || "peserta";
+  return value.toLocaleUpperCase("id-ID").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-|-$/g, "") || "PESERTA";
 }
 participantAdminRoutes.put(
   "/certificates/:participantId/number",
@@ -2234,12 +2271,6 @@ participantAdminRoutes.put(
     if (new Set(participantIds).size !== participantIds.length)
       throw new HttpError(422, "DATA_INVALID", "Peserta tidak boleh muncul lebih dari sekali.");
 
-    const settings = await c.env.DB.prepare(
-      `SELECT issue_date FROM global_certificate_settings WHERE id=1`
-    ).first<{ issue_date: string | null }>();
-    if (!settings?.issue_date)
-      throw new HttpError(409, "ISSUE_DATE_REQUIRED", "Atur tanggal penerbitan terlebih dahulu.");
-
     const profiles = await c.env.DB.prepare(
       `WITH scores AS (
         SELECT p.profile_id,
@@ -2251,8 +2282,9 @@ participantAdminRoutes.put(
         WHERE p.profile_id IS NOT NULL
         GROUP BY p.profile_id
       )
-      SELECT profiles.id,profiles.training_id,profiles.cohort_id,scores.final_score,scores.passing_score
+      SELECT profiles.id,profiles.training_id,profiles.cohort_id,cohorts.end_date AS issue_date,scores.final_score,scores.passing_score
       FROM participant_profiles profiles
+      JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
       LEFT JOIN scores ON scores.profile_id=profiles.id
       WHERE profiles.id IN (SELECT value FROM json_each(?))`
     ).bind(JSON.stringify(participantIds)).all<{
@@ -2261,6 +2293,7 @@ participantAdminRoutes.put(
       cohort_id: string;
       final_score: number | null;
       passing_score: number | null;
+      issue_date: string;
     }>();
     if (
       profiles.results.length !== participantIds.length ||
@@ -2338,7 +2371,7 @@ participantAdminRoutes.put(
           profile.training_id,
           profile.cohort_id,
           entry.certificateNumber,
-          settings.issue_date
+          profile.issue_date
         ));
       }
       if (entry.completionLetterNumber) {
@@ -2355,7 +2388,7 @@ participantAdminRoutes.put(
           profile.training_id,
           profile.cohort_id,
           entry.completionLetterNumber,
-          settings.issue_date
+          profile.issue_date
         ));
       }
     }

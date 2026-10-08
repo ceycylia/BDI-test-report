@@ -123,7 +123,7 @@ export function TrainingListPage() {
                 <span className={`status-badge schedule-status-${session.scheduleStatus.toLowerCase()}`}>{scheduleLabels[session.scheduleStatus]}</span>
               </div>
               <p>{session.trainingName}{session.cohorts.length ? ` · ${session.cohorts.map((cohort) => cohort.name).join(", ")}` : ""}</p>
-              <span>{session.questionCount} soal · 15 menit · {formatDateForDisplay(session.trainingStartDate)} – {formatDateForDisplay(session.trainingEndDate)}</span>
+              <span>{session.questionCount} soal · {session.durationMinutes} menit · {formatDateForDisplay(session.trainingStartDate)} – {formatDateForDisplay(session.trainingEndDate)}</span>
             </div>
             <Link className="button button--secondary" to={`/admin/pelatihan/${session.id}`}>Buka</Link>
           </article>

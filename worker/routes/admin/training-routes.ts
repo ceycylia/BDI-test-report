@@ -372,6 +372,22 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
   });
 });
 
+trainingRoutes.get("/:sessionId/packages/:batchId/questions", async (context) => {
+  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
+  if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
+  const rows = await context.env.DB.prepare(
+    `SELECT questions.id,questions.question_text,questions.image_key,
+            questions.option_a,questions.option_b,questions.option_c,questions.option_d,
+            questions.correct_option_key
+       FROM batch_questions
+       JOIN batches ON batches.id=batch_questions.batch_id
+       JOIN questions ON questions.id=batch_questions.question_id
+      WHERE batches.id=? AND batches.training_session_id=?
+      ORDER BY batch_questions.created_at,questions.created_at`
+  ).bind(context.req.param("batchId"), session.id).all();
+  return context.json({ questions: rows.results });
+});
+
 trainingRoutes.post("/:sessionId/activate", requireSameOrigin, requireCsrf, async (context) => {
   const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");

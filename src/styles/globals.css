@@ -1201,6 +1201,8 @@ h2 {
 .result-lulus { background: #dff5ea; color: #12643f; }
 .result-belum_lulus { background: #fff0e5; color: #9a421b; }
 .result-belum_post { background: #edf1f4; color: #4f6170; }
+.result-belum_pre { background: #f3f4f6; color: #64748b; }
+.result-sedang_mengerjakan { background: #fff4d6; color: #956b08; }
 .participant-name-editor { display: grid; grid-template-columns: 1fr auto; align-items: end; gap: 0.75rem; margin-bottom: 1rem; }
 .attempt-details article > header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
 .attempt-score { color: var(--color-primary); font-size: 2.5rem; }

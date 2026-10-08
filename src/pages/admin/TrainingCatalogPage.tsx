@@ -35,6 +35,7 @@ type Material = {
   id: string;
   training_id: string;
   training_name: string;
+  unit_code: string | null;
   name: string;
   jp: number;
   sort_order: number;
@@ -49,6 +50,7 @@ type Catalog = {
 };
 type MaterialImportRow = {
   row: number;
+  unitCode: string;
   name: string;
   jp: number;
   sortOrder: number;
@@ -198,6 +200,7 @@ export function TrainingCatalogPage() {
         method: "POST",
         body: JSON.stringify({
           trainingId: form.get("trainingId"),
+          unitCode: form.get("unitCode"),
           name: form.get("name"),
           jp: Number(form.get("jp")),
           sortOrder: Number(form.get("sortOrder")),
@@ -282,6 +285,7 @@ export function TrainingCatalogPage() {
           method: "PUT",
           body: JSON.stringify({
             trainingId: form.get("trainingId"),
+            unitCode: form.get("unitCode"),
             name: form.get("name"),
             jp: Number(form.get("jp")),
             sortOrder: Number(form.get("sortOrder")),
@@ -610,6 +614,7 @@ export function TrainingCatalogPage() {
               <table className="clean-table">
                 <thead>
                   <tr>
+                    <th>Kode Unit</th>
                     <th>Materi</th>
                     <th>Pelatihan</th>
                     <th>JP</th>
@@ -621,6 +626,7 @@ export function TrainingCatalogPage() {
                 <tbody>
                   {displayedMaterials.map((material) => (
                     <tr key={material.id}>
+                      <td>{material.unit_code || "—"}</td>
                       <td>
                         <strong>{material.name}</strong>
                       </td>
@@ -784,6 +790,14 @@ export function TrainingCatalogPage() {
                 <SearchableSelect name="trainingId" required autoFocus placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.filter((item) => item.is_active).map((item) => ({ value: item.id, label: item.name }))} />
               </label>
               <label>
+                Kode Unit <small>(opsional)</small>
+                <input
+                  name="unitCode"
+                  maxLength={100}
+                  placeholder="Contoh: MEK.PW12.211.00"
+                />
+              </label>
+              <label>
                 Nama Materi
                 <input name="name" required />
               </label>
@@ -917,6 +931,15 @@ export function TrainingCatalogPage() {
                 </select>
               </label>
               <label>
+                Kode Unit <small>(opsional)</small>
+                <input
+                  name="unitCode"
+                  maxLength={100}
+                  defaultValue={editingMaterial.unit_code ?? ""}
+                  placeholder="Contoh: MEK.PW12.211.00"
+                />
+              </label>
+              <label>
                 Nama Materi
                 <input
                   name="name"
@@ -974,8 +997,8 @@ export function TrainingCatalogPage() {
                 <p className="section-label">Kurikulum</p>
                 <h2 id="import-material-title">Import Materi</h2>
                 <p>
-                  Gunakan template Excel dengan kolom Nama Materi, Jumlah JP,
-                  dan Urutan.
+                  Gunakan template Excel dengan kolom Kode Unit, Nama Materi,
+                  Jumlah JP, dan Urutan. Kode Unit boleh dikosongkan.
                 </p>
               </div>
               <button
@@ -1076,6 +1099,7 @@ export function TrainingCatalogPage() {
                       <thead>
                         <tr>
                           <th>Baris</th>
+                          <th>Kode Unit</th>
                           <th>Nama Materi</th>
                           <th>JP</th>
                           <th>Urutan</th>
@@ -1089,6 +1113,7 @@ export function TrainingCatalogPage() {
                             className={row.errors.length ? "is-invalid" : ""}
                           >
                             <td>{row.row}</td>
+                            <td>{row.unitCode || "—"}</td>
                             <td>{row.name}</td>
                             <td>{row.jp}</td>
                             <td>{row.sortOrder}</td>

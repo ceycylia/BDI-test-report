@@ -2,7 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { HttpError } from "../../http/errors";
 import { requireAdmin, requireCsrf, requireSameOrigin } from "../../middleware/admin-auth";
-import { getParticipantResult, listParticipantAttemptDetails, listResultFilterOptions, listResultSummaries, resetAttempt, updateParticipantName } from "../../repositories/result-repository";
+import { adjustFinalAttemptScore, getParticipantResult, listParticipantAttemptDetails, listResultFilterOptions, listResultSummaries, resetAttempt, updateParticipantName } from "../../repositories/result-repository";
 import { listExportAnswers, listExportTrainingInfo } from "../../repositories/result-repository";
 import { createXlsx } from "../../export/xlsx";
 import type { AppEnvironment } from "../../types";
@@ -22,8 +22,9 @@ resultRoutes.get("/", async (context) => {
     trainingId: context.req.query("trainingId"), materialId: context.req.query("materialId"),
     cohortId: context.req.query("cohortId"),
     status: context.req.query("status"), search: context.req.query("search"),
+    page: Number(context.req.query("page") ?? 1), pageSize: Number(context.req.query("pageSize") ?? 20),
   });
-  return context.json({ results });
+  return context.json({ results, total: Number(results[0]?.total_count ?? 0), page: Number(context.req.query("page") ?? 1), pageSize: Number(context.req.query("pageSize") ?? 20) });
 });
 
 resultRoutes.get("/options", async (context) => {
@@ -52,8 +53,8 @@ resultRoutes.get("/export", async (context) => {
   ]);
   const workbook = createXlsx([
     { name: "Ringkasan", rows: [
-      ["Nama", "Pelatihan", "Angkatan", "Pre-Test", "Post Utama", "Remedial 1", "Remedial 2", "Remedial 3", "Final Post", "Status"],
-      ...summaries.map((row) => ["name", "training_name", "batch_name", "pre_score", "post_score", "remedial_1_score", "remedial_2_score", "remedial_3_score", "final_post_score", "result_status"].map((key) => value(row, key))),
+      ["Nama", "Pelatihan", "Angkatan", "Pre-Test", "Post Utama", "Remedial 1", "Remedial 2", "Final Post", "Status"],
+      ...summaries.map((row) => ["name", "training_name", "batch_name", "pre_score", "post_score", "remedial_1_score", "remedial_2_score", "final_post_score", "result_status"].map((key) => value(row, key))),
     ] },
     { name: "Detail Jawaban", rows: [
       ["Nama", "Pelatihan", "Angkatan", "Tahap", "Nilai", "No.", "Pertanyaan", "Jawaban Peserta", "Jawaban Benar", "Hasil"],
@@ -100,5 +101,22 @@ resultRoutes.post("/participants/:participantId/attempts/:attemptId/reset", requ
   const body=z.object({reason:z.string().trim().max(500).nullable().optional()}).safeParse(await context.req.json().catch(()=>({})));
   if (!body.success) throw new HttpError(422, "RESET_REASON_INVALID", "Alasan reset maksimal 500 karakter.");
   await resetAttempt(context.env.DB, context.req.param("attemptId"), participantId, context.get("admin").id, body.data.reason ?? null);
+  return context.json({ success: true });
+});
+
+resultRoutes.put("/participants/:participantId/final-score", requireSameOrigin, requireCsrf, async (context) => {
+  const participantId = context.req.param("participantId");
+  const parsed = z.object({ score: z.number().min(0).max(100) }).safeParse(await context.req.json().catch(() => null));
+  if (!parsed.success) throw new HttpError(422, "SCORE_INVALID", "Nilai harus berada di antara 0 dan 100.");
+  const detail = await listParticipantAttemptDetails(context.env.DB, participantId);
+  const attempts = detail.attempts.filter((attempt) => attempt.status === "SUBMITTED" && ["POST", "REMEDIAL_1", "REMEDIAL_2"].includes(String(attempt.stage)));
+  if (attempts.length < 3) throw new HttpError(409, "REMEDIAL_NOT_FINISHED", "Koreksi nilai hanya tersedia setelah Post-Test dan dua remedial selesai.");
+  const remedial2 = attempts.find((attempt) => attempt.stage === "REMEDIAL_2");
+  if (!remedial2) throw new HttpError(409, "REMEDIAL_NOT_FINISHED", "Remedial 2 belum selesai.");
+  const participant = await getParticipantResult(context.env.DB, participantId);
+  if (!participant) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
+  const bestScore = Math.max(...attempts.map((attempt) => Number(attempt.score ?? -1)));
+  if (bestScore >= participant.passing_score) throw new HttpError(409, "PARTICIPANT_ALREADY_PASSED", "Peserta sudah lulus; koreksi nilai tidak diperlukan.");
+  await adjustFinalAttemptScore(context.env.DB, String(remedial2.id), participantId, context.get("admin").id, parsed.data.score);
   return context.json({ success: true });
 });

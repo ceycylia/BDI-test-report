@@ -2,11 +2,19 @@ import { describe, expect, it } from "vitest";
 import masterMigration from "../migrations/0003_training_participants_certificates.sql?raw";
 import identityMigration from "../migrations/0004_participant_exam_identity.sql?raw";
 import softDeleteMigration from "../migrations/0005_soft_delete_trainings.sql?raw";
+import materialUnitCodeMigration from "../migrations/0020_add_training_material_unit_code.sql?raw";
 
 describe("relasi master data", () => {
   it("mengikat materi ke pelatihan dan satu bank aktif ke satu materi", () => {
     expect(masterMigration).toContain("FOREIGN KEY (training_id) REFERENCES trainings(id)");
     expect(masterMigration).toMatch(/CREATE UNIQUE INDEX one_active_bank_per_material[\s\S]*WHERE is_active = 1/iu);
+  });
+
+  it("menambahkan kode unit materi sebagai kolom opsional", () => {
+    expect(materialUnitCodeMigration).toContain(
+      "ALTER TABLE training_materials ADD COLUMN unit_code TEXT"
+    );
+    expect(materialUnitCodeMigration).not.toMatch(/unit_code\s+TEXT\s+NOT NULL/iu);
   });
 
   it("mencegah NIK ganda dalam angkatan tetapi mengizinkan nama yang sama", () => {

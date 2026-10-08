@@ -5,7 +5,6 @@ export const LAYOUT_STAGES = [
   "POST",
   "REMEDIAL_1",
   "REMEDIAL_2",
-  "REMEDIAL_3",
 ] as const;
 
 export type LayoutStage = (typeof LAYOUT_STAGES)[number];

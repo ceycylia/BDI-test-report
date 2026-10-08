@@ -5,7 +5,7 @@ import { isPassing } from "../../domain/scoring/outcome";
 import { evaluateSubmission, fillMissingAnswers } from "../../domain/attempts/submission-rules";
 import { personalizeQuestionOrder } from "../../domain/attempts/personalize-questions";
 import { attemptNumberForStage, nextPostStage } from "../../domain/attempts/progression";
-import { attemptDeadlines } from "../../domain/attempts/timing";
+import { attemptDeadlines, NORMAL_TEST_MINUTES } from "../../domain/attempts/timing";
 import { isTestOpen } from "../../domain/scheduling/test-availability";
 import { HttpError } from "../../http/errors";
 import { requireSameOrigin } from "../../middleware/admin-auth";
@@ -19,9 +19,19 @@ import type { AppEnvironment } from "../../types";
 
 const optionKeySchema = z.enum(["A", "B", "C", "D"]);
 const answersSchema = z.record(z.string().uuid(), optionKeySchema);
-const startSchema = z.object({ participantId: z.string().uuid(), batchId: z.string().uuid(), stage: z.enum(["PRE", "POST", "REMEDIAL_1", "REMEDIAL_2", "REMEDIAL_3"]) });
+const startSchema = z.object({ participantId: z.string().uuid(), batchId: z.string().uuid(), stage: z.enum(["PRE", "POST", "REMEDIAL_1", "REMEDIAL_2"]) });
 const draftSchema = z.object({ participantId: z.string().uuid(), revision: z.number().int().positive(), answers: answersSchema });
 const submitSchema = z.object({ participantId: z.string().uuid(), mode: z.enum(["NORMAL", "TIMEOUT"]), answers: answersSchema });
+
+function durationForAttempt(stage: AttemptStage, sessionDurationMinutes: number, previousAttempts: AttemptRecord[] = []) {
+  if (stage !== "REMEDIAL_1" && stage !== "REMEDIAL_2") return sessionDurationMinutes;
+  const carriedSeconds = previousAttempts.reduce((total, previous) => {
+    if (previous.status !== "SUBMITTED" || !previous.submitted_at) return total;
+    const unused = Date.parse(previous.deadline_at) - 60_000 - Date.parse(previous.submitted_at);
+    return total + Math.max(0, unused);
+  }, 0);
+  return NORMAL_TEST_MINUTES + carriedSeconds / 60_000;
+}
 
 export const attemptRoutes = new Hono<AppEnvironment>();
 
@@ -47,7 +57,7 @@ function publicAttempt(attempt: AttemptRecord, snapshots: SnapshotRecord[], serv
   // `deadline_at` is written by the server when an attempt starts.  Keep using
   // that persisted value so a later rule/configuration change can never grant
   // extra time to an attempt that is already in progress.
-  const normalDeadlineAt = attemptDeadlines(attempt.started_at).normalDeadlineAt;
+  const normalDeadlineAt = new Date(Date.parse(attempt.deadline_at) - 60_000).toISOString();
   return {
     attempt: {
       id: attempt.id, stage: attempt.stage, status: attempt.status, startedAt: attempt.started_at,
@@ -98,34 +108,39 @@ attemptRoutes.post("/start", requireSameOrigin, async (context) => {
   if (!(await findParticipantContext(context.env.DB, parsed.data.participantId, parsed.data.batchId, session.id))) {
     throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Data peserta tidak ditemukan pada angkatan ini.");
   }
-  let attempt = await findAttempt(context.env.DB, parsed.data.participantId, parsed.data.stage);
+  let stage: AttemptStage = parsed.data.stage;
+  let previousAttemptsForTiming: AttemptRecord[] = [];
+  let attempt = await findAttempt(context.env.DB, parsed.data.participantId, stage);
   if (attempt?.status === "SUBMITTED") throw new HttpError(409, "STAGE_ALREADY_COMPLETED", `${parsed.data.stage === "PRE" ? "Pre-Test" : "Post-Test"} sudah pernah diselesaikan.`);
   if (!attempt) {
-    if (!stageIsOpen(session, parsed.data.stage)) throw new HttpError(409, "TEST_CLOSED", `${parsed.data.stage === "PRE" ? "Pre-Test" : "Post-Test"} belum dibuka atau sudah ditutup.`);
-    if (parsed.data.stage !== "PRE") {
+    if (!stageIsOpen(session, stage)) throw new HttpError(409, "TEST_CLOSED", `${stage === "PRE" ? "Pre-Test" : "Post-Test"} belum dibuka atau sudah ditutup.`);
+    if (stage !== "PRE") {
       const preAttempt = await findAttempt(context.env.DB, parsed.data.participantId, "PRE");
       if (preAttempt?.status !== "SUBMITTED") throw new HttpError(409, "PRE_REQUIRED", "Selesaikan Pre-Test terlebih dahulu.");
       const postAttempts = (await Promise.all(
-        (["POST", "REMEDIAL_1", "REMEDIAL_2", "REMEDIAL_3"] as const)
+        (["POST", "REMEDIAL_1", "REMEDIAL_2"] as const)
           .map((stage) => findAttempt(context.env.DB, parsed.data.participantId, stage)),
       )).filter((item): item is AttemptRecord => item !== null);
+      previousAttemptsForTiming = postAttempts;
       const expected = nextPostStage(postAttempts, session.passing_score);
-      if (expected !== parsed.data.stage) {
-        throw new HttpError(409, "STAGE_NOT_AVAILABLE", expected ? "Selesaikan tahap tes yang tersedia terlebih dahulu." : "Tidak ada remedial yang tersedia.");
-      }
+      if (!expected) throw new HttpError(409, "STAGE_NOT_AVAILABLE", "Tidak ada remedial yang tersedia.");
+      stage = expected;
+      attempt = await findAttempt(context.env.DB, parsed.data.participantId, stage);
+      if (attempt?.status === "SUBMITTED") throw new HttpError(409, "STAGE_ALREADY_COMPLETED", "Tahap tes ini sudah pernah diselesaikan.");
+      if (attempt) return context.json(publicAttempt(attempt, await listAttemptSnapshots(context.env.DB, attempt.id), new Date().toISOString(), session.passing_score, session.slug), 201);
     }
-    const layoutQuestions = await getLayoutQuestions(context.env.DB, parsed.data.batchId, parsed.data.stage);
+    const layoutQuestions = await getLayoutQuestions(context.env.DB, parsed.data.batchId, stage);
     if (!layoutQuestions?.length) throw new HttpError(409, "LAYOUT_NOT_READY", "Paket soal belum siap. Hubungi admin.");
     const snapshots = personalizeQuestionOrder(layoutQuestions);
     const now = new Date();
     const startedAt = now.toISOString();
-    const deadlineAt = attemptDeadlines(startedAt).hardDeadlineAt;
+    const deadlineAt = attemptDeadlines(startedAt, durationForAttempt(stage, session.duration_minutes, previousAttemptsForTiming)).hardDeadlineAt;
     await createAttemptWithSnapshots(context.env.DB, {
         id: crypto.randomUUID(), participantId: parsed.data.participantId, batchId: parsed.data.batchId,
-        sessionId: session.id, stage: parsed.data.stage, attemptNumber: attemptNumberForStage(parsed.data.stage),
-        resetSequence: await nextResetSequence(context.env.DB,parsed.data.participantId,parsed.data.stage), startedAt, deadlineAt, snapshots,
+        sessionId: session.id, stage, attemptNumber: attemptNumberForStage(stage),
+        resetSequence: await nextResetSequence(context.env.DB, parsed.data.participantId, stage), startedAt, deadlineAt, snapshots,
     });
-    attempt = await findAttempt(context.env.DB, parsed.data.participantId, parsed.data.stage);
+    attempt = await findAttempt(context.env.DB, parsed.data.participantId, stage);
   }
   if (!attempt) throw new HttpError(500, "ATTEMPT_CREATE_FAILED", "Tes tidak dapat dimulai. Silakan coba kembali.");
   const snapshots = await listAttemptSnapshots(context.env.DB, attempt.id);

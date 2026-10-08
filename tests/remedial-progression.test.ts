@@ -17,12 +17,11 @@ describe("progresi remedial", () => {
     ], 75)).toBeNull();
   });
 
-  it("membatasi remedial maksimal tiga kali", () => {
+  it("mengakhiri proses setelah dua kali remedial", () => {
     expect(nextPostStage([
       { stage: "POST", status: "SUBMITTED", score: 10 },
       { stage: "REMEDIAL_1", status: "SUBMITTED", score: 20 },
       { stage: "REMEDIAL_2", status: "SUBMITTED", score: 30 },
-      { stage: "REMEDIAL_3", status: "SUBMITTED", score: 40 },
     ], 75)).toBeNull();
   });
 });

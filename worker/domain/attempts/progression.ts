@@ -2,7 +2,7 @@ export type AttemptStage = "PRE" | "POST" | "REMEDIAL_1" | "REMEDIAL_2" | "REMED
 
 export type AttemptProgress = { stage: AttemptStage; status: string; score: number | null };
 
-const POST_STAGES: AttemptStage[] = ["POST", "REMEDIAL_1", "REMEDIAL_2", "REMEDIAL_3"];
+const POST_STAGES: AttemptStage[] = ["POST", "REMEDIAL_1", "REMEDIAL_2"];
 
 export function nextPostStage(attempts: readonly AttemptProgress[], passingScore: number): AttemptStage | null {
   const current = POST_STAGES.map((stage) => attempts.find((attempt) => attempt.stage === stage));

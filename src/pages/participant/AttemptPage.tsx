@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { PublicLayout } from "../../layouts/PublicLayout";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { ModalPortal } from "../../components/ui/ModalPortal";
@@ -29,6 +29,7 @@ function formatTime(totalSeconds: number) {
 
 export function AttemptPage() {
   const { slug = "", attemptId = "" } = useParams();
+  const navigate = useNavigate();
   const [payload, setPayload] = useState<AttemptPayload | null>(null);
   const [answers, setAnswers] = useState<Record<string, OptionKey>>({});
   const [remaining, setRemaining] = useState<number | null>(null);
@@ -41,6 +42,7 @@ export function AttemptPage() {
   const [confirming, setConfirming] = useState(false);
   const [incompleteConfirming, setIncompleteConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
+  const [retrying, setRetrying] = useState(false);
   const [result, setResult] = useState<number | null>(null);
   const revisionRef = useRef(0);
   const serverOffsetRef = useRef(0);
@@ -53,8 +55,23 @@ export function AttemptPage() {
 
   useEffect(() => {
     if (!participantId) { setError("Data peserta tidak ditemukan. Silakan kembali dan masukkan nama Anda."); return; }
+    setPayload(null);
+    setAnswers({});
+    setResult(null);
+    setRemaining(null);
+    setNormalRemaining(null);
+    setOneMinuteDeadlineAt(null);
+    setError(null);
+    setMessage(null);
+    setConfirming(false);
+    setIncompleteConfirming(false);
+    setRetrying(false);
+    loadedRef.current = false;
+    timeoutSubmittedRef.current = false;
+    let cancelled = false;
     void requestJson<AttemptPayload>(`/api/public/training/${slug}/attempts/${attemptId}?participantId=${encodeURIComponent(participantId)}`)
       .then((data) => {
+        if (cancelled) return;
         const local = JSON.parse(localStorage.getItem(localKey) ?? "null") as { answers?: Record<string, OptionKey> } | null;
         setPayload(data); setAnswers({ ...data.attempt.answers, ...local?.answers });
         revisionRef.current = data.attempt.revision;
@@ -62,7 +79,8 @@ export function AttemptPage() {
         if (data.attempt.status === "SUBMITTED") setResult(data.attempt.score);
         loadedRef.current = true;
       })
-      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Tes tidak dapat dimuat."));
+      .catch((reason: unknown) => { if (!cancelled) setError(reason instanceof Error ? reason.message : "Tes tidak dapat dimuat."); });
+    return () => { cancelled = true; };
   }, [attemptId, localKey, participantId, slug]);
 
   useEffect(() => {
@@ -155,13 +173,37 @@ export function AttemptPage() {
     window.setTimeout(scrollToFirstUnanswered, 0);
   }
 
+  async function startRemedial(stage: "REMEDIAL_1" | "REMEDIAL_2") {
+    if (!participantId || retrying) return false;
+    const identity = JSON.parse(identityRaw ?? "null") as { participantId?: string; batchId?: string } | null;
+    if (!identity?.batchId) {
+      setError("Data angkatan tidak ditemukan. Silakan kembali ke halaman pelatihan.");
+      return false;
+    }
+    setRetrying(true); setError(null);
+    try {
+      const data = await requestJson<{ attempt: { id: string } }>(`/api/public/training/${slug}/attempts/start`, {
+        method: "POST",
+        body: JSON.stringify({ participantId, batchId: identity.batchId, stage }),
+      });
+      navigate(`/t/${slug}/attempt/${data.attempt.id}`);
+      return true;
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Remedial tidak dapat dimulai.");
+      return false;
+    } finally { setRetrying(false); }
+  }
+
   if (error && !payload) return <PublicLayout><section className="entry-card"><p className="form-message is-error">{error}</p><Link className="button" to={`/t/${slug}`}>Kembali</Link></section></PublicLayout>;
   if (!payload) return <PublicLayout><section className="entry-card"><p>Memuat tes…</p></section></PublicLayout>;
   if (result !== null) {
     const isPre = payload.attempt.stage === "PRE";
     const passed = result >= payload.attempt.passingScore;
+    const remedialStage = !isPre && !passed
+      ? payload.attempt.stage === "POST" ? "REMEDIAL_1" : payload.attempt.stage === "REMEDIAL_1" ? "REMEDIAL_2" : null
+      : null;
     const stageLabel = payload.attempt.stage === "PRE" ? "Pre-Test" : payload.attempt.stage === "POST" ? "Post-Test" : payload.attempt.stage.replace("_", " ").replace("REMEDIAL", "Remedial");
-    return <PublicLayout><section className="entry-card result-card"><div className="entry-card__eyebrow">{stageLabel} selesai</div><h1>Nilai Anda</h1><strong className="result-score">{result}</strong>{!isPre && <p className={`result-status ${passed ? "is-passed" : "is-failed"}`}>Status: {passed ? "LULUS" : "BELUM LULUS"}</p>}<p>Jawaban telah dikirim dan tidak dapat diubah.</p><Link className="button" to={`/t/${slug}`}>Kembali ke pelatihan</Link></section></PublicLayout>;
+    return <PublicLayout><section className="entry-card result-card"><div className="entry-card__eyebrow">{stageLabel} selesai</div><h1>Nilai Anda</h1><strong className="result-score">{result}</strong>{!isPre && <p className={`result-status ${passed ? "is-passed" : "is-failed"}`}>Status: {passed ? "LULUS" : "TIDAK LULUS"}</p>}{error && <p className="form-message is-error" role="alert">{error}</p>}{!isPre && !passed && <p>{remedialStage ? "Nilai belum memenuhi passing grade. Silakan ulangi tes dengan soal baru dan jawaban kosong." : "Nilai belum memenuhi passing grade setelah dua kali remedial. Proses tes diakhiri."}</p>}{(!isPre && !passed && remedialStage) ? <button className="button" disabled={retrying} onClick={() => void startRemedial(remedialStage)}>{retrying ? "Menyiapkan soal…" : `ULANGI ${remedialStage.replace("_", " ")}`}</button> : <Link className="button" to={`/t/${slug}`}>Kembali ke pelatihan</Link>}</section></PublicLayout>;
   }
   if (!payload.questions.length) return <PublicLayout><section className="entry-card"><p className="form-message is-error">Soal tidak tersedia.</p></section></PublicLayout>;
 

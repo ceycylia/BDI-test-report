@@ -89,7 +89,7 @@ trainingEntryRoutes.get("/:slug", async (context) => {
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Link pelatihan tidak ditemukan.");
   const batches = await listPublicBatches(context.env.DB, session.id);
   return context.json({
-    training: { id: session.id, name: session.material_name ?? session.name, slug: session.slug, questionCount: session.question_count, durationMinutes: 15, startDate: session.training_start_date, endDate: session.training_end_date, status: session.status, ...schedules(session) },
+    training: { id: session.id, name: session.material_name ?? session.name, slug: session.slug, questionCount: session.question_count, durationMinutes: session.duration_minutes, startDate: session.training_start_date, endDate: session.training_end_date, status: session.status, ...schedules(session) },
     batches: batches.map((batch) => ({ id: batch.id, number: batch.batch_number, name: batch.batch_name })),
   });
 });
@@ -113,7 +113,7 @@ trainingEntryRoutes.post("/:slug/identify", async (context) => {
   return context.json({
     participant: { id: participant.id, name: participant.name },
     batch: { id: batch.id, name: batch.batch_name },
-    training: { id: session.id, name: session.material_name ?? session.name, questionCount: session.question_count, durationMinutes: 15, passingScore: session.passing_score },
+    training: { id: session.id, name: session.material_name ?? session.name, questionCount: session.question_count, durationMinutes: session.duration_minutes, passingScore: session.passing_score },
     availability: { ...availability, attempts },
   });
 });
