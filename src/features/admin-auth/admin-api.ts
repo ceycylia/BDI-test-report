@@ -63,7 +63,9 @@ export async function loginAdmin(input: {
   });
 
   if (!response.ok) {
-    throw await parseError(response);
+    const error = await parseError(response);
+    window.alert(error.message);
+    throw error;
   }
 
   const payload = (await response.json()) as { admin: AdminUser };
@@ -102,7 +104,9 @@ export async function adminMutation<T>(
   });
 
   if (!response.ok) {
-    throw await parseError(response);
+    const error = await parseError(response);
+    window.alert(error.message);
+    throw error;
   }
 
   return (await response.json()) as T;
@@ -136,7 +140,9 @@ export async function adminUpload<T>(path: string, body: FormData): Promise<T> {
   });
 
   if (!response.ok) {
-    throw await parseError(response);
+    const error = await parseError(response);
+    window.alert(error.message);
+    throw error;
   }
 
   return (await response.json()) as T;
@@ -149,6 +155,10 @@ export async function adminDownload(path: string, init: RequestInit): Promise<Bl
   headers.set("Content-Type", "application/json");
   if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
   const response = await fetch(path, { ...init, credentials: "same-origin", headers });
-  if (!response.ok) throw await parseError(response);
+  if (!response.ok) {
+    const error = await parseError(response);
+    window.alert(error.message);
+    throw error;
+  }
   return response.blob();
 }

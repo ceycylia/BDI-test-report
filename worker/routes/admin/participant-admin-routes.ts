@@ -113,6 +113,7 @@ const participantInput = z.object({
 const allowedParticipantImages = new Map([
   ["image/jpeg", "jpg"],
   ["image/png", "png"],
+  ["image/webp", "webp"],
 ]);
 
 type ParticipantListFilters = {
@@ -1164,7 +1165,7 @@ participantAdminRoutes.post(
       throw new HttpError(
         422,
         "PHOTO_INVALID",
-        "Foto harus berupa JPG atau PNG maksimal 5 MB."
+        "Foto harus berupa JPG, PNG, atau WebP maksimal 5 MB."
       );
     const old = await c.env.DB.prepare(
       `SELECT photo_key FROM participant_profiles WHERE id=?`
@@ -1206,7 +1207,7 @@ participantAdminRoutes.get("/participants/:id/photo", async (c) => {
   return new Response(object.body, {
     headers: {
       "Content-Type": object.httpMetadata?.contentType ?? "image/jpeg",
-      "Cache-Control": "private, max-age=300",
+      "Cache-Control": "private, max-age=86400, immutable",
     },
   });
 });
@@ -2710,7 +2711,7 @@ participantAdminRoutes.get(
 participantAdminRoutes.get("/certificates/:certificateId/pdf", async (c) => {
   const side = c.req.query("side") === "BACK" ? "BACK" : "FRONT";
   const row = await c.env.DB.prepare(
-    `SELECT pdf_key,back_pdf_key,certificate_number FROM certificates WHERE id=?`
+    `SELECT participant_profile_id,pdf_key,back_pdf_key,certificate_number FROM certificates WHERE id=?`
   )
     .bind(c.req.param("certificateId"))
     .first<{
@@ -2742,18 +2743,23 @@ participantAdminRoutes.get(
   "/certificates/:certificateId/download",
   async (c) => {
     const cert = await c.env.DB.prepare(
-      `SELECT participant_profile_id,certificate_number FROM certificates WHERE id=?`
+      `SELECT participant_profile_id,certificate_number,pdf_key,back_pdf_key FROM certificates WHERE id=?`
     )
       .bind(c.req.param("certificateId"))
-      .first<{ participant_profile_id: string; certificate_number: string }>();
+      .first<{ participant_profile_id: string; certificate_number: string; pdf_key: string | null; back_pdf_key: string | null }>();
     if (!cert)
       throw new HttpError(404, "PDF_NOT_FOUND", "Sertifikat tidak ditemukan.");
-    const [front, back] = await Promise.all([
-      renderCertificate(c, cert.participant_profile_id, "FRONT"),
-      renderCertificate(c, cert.participant_profile_id, "BACK"),
-    ]);
+    const stored = cert.pdf_key && cert.back_pdf_key
+      ? await Promise.all([c.env.QUESTION_IMAGES.get(cert.pdf_key), c.env.QUESTION_IMAGES.get(cert.back_pdf_key)])
+      : [null, null];
+    const [frontBytes, backBytes] = stored[0]?.body && stored[1]?.body
+      ? [await new Response(stored[0].body).arrayBuffer(), await new Response(stored[1].body).arrayBuffer()]
+      : await Promise.all([
+        renderCertificate(c, cert.participant_profile_id, "FRONT").then((result) => result.bytes),
+        renderCertificate(c, cert.participant_profile_id, "BACK").then((result) => result.bytes),
+      ]);
     const combined = await PDFDocument.create();
-    for (const source of [front.bytes, back.bytes]) {
+    for (const source of [frontBytes, backBytes]) {
       const document = await PDFDocument.load(source);
       const [page] = await combined.copyPages(document, [0]);
       combined.addPage(page);

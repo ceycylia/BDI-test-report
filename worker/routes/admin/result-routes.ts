@@ -113,13 +113,9 @@ resultRoutes.put("/participants/:participantId/final-score", requireSameOrigin, 
   if (!parsed.success) throw new HttpError(422, "SCORE_INVALID", "Nilai harus berada di antara 0 dan 100.");
   const detail = await listParticipantAttemptDetails(context.env.DB, participantId);
   const attempts = detail.attempts.filter((attempt) => attempt.status === "SUBMITTED" && ["POST", "REMEDIAL_1", "REMEDIAL_2"].includes(String(attempt.stage)));
-  if (attempts.length < 3) throw new HttpError(409, "REMEDIAL_NOT_FINISHED", "Koreksi nilai hanya tersedia setelah Post-Test dan dua remedial selesai.");
-  const remedial2 = attempts.find((attempt) => attempt.stage === "REMEDIAL_2");
-  if (!remedial2) throw new HttpError(409, "REMEDIAL_NOT_FINISHED", "Remedial 2 belum selesai.");
-  const participant = await getParticipantResult(context.env.DB, participantId);
-  if (!participant) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
-  const bestScore = Math.max(...attempts.map((attempt) => Number(attempt.score ?? -1)));
-  if (bestScore >= participant.passing_score) throw new HttpError(409, "PARTICIPANT_ALREADY_PASSED", "Peserta sudah lulus; koreksi nilai tidak diperlukan.");
-  await adjustFinalAttemptScore(context.env.DB, String(remedial2.id), participantId, context.get("admin").id, parsed.data.score);
+  if (!attempts.length) throw new HttpError(409, "NO_TEST_SCORE", "Input nilai tersedia setelah peserta menyelesaikan Post-Test atau remedial.");
+  const targetAttempt = attempts.at(-1);
+  if (!targetAttempt) throw new HttpError(409, "NO_TEST_SCORE", "Input nilai tersedia setelah peserta menyelesaikan Post-Test atau remedial.");
+  await adjustFinalAttemptScore(context.env.DB, String(targetAttempt.id), participantId, context.get("admin").id, parsed.data.score);
   return context.json({ success: true });
 });

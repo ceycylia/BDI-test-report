@@ -1,10 +1,11 @@
-import { KeyRound, Pencil, Plus, ShieldCheck, UserCheck, UserX, Users } from "lucide-react";
+import { KeyRound, Pencil, Plus, ShieldCheck, Users } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { adminMutation, adminQuery, AdminApiError } from "../../features/admin-auth/admin-api";
 import { useAdminAuth } from "../../features/admin-auth/AuthProvider";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
+import { StatusIcon } from "../../components/ui/IconActionButton";
 
 type AdminListItem = {
   id: string;
@@ -86,7 +87,7 @@ export function AdminManagementPage() {
     {message && <p className="form-message is-success">{message}</p>}{error && <p className="form-message is-error" role="alert">{error}</p>}
     <div className="admin-management-grid">
       <section className="panel"><div className="panel-heading"><Users /><div><h2>Daftar admin</h2><p>{pagination.total} akun terdaftar</p></div></div>
-        {loading ? <p className="muted">Memuat daftar admin…</p> : <div className="admin-list">{admins.map((item) => <button type="button" className={`admin-list__item admin-list__button${selected?.id === item.id ? " is-selected" : ""}`} key={item.id} onClick={() => setSelected(item)}><span className="admin-list__avatar">{item.name.charAt(0).toUpperCase()}</span><span className="admin-list__identity"><strong>{item.name}</strong><small>@{item.username} · {item.role === "SUPERADMIN" ? "Superadmin" : "Admin"}</small></span><span className={item.isActive ? "status-badge is-active" : "status-badge"}>{item.isActive ? <UserCheck /> : <UserX />}{item.isActive ? "Aktif" : "Nonaktif"}</span></button>)}</div>}
+        {loading ? <p className="muted">Memuat daftar admin…</p> : <div className="admin-list">{admins.map((item) => <button type="button" className={`admin-list__item admin-list__button${selected?.id === item.id ? " is-selected" : ""}`} key={item.id} onClick={() => setSelected(item)}><span className="admin-list__avatar">{item.name.charAt(0).toUpperCase()}</span><span className="admin-list__identity"><strong>{item.name}</strong><small>@{item.username} · {item.role === "SUPERADMIN" ? "Superadmin" : "Admin"}</small></span><StatusIcon active={item.isActive} /></button>)}</div>}
         <Pagination pagination={pagination} itemLabel="akun" loading={loading} onPageChange={setPage} />
       </section>
       <section className="panel"><div className="panel-heading"><Plus /><div><h2>Tambah admin</h2><p>Buat akun dengan akses yang sesuai.</p></div></div>

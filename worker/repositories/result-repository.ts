@@ -161,7 +161,7 @@ export async function adjustFinalAttemptScore(database: D1Database, attemptId: s
   await database.batch([
     database.prepare(
       `UPDATE attempts SET score = ?, updated_at = CURRENT_TIMESTAMP
-       WHERE id = ? AND participant_id = ? AND stage = 'REMEDIAL_2' AND status = 'SUBMITTED'`,
+       WHERE id = ? AND participant_id = ? AND stage IN ('POST', 'REMEDIAL_1', 'REMEDIAL_2') AND status = 'SUBMITTED'`,
     ).bind(score, attemptId, participantId),
     database.prepare(
       `INSERT INTO audit_logs (id, admin_id, action, entity_type, entity_id, metadata_json)
