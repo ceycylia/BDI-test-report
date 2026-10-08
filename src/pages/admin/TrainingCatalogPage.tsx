@@ -9,7 +9,6 @@ import {
   Pencil,
   Plus,
   SlidersHorizontal,
-  Trash2,
   Upload,
 } from "lucide-react";
 import {
@@ -21,6 +20,7 @@ import {
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
+import { IconActionButton, StatusIcon } from "../../components/ui/IconActionButton";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 
 type Training = {
@@ -471,41 +471,11 @@ export function TrainingCatalogPage() {
                       {training.material_count} materi · {training.total_jp} JP
                     </small>
                   </div>
-                  <span
-                    className={
-                      training.is_active
-                        ? "status-badge is-active"
-                        : "status-badge"
-                    }
-                  >
-                    {training.is_active ? "Aktif" : "Nonaktif"}
-                  </span>
+                  <StatusIcon active={Boolean(training.is_active)} />
                   <div className="row-actions">
-                    <button
-                      type="button"
-                      className="button button--secondary button--small"
-                      onClick={() => setEditingTraining(training)}
-                    >
-                      <Pencil /> Edit
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button"
-                      onClick={() =>
-                        void updateTraining(training, {
-                          is_active: training.is_active ? 0 : 1,
-                        })
-                      }
-                    >
-                      {training.is_active ? "Nonaktifkan" : "Aktifkan"}
-                    </button>
-                    <button
-                      type="button"
-                      className="text-button is-danger"
-                      onClick={() => setDeleteTarget({ kind: "training", training })}
-                    >
-                      <Trash2 /> Hapus
-                    </button>
+                    <IconActionButton action="edit" label={`Edit Pelatihan ${training.name}`} onClick={() => setEditingTraining(training)} />
+                    <IconActionButton action={training.is_active ? "active" : "inactive"} label={training.is_active ? `Nonaktifkan Pelatihan ${training.name}` : `Aktifkan Pelatihan ${training.name}`} onClick={() => void updateTraining(training, { is_active: training.is_active ? 0 : 1 })} />
+                    <IconActionButton action="delete" label={`Hapus Pelatihan ${training.name}`} onClick={() => setDeleteTarget({ kind: "training", training })} />
                   </div>
                 </article>
               ))}
@@ -636,20 +606,8 @@ export function TrainingCatalogPage() {
                       <td>{material.bank_name ?? "Belum ada"}</td>
                       <td>
                         <div className="row-actions">
-                          <button
-                            type="button"
-                            className="text-button"
-                            onClick={() => setEditingMaterial(material)}
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            className="text-button is-danger"
-                            onClick={() => setDeleteTarget({ kind: "material", material })}
-                          >
-                            Hapus
-                          </button>
+                          <IconActionButton action="edit" label={`Edit Materi ${material.name}`} onClick={() => setEditingMaterial(material)} />
+                          <IconActionButton action="delete" label={`Hapus Materi ${material.name}`} onClick={() => setDeleteTarget({ kind: "material", material })} />
                         </div>
                       </td>
                     </tr>

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Award, BookOpenText, CalendarDays, Download, Eye, FileSpreadsheet, GraduationCap, Image, Layers3, Pencil, Plus, Trash2, Upload, UserPlus, Users, X } from "lucide-react";
+import { Award, BookOpenText, CalendarDays, Download, Eye, FileSpreadsheet, GraduationCap, Image, Layers3, Plus, Trash2, Upload, UserPlus, Users, X } from "lucide-react";
 import { adminDownload, adminMutation, adminQuery, adminUpload, AdminApiError } from "../../features/admin-auth/admin-api";
 import { formatCohortDate, generateCohorts, type GeneratedCohort } from "../../features/cohorts/bulk-cohort";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
@@ -7,9 +7,11 @@ import { DateInput } from "../../components/ui/DateInput";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
+import { IconActionButton, StatusIcon } from "../../components/ui/IconActionButton";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 import { formatDateForDisplay } from "../../features/dates/date-format";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
+import { optimizeImage } from "../../features/media/optimize-image";
 
 type Training = { id: string; name: string; is_active: number; material_count: number; total_jp: number };
 type Material = { id: string; training_id: string; training_name: string; name: string; jp: number; sort_order: number; bank_id: string | null; bank_name: string | null };
@@ -22,6 +24,7 @@ type CertificateSettings = { certificate_prefix: string; signer_name: string; si
 const emptyCertificateSettings: CertificateSettings = { certificate_prefix: "", signer_name: "", signer_title: "", signer_nip: "", issue_place: "", issue_date: "" };
 type BulkDocumentNumberEntry = { participantId: string; certificateNumber?: string; completionLetterNumber?: string };
 type BulkNumberMode = "overwrite" | "empty";
+type DocumentNumberKind = "certificate" | "letter";
 type ParticipantPagination = { page: number; pageSize: number; total: number; totalPages: number };
 type ParticipantFilters = { year: number; trainingId?: string; cohortId?: string; status?: boolean; search?: string };
 const PARTICIPANTS_PER_PAGE = 20;
@@ -121,11 +124,12 @@ export function ParticipantsPage() {
   const [deletingRecord, setDeletingRecord] = useState(false);
 
   const loadSupportingData = useCallback(async () => {
-    const [cat, certs] = await Promise.all([
-      adminQuery<Catalog>(withActiveYear("/api/admin/participants/catalog", activeYear)),
-      adminQuery<{ certificates: Certificate[] }>(withActiveYear("/api/admin/participants/certificates", activeYear)),
-    ]);
-    setCatalog(cat); setCertificates(certs.certificates);
+    setCatalog(await adminQuery<Catalog>(withActiveYear("/api/admin/participants/catalog", activeYear)));
+  }, [activeYear]);
+
+  const loadCertificates = useCallback(async () => {
+    const result = await adminQuery<{ certificates: Certificate[] }>(withActiveYear("/api/admin/participants/certificates", activeYear));
+    setCertificates(result.certificates);
   }, [activeYear]);
 
   const loadParticipants = useCallback(async () => {
@@ -156,8 +160,8 @@ export function ParticipantsPage() {
   }, [activeYear, debouncedSearch, listCohortId, listStatus, listTrainingId, participantPage]);
 
   const load = useCallback(async () => {
-    await Promise.all([loadSupportingData(), loadParticipants()]);
-  }, [loadParticipants, loadSupportingData]);
+    await Promise.all([loadSupportingData(), loadParticipants(), ...(tab === "certificate-workspace" || tab === "certificates" ? [loadCertificates()] : [])]);
+  }, [loadCertificates, loadParticipants, loadSupportingData, tab]);
   function fail(processError: unknown, target: "global" | "material" | "cohort" = "global") {
     setNoticeTarget(target);
     setMessage(null);
@@ -175,6 +179,11 @@ export function ParticipantsPage() {
     setListStatus(""); setSearch(""); setDebouncedSearch(""); setParticipantPage(1);
     void loadSupportingData().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Data tidak dapat dimuat."));
   }, [activeYear, loadSupportingData]);
+  useEffect(() => {
+    if (tab === "certificate-workspace" || tab === "certificates") {
+      void loadCertificates().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Data sertifikat tidak dapat dimuat."));
+    }
+  }, [loadCertificates, tab]);
   useEffect(() => {
     const timer = window.setTimeout(() => {
       setParticipantPage(1);
@@ -297,7 +306,7 @@ export function ParticipantsPage() {
     event.preventDefault(); const formElement = event.currentTarget; const form = new FormData(formElement);
     try {
       const participant = await adminMutation<{ id: string }>("/api/admin/participants/participants", { method: "POST", body: JSON.stringify({ trainingId: form.get("trainingId"), cohortId: form.get("cohortId"), name: form.get("name"), nik: form.get("nik"), birthPlace: form.get("birthPlace"), birthDate: form.get("birthDate"), address: form.get("address"), isActive: true }) });
-      const photo = form.get("photo"); if (photo instanceof File && photo.size) { const upload = new FormData(); upload.set("photo", photo); await adminUpload(`/api/admin/participants/participants/${participant.id}/photo`, upload); }
+      const photo = form.get("photo"); if (photo instanceof File && photo.size) { const upload = new FormData(); upload.set("photo", await optimizeImage(photo)); await adminUpload(`/api/admin/participants/participants/${participant.id}/photo`, upload); }
       formElement.reset(); setParticipantCreateOpen(false); report("Peserta terdaftar.");
     } catch (processError) { fail(processError); }
   }
@@ -412,7 +421,7 @@ export function ParticipantsPage() {
           <label>Angkatan<select value={listCohortId} onChange={(event) => { setParticipantPage(1); setListCohortId(event.target.value); }}><option value="">Semua Angkatan</option>{catalog.cohorts.filter((cohort) => !listTrainingId || cohort.training_id === listTrainingId).map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label>
           <label>Status<select value={listStatus} onChange={(event) => { setParticipantPage(1); setListStatus(event.target.value); }}><option value="">Semua Status</option><option value="true">Aktif</option><option value="false">Nonaktif</option></select></label>
         </div>
-        <div className="data-table-wrap"><table className="clean-table participant-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}><td>{(participantPagination.page - 1) * participantPagination.pageSize + index + 1}</td><td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{participant.birth_place}, {formatDateForDisplay(participant.birth_date)}</small></span></span></td><td>{participant.nik_masked}</td><td>{participant.training_name}</td><td>{participant.cohort_name}</td><td><span className={participant.is_active ? "status-badge is-active" : "status-badge"}>{participant.is_active ? "Aktif" : "Nonaktif"}</span></td><td><button type="button" className="button button--secondary button--small" onClick={() => setSelectedParticipant(participant.id)}><Eye /> Lihat</button></td></tr>)}</tbody></table>{participantsLoading && !participants.length ? <div className="empty-state">Memuat peserta…</div> : !participants.length && <div className="empty-state">Tidak ada peserta yang sesuai pencarian atau filter.</div>}</div>
+        <div className="data-table-wrap"><table className="clean-table participant-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}><td>{(participantPagination.page - 1) * participantPagination.pageSize + index + 1}</td><td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img loading="lazy" decoding="async" src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{participant.birth_place}, {formatDateForDisplay(participant.birth_date)}</small></span></span></td><td>{participant.nik_masked}</td><td>{participant.training_name}</td><td>{participant.cohort_name}</td><td><StatusIcon active={Boolean(participant.is_active)} /></td><td><button type="button" className="button button--secondary button--small button--detail" onClick={() => setSelectedParticipant(participant.id)}>Detail</button></td></tr>)}</tbody></table>{participantsLoading && !participants.length ? <div className="empty-state">Memuat peserta…</div> : !participants.length && <div className="empty-state">Tidak ada peserta yang sesuai pencarian atau filter.</div>}</div>
         <footer className="table-pagination participant-pagination">
           <span>Menampilkan {participantPagination.total ? (participantPagination.page - 1) * participantPagination.pageSize + 1 : 0}–{Math.min(participantPagination.page * participantPagination.pageSize, participantPagination.total)} dari {participantPagination.total} peserta</span>
           <div className="participant-pagination__controls" aria-label="Navigasi halaman peserta">
@@ -453,9 +462,9 @@ export function ParticipantsPage() {
     </>}
 
     {tab === "master" && <div className="master-catalog-layout">
-      <section className="panel master-training-panel"><div className="panel-heading"><div><h2>Nama Pelatihan</h2></div></div><form className="form-stack inline-create" onSubmit={(event) => void createTraining(event)}><label>Nama<input name="name" required /></label><button className="button"><Plus /> Tambah Pelatihan</button></form><div className="training-master-list">{catalog.trainings.map((training) => <article key={training.id} className="training-master-card"><span className="training-master-icon"><GraduationCap /></span><div className="training-master-copy"><strong>{training.name}</strong><small>{training.material_count} materi · {training.total_jp} JP</small></div><span className={training.is_active ? "status-badge is-active" : "status-badge"}>{training.is_active ? "Aktif" : "Nonaktif"}</span><div className="row-actions"><button type="button" className="button button--secondary button--small" onClick={() => void editTraining(training)}><Pencil /> Edit</button><button type="button" className="text-button" onClick={() => void toggleTraining(training)}>{training.is_active ? "Nonaktifkan" : "Aktifkan"}</button><button type="button" className="text-button is-danger" onClick={() => setDeleteTarget({ kind: "training", training })}><Trash2 /> Hapus</button></div></article>)}</div></section>
+      <section className="panel master-training-panel"><div className="panel-heading"><div><h2>Nama Pelatihan</h2></div></div><form className="form-stack inline-create" onSubmit={(event) => void createTraining(event)}><label>Nama<input name="name" required /></label><button className="button"><Plus /> Tambah Pelatihan</button></form><div className="training-master-list">{catalog.trainings.map((training) => <article key={training.id} className="training-master-card"><span className="training-master-icon"><GraduationCap /></span><div className="training-master-copy"><strong>{training.name}</strong><small>{training.material_count} materi · {training.total_jp} JP</small></div><StatusIcon active={Boolean(training.is_active)} /><div className="row-actions"><IconActionButton action="edit" label={`Edit Pelatihan ${training.name}`} onClick={() => void editTraining(training)} /><IconActionButton action={training.is_active ? "active" : "inactive"} label={training.is_active ? `Nonaktifkan Pelatihan ${training.name}` : `Aktifkan Pelatihan ${training.name}`} onClick={() => void toggleTraining(training)} /><IconActionButton action="delete" label={`Hapus Pelatihan ${training.name}`} onClick={() => setDeleteTarget({ kind: "training", training })} /></div></article>)}</div></section>
       {noticeTarget === "material" && message && <p className="form-message is-success material-notice">{message}</p>}{noticeTarget === "material" && error && <p className="form-message is-error material-notice">{error}</p>}
-      <section className="panel master-material-panel"><div className="panel-heading"><div><p className="section-label">Kurikulum</p><h2>Materi Pelatihan</h2></div></div><form className="form-stack material-create-form" onSubmit={(event) => void createMaterial(event)}><label>Pelatihan<TrainingSelect name="trainingId" trainings={catalog.trainings} /></label><label>Nama Materi<input name="name" required /></label><div className="form-grid"><label>Jumlah JP<input name="jp" type="number" min="1" required /></label><label>Urutan<input name="sortOrder" type="number" min="1" required /></label></div><button className="button"><Plus /> Tambah Materi</button></form><label className="material-training-filter">Filter Pelatihan<SearchableSelect value={materialTrainingId} placeholder="Semua pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={setMaterialTrainingId} /></label><div className="data-table-wrap material-table-wrap"><table className="clean-table"><thead><tr><th>No</th><th>Nama Materi</th><th>JP</th><th>Urutan</th><th>Aksi</th></tr></thead><tbody>{filteredMaterials.map((material, index) => <tr key={material.id}><td>{index + 1}</td><td><strong>{material.name}</strong><small>{material.training_name}{material.bank_name ? ` · Bank: ${material.bank_name}` : ""}</small></td><td>{material.jp}</td><td>{material.sort_order}</td><td><div className="row-actions"><button type="button" className="text-button" onClick={() => void editMaterial(material)}>Edit</button>{!material.bank_id && <button type="button" className="text-button is-danger" onClick={() => setDeleteTarget({ kind: "material", material })}>Hapus</button>}</div></td></tr>)}</tbody></table>{!filteredMaterials.length && <div className="empty-state">Belum ada materi untuk pelatihan ini.</div>}</div></section>
+      <section className="panel master-material-panel"><div className="panel-heading"><div><p className="section-label">Kurikulum</p><h2>Materi Pelatihan</h2></div></div><form className="form-stack material-create-form" onSubmit={(event) => void createMaterial(event)}><label>Pelatihan<TrainingSelect name="trainingId" trainings={catalog.trainings} /></label><label>Nama Materi<input name="name" required /></label><div className="form-grid"><label>Jumlah JP<input name="jp" type="number" min="1" required /></label><label>Urutan<input name="sortOrder" type="number" min="1" required /></label></div><button className="button"><Plus /> Tambah Materi</button></form><label className="material-training-filter">Filter Pelatihan<SearchableSelect value={materialTrainingId} placeholder="Semua pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={setMaterialTrainingId} /></label><div className="data-table-wrap material-table-wrap"><table className="clean-table"><thead><tr><th>No</th><th>Nama Materi</th><th>JP</th><th>Urutan</th><th>Aksi</th></tr></thead><tbody>{filteredMaterials.map((material, index) => <tr key={material.id}><td>{index + 1}</td><td><strong>{material.name}</strong><small>{material.training_name}{material.bank_name ? ` · Bank: ${material.bank_name}` : ""}</small></td><td>{material.jp}</td><td>{material.sort_order}</td><td><div className="row-actions"><IconActionButton action="edit" label={`Edit Materi ${material.name}`} onClick={() => void editMaterial(material)} />{!material.bank_id && <IconActionButton action="delete" label={`Hapus Materi ${material.name}`} onClick={() => setDeleteTarget({ kind: "material", material })} />}</div></td></tr>)}</tbody></table>{!filteredMaterials.length && <div className="empty-state">Belum ada materi untuk pelatihan ini.</div>}</div></section>
     </div>}
 
     {tab === "cohorts" && <section className="panel cohort-management-panel">
@@ -485,13 +494,13 @@ export function ParticipantsPage() {
           <div className="cohort-preview__heading"><div><p className="section-label">Preview</p><h3>{cohortPreview.length} angkatan siap dibuat</h3></div><p>Gunakan Edit jika salah satu angkatan memiliki tanggal khusus.</p></div>
           <div className="data-table-wrap"><table className="clean-table cohort-preview-table"><thead><tr><th>Angkatan</th><th>Tanggal Mulai</th><th>Tanggal Selesai</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{cohortPreview.map((row) => {
             const isEditing = editingCohortRow === row.clientId;
-            return <tr key={row.clientId}><td>{isEditing ? <input aria-label="Nama angkatan" value={row.name} onChange={(event) => updatePreviewCohort(row.clientId, { name: event.target.value })} /> : <strong>{row.name}</strong>}</td><td>{isEditing ? <DateInput aria-label="Tanggal mulai" value={row.startDate} onValueChange={(date) => updatePreviewCohort(row.clientId, { startDate: date })} /> : formatCohortDate(row.startDate)}</td><td>{isEditing ? <DateInput aria-label="Tanggal selesai" value={row.endDate} onValueChange={(date) => updatePreviewCohort(row.clientId, { endDate: date })} /> : formatCohortDate(row.endDate)}</td><td>{isEditing ? <select aria-label="Status angkatan" value={row.status} onChange={(event) => updatePreviewCohort(row.clientId, { status: event.target.value as GeneratedCohort["status"] })}><option value="ACTIVE">Aktif</option><option value="INACTIVE">Nonaktif</option><option value="COMPLETED">Selesai</option></select> : <span className={row.status === "ACTIVE" ? "status-badge is-active" : "status-badge"}>{row.status === "ACTIVE" ? "Aktif" : row.status === "INACTIVE" ? "Nonaktif" : "Selesai"}</span>}</td><td><button type="button" className="text-button" onClick={() => setEditingCohortRow(isEditing ? null : row.clientId)}>{isEditing ? "Selesai" : "Edit"}</button></td></tr>;
+            return <tr key={row.clientId}><td>{isEditing ? <input aria-label="Nama angkatan" value={row.name} onChange={(event) => updatePreviewCohort(row.clientId, { name: event.target.value })} /> : <strong>{row.name}</strong>}</td><td>{isEditing ? <DateInput aria-label="Tanggal mulai" value={row.startDate} onValueChange={(date) => updatePreviewCohort(row.clientId, { startDate: date })} /> : formatCohortDate(row.startDate)}</td><td>{isEditing ? <DateInput aria-label="Tanggal selesai" value={row.endDate} onValueChange={(date) => updatePreviewCohort(row.clientId, { endDate: date })} /> : formatCohortDate(row.endDate)}</td><td>{isEditing ? <select aria-label="Status angkatan" value={row.status} onChange={(event) => updatePreviewCohort(row.clientId, { status: event.target.value as GeneratedCohort["status"] })}><option value="ACTIVE">Aktif</option><option value="INACTIVE">Nonaktif</option><option value="COMPLETED">Selesai</option></select> : row.status === "COMPLETED" ? <span className="status-badge is-complete">Selesai</span> : <StatusIcon active={row.status === "ACTIVE"} />}</td><td>{isEditing ? <button type="button" className="button button--secondary button--small" onClick={() => setEditingCohortRow(null)}>Selesai</button> : <IconActionButton action="edit" label={`Edit Angkatan ${row.name}`} onClick={() => setEditingCohortRow(row.clientId)} />}</td></tr>;
           })}</tbody></table></div>
           <div className="cohort-preview__save"><p>Data belum disimpan ke database sampai tombol ini ditekan.</p><button type="button" className="button" disabled={savingCohorts || Boolean(editingCohortRow)} onClick={() => void saveBulkCohorts()}>{savingCohorts ? "Menyimpan..." : `Simpan ${cohortPreview.length} Angkatan`}</button></div>
         </div>}
       </div>}
 
-      <div className="data-table-wrap cohort-list-wrap"><table className="clean-table cohort-list-table"><thead><tr><th>Angkatan</th><th>Pelatihan</th><th>Periode</th><th>Jumlah Peserta</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{catalog.cohorts.map((cohort) => <tr key={cohort.id}><td><strong>{cohort.name}</strong></td><td>{cohort.training_name}</td><td>{formatCohortDate(cohort.start_date)} – {formatCohortDate(cohort.end_date)}</td><td>{cohort.participant_count} peserta</td><td><span className={cohort.status === "ACTIVE" ? "status-badge is-active" : cohort.status === "COMPLETED" ? "status-badge is-complete" : "status-badge"}>{cohort.status === "ACTIVE" ? "Aktif" : cohort.status === "INACTIVE" ? "Nonaktif" : "Selesai"}</span></td><td><div className="row-actions"><button type="button" className="text-button" onClick={() => void editCohort(cohort)}>Edit</button><button type="button" className="text-button" onClick={() => void toggleCohort(cohort)}>{cohort.status === "ACTIVE" ? "Nonaktifkan" : "Aktifkan"}</button><button type="button" className="text-button" onClick={() => setSelectedCohortDetail((id) => id === cohort.id ? null : cohort.id)}>Detail</button><button type="button" className="text-button is-danger" onClick={() => setDeleteTarget({ kind: "cohort", cohort })}>Hapus</button></div></td></tr>)}</tbody></table>{!catalog.cohorts.length && <div className="empty-state">Belum ada angkatan. Gunakan “Buat Banyak Angkatan” untuk memulai.</div>}</div>
+      <div className="data-table-wrap cohort-list-wrap"><table className="clean-table cohort-list-table"><thead><tr><th>Angkatan</th><th>Pelatihan</th><th>Periode</th><th>Jumlah Peserta</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{catalog.cohorts.map((cohort) => <tr key={cohort.id}><td><strong>{cohort.name}</strong></td><td>{cohort.training_name}</td><td>{formatCohortDate(cohort.start_date)} – {formatCohortDate(cohort.end_date)}</td><td>{cohort.participant_count} peserta</td><td>{cohort.status === "COMPLETED" ? <span className="status-badge is-complete">Selesai</span> : <StatusIcon active={cohort.status === "ACTIVE"} />}</td><td><div className="row-actions"><IconActionButton action="edit" label={`Edit Angkatan ${cohort.name}`} onClick={() => void editCohort(cohort)} /><IconActionButton action={cohort.status === "ACTIVE" ? "active" : "inactive"} label={cohort.status === "ACTIVE" ? `Nonaktifkan Angkatan ${cohort.name}` : `Aktifkan Angkatan ${cohort.name}`} onClick={() => void toggleCohort(cohort)} /><IconActionButton action="delete" label={`Hapus Angkatan ${cohort.name}`} onClick={() => setDeleteTarget({ kind: "cohort", cohort })} /><button type="button" className="button button--secondary button--small button--detail" onClick={() => setSelectedCohortDetail((id) => id === cohort.id ? null : cohort.id)}>Detail</button></div></td></tr>)}</tbody></table>{!catalog.cohorts.length && <div className="empty-state">Belum ada angkatan. Gunakan “Buat Banyak Angkatan” untuk memulai.</div>}</div>
 
       {selectedCohortDetail && (() => { const cohort = catalog.cohorts.find((item) => item.id === selectedCohortDetail); return cohort ? <div className="cohort-detail-card"><div><p className="section-label">Detail Angkatan</p><h3>{cohort.name}</h3></div><dl><div><dt>Pelatihan</dt><dd>{cohort.training_name}</dd></div><div><dt>Periode</dt><dd>{formatCohortDate(cohort.start_date)} – {formatCohortDate(cohort.end_date)}</dd></div><div><dt>Peserta</dt><dd>{cohort.participant_count} peserta</dd></div><div><dt>Status</dt><dd>{cohort.status === "ACTIVE" ? "Aktif" : cohort.status === "INACTIVE" ? "Nonaktif" : "Selesai"}</dd></div></dl><button type="button" className="text-button" onClick={() => setSelectedCohortDetail(null)}>Tutup detail</button></div> : null; })()}
       {editingExistingCohort && <CohortEditor cohort={editingExistingCohort} activeYear={activeYear} onCancel={() => setEditingExistingCohort(null)} onSaved={() => { setEditingExistingCohort(null); report("Angkatan diperbarui.", "cohort"); }} onError={(reason) => fail(reason, "cohort")} />}
@@ -537,6 +546,7 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
   const [letterNumberFormat, setLetterNumberFormat] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
   const [overwriteConfirmOpen, setOverwriteConfirmOpen] = useState(false);
+  const [numberingTarget, setNumberingTarget] = useState<DocumentNumberKind | null>(null);
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const timers = useRef<Record<string, number>>({});
@@ -625,13 +635,17 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
   function existingLetterNumber(certificate: Certificate) {
     return (letterNumbers[certificate.participant_id] ?? certificate.completion_letter_number ?? "").trim();
   }
-  function validateBulkNumberInput() {
-    if (!/^\d+$/u.test(certificateStart) || !/^\d+$/u.test(letterStart)) {
-      setError("Nomor awal Sertifikat dan Nomor awal Surat wajib berupa angka.");
+  function validateBulkNumberInput(target: DocumentNumberKind) {
+    const isCertificate = target === "certificate";
+    const startNumber = isCertificate ? certificateStart : letterStart;
+    const format = isCertificate ? certificateNumberFormat : letterNumberFormat;
+    const label = isCertificate ? "Sertifikat" : "Surat";
+    if (!/^\d+$/u.test(startNumber)) {
+      setError(`Nomor awal ${label} wajib berupa angka.`);
       return false;
     }
-    if (!certificateNumberFormat.includes("[isi nomor]") || !letterNumberFormat.includes("[isi nomor]")) {
-      setError("Format Nomor Sertifikat dan Nomor Surat wajib memuat penanda [isi nomor].");
+    if (!format.includes("[isi nomor]")) {
+      setError(`Format Nomor ${label} wajib memuat penanda [isi nomor].`);
       return false;
     }
     if (!settings.issue_date) {
@@ -644,30 +658,36 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
     }
     return true;
   }
-  function requestBulkNumbering() {
+  function requestBulkNumbering(target: DocumentNumberKind) {
     setError(null); setSuccess(null);
-    if (!validateBulkNumberInput()) return;
+    setNumberingTarget(target);
+    if (!trainingId) { setError("Pilih pelatihan terlebih dahulu."); return; }
+    if (!validateBulkNumberInput(target)) return;
     const passedRows = rows.filter((certificate) => certificate.graduation_status === "LULUS");
-    if (passedRows.some((certificate) => existingCertificateNumber(certificate) || existingLetterNumber(certificate))) {
+    const hasExistingNumber = target === "certificate"
+      ? passedRows.some(existingCertificateNumber)
+      : passedRows.some(existingLetterNumber);
+    if (hasExistingNumber) {
+      setNumberingTarget(target);
       setOverwriteConfirmOpen(true);
       return;
     }
-    void applyBulkNumbers("overwrite");
+    void applyBulkNumbers("overwrite", target);
   }
-  async function applyBulkNumbers(mode: BulkNumberMode) {
+  async function applyBulkNumbers(mode: BulkNumberMode, target = numberingTarget) {
     setOverwriteConfirmOpen(false);
-    if (!validateBulkNumberInput()) return;
+    if (!target || !validateBulkNumberInput(target)) return;
     const passedRows = rows.filter((certificate) => certificate.graduation_status === "LULUS");
     const entries: BulkDocumentNumberEntry[] = [];
     const nextNumbers = { ...numbers };
     const nextLetterNumbers = { ...letterNumbers };
     passedRows.forEach((certificate, index) => {
       const entry: BulkDocumentNumberEntry = { participantId: certificate.participant_id };
-      if (mode === "overwrite" || !existingCertificateNumber(certificate)) {
+      if (target === "certificate" && (mode === "overwrite" || !existingCertificateNumber(certificate))) {
         entry.certificateNumber = applyDocumentNumberFormat(certificateNumberFormat, sequenceNumber(certificateStart, index));
         nextNumbers[certificate.participant_id] = entry.certificateNumber;
       }
-      if (mode === "overwrite" || !existingLetterNumber(certificate)) {
+      if (target === "letter" && (mode === "overwrite" || !existingLetterNumber(certificate))) {
         entry.completionLetterNumber = applyDocumentNumberFormat(letterNumberFormat, sequenceNumber(letterStart, index));
         nextLetterNumbers[certificate.participant_id] = entry.completionLetterNumber;
       }
@@ -679,23 +699,21 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
     }
     const previousNumbers = numbers;
     const previousLetterNumbers = letterNumbers;
-    passedRows.forEach((certificate) => {
-      window.clearTimeout(timers.current[`certificate-${certificate.participant_id}`]);
-      window.clearTimeout(timers.current[`letter-${certificate.participant_id}`]);
-    });
+    passedRows.forEach((certificate) => window.clearTimeout(timers.current[`${target}-${certificate.participant_id}`]));
     setNumbers(nextNumbers); setLetterNumbers(nextLetterNumbers); setBulkSaving(true); setError(null);
     try {
       const result = await adminMutation<{ participantsUpdated: number; numbersUpdated: number }>(
         "/api/admin/participants/document-numbers/bulk",
         { method: "PUT", body: JSON.stringify({ entries }) }
       );
-      setSuccess(`${result.numbersUpdated} nomor berhasil diterapkan ke ${result.participantsUpdated} peserta.`);
+      setSuccess(`${result.numbersUpdated} nomor ${target === "certificate" ? "sertifikat" : "surat"} berhasil diterapkan ke ${result.participantsUpdated} peserta.`);
       await onRefresh();
     } catch (reason) {
       setNumbers(previousNumbers); setLetterNumbers(previousLetterNumbers);
       setError(reason instanceof AdminApiError ? reason.message : "Nomor dokumen tidak dapat diterapkan.");
     } finally {
       setBulkSaving(false);
+      setNumberingTarget(null);
     }
   }
   async function downloadAll(kind: "certificates" | "letters") {
@@ -714,7 +732,7 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
   return <section className="panel certificate-workspace">
     <header className="certificate-workspace__header"><div><p className="section-label">Dokumen Kelulusan</p><h2>Sertifikat & Surat Keterangan</h2><p>Sertifikat menggunakan A4 Landscape; Surat Keterangan menggunakan A4 Portrait.</p></div><button type="button" className="button button--secondary" onClick={() => setSettingsOpen(true)}>Pengaturan Sertifikat</button></header>
     <div className="certificate-workspace__filters"><label>Pelatihan<SearchableSelect value={trainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setCohortId(""); }} /></label><label>Angkatan<select value={cohortId} disabled={!trainingId} onChange={(event) => setCohortId(event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label></div>
-    <section className="certificate-number-bulk" aria-labelledby="certificate-number-bulk-title"><div className="certificate-number-bulk__heading"><p className="section-label">Penomoran Otomatis</p><h3 id="certificate-number-bulk-title">Terapkan nomor berurutan</h3><p>Nomor diterapkan sesuai urutan peserta lulus pada daftar yang sedang tampil. Format dapat diubah sebelum diterapkan.</p></div><div className="certificate-number-bulk__fields"><label>Nomor Awal Sertifikat<input value={certificateStart} onChange={(event) => setCertificateStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 1237" /><span>Format Nomor Sertifikat</span><input value={certificateNumberFormat} onChange={(event) => setCertificateNumberFormat(event.target.value)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", settings.issue_date)} /><small>Gunakan <strong>[isi nomor]</strong> sebagai posisi nomor berurutan.</small></label><label>Nomor Awal Surat<input value={letterStart} onChange={(event) => setLetterStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 0456" /><span>Format Nomor Surat</span><input value={letterNumberFormat} onChange={(event) => setLetterNumberFormat(event.target.value)} placeholder={fullDocumentNumber("letter", "[isi nomor]", settings.issue_date)} /><small>Gunakan <strong>[isi nomor]</strong> sebagai posisi nomor berurutan.</small></label><button type="button" className="button" disabled={bulkSaving} onClick={requestBulkNumbering}>{bulkSaving ? "Menerapkan…" : "Terapkan Nomor"}</button></div></section>
+    <section className="certificate-number-bulk" aria-labelledby="certificate-number-bulk-title"><div className="certificate-number-bulk__heading"><p className="section-label">Penomoran Otomatis</p><h3 id="certificate-number-bulk-title">Terapkan penomoran berurutan otomatis</h3><p>Pilih pelatihan terlebih dahulu, lalu terapkan nomor untuk sertifikat atau surat secara terpisah.</p></div><div className="certificate-number-bulk__rows"><div className="certificate-number-bulk__row"><label>Format Nomor Sertifikat<input value={certificateNumberFormat} onChange={(event) => setCertificateNumberFormat(event.target.value)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", settings.issue_date)} /><small>Gunakan <strong>[isi nomor]</strong> sebagai posisi nomor berurutan.</small></label><label>Nomor Awal Sertifikat<input value={certificateStart} onChange={(event) => setCertificateStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 1237" /></label><button type="button" className="button" disabled={!trainingId || bulkSaving} onClick={() => requestBulkNumbering("certificate")}>{bulkSaving && numberingTarget === "certificate" ? "Menerapkan…" : "Terapkan"}</button></div><div className="certificate-number-bulk__row"><label>Format Nomor Surat<input value={letterNumberFormat} onChange={(event) => setLetterNumberFormat(event.target.value)} placeholder={fullDocumentNumber("letter", "[isi nomor]", settings.issue_date)} /><small>Gunakan <strong>[isi nomor]</strong> sebagai posisi nomor berurutan.</small></label><label>Nomor Awal Surat<input value={letterStart} onChange={(event) => setLetterStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 0456" /></label><button type="button" className="button" disabled={!trainingId || bulkSaving} onClick={() => requestBulkNumbering("letter")}>{bulkSaving && numberingTarget === "letter" ? "Menerapkan…" : "Terapkan"}</button></div></div></section>
     {success && <p className="form-message is-success" role="status">{success}</p>}
     {error && <p className="form-message is-error" role="alert">{error}</p>}
     <div className="data-table-wrap"><table className="clean-table certificate-workspace__table certificate-document-table"><thead><tr><th>Nama Peserta</th><th>Status</th><th>Nomor Sertifikat</th><th>Nomor Surat</th><th>Aksi</th></tr></thead><tbody>{rows.map((certificate) => <tr key={certificate.participant_id}><td><strong>{certificate.name}</strong><small>{certificate.training_name} · {certificate.cohort_name}</small></td><td><span className={certificate.graduation_status === "LULUS" ? "status-badge is-active" : "status-badge is-danger"}>{certificate.graduation_status === "LULUS" ? "Lulus" : "Belum lulus"}</span></td><td>{certificate.graduation_status === "LULUS" ? <><input aria-label={`Nomor sertifikat ${certificate.name}`} value={numbers[certificate.participant_id] ?? certificate.certificate_number ?? ""} onChange={(event) => updateNumber(certificate, event.target.value)} onBlur={() => void persistNumber(certificate)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", settings.issue_date)} />{savingKey === `certificate-${certificate.participant_id}` && <small className="certificate-autosave">Menyimpan…</small>}</> : "—"}</td><td>{certificate.graduation_status === "LULUS" ? <><input aria-label={`Nomor surat ${certificate.name}`} value={letterNumbers[certificate.participant_id] ?? certificate.completion_letter_number ?? ""} onChange={(event) => updateLetterNumber(certificate, event.target.value)} onBlur={() => void persistLetterNumber(certificate)} placeholder={fullDocumentNumber("letter", "[isi nomor]", settings.issue_date)} />{savingKey === `letter-${certificate.participant_id}` && <small className="certificate-autosave">Menyimpan…</small>}</> : "—"}</td><td>{certificate.graduation_status === "LULUS" ? <div className="certificate-document-actions"><button type="button" className="button button--secondary button--small" onClick={() => void openPreview(certificate)}>Preview Sertifikat</button><button type="button" className="button button--secondary button--small" onClick={() => void openLetterPreview(certificate)}>Preview Surat</button></div> : "—"}</td></tr>)}</tbody></table>{trainingId && cohortId && !rows.length && <p className="empty-state">Belum ada peserta pada angkatan ini.</p>}</div>
@@ -722,7 +740,7 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
     {settingsOpen && <CertificateSettingsModal settings={settings} onChange={setSettings} onSaved={onRefresh} onClose={() => setSettingsOpen(false)} />}
     {preview && <CertificatePreviewModal certificate={preview} side={previewSide} onSideChange={setPreviewSide} onClose={() => setPreview(null)} />}
     {letterPreview && <CompletionLetterPreviewModal certificate={letterPreview} onClose={() => setLetterPreview(null)} />}
-    {overwriteConfirmOpen && <NumberOverwriteModal busy={bulkSaving} onCancel={() => setOverwriteConfirmOpen(false)} onOverwrite={() => void applyBulkNumbers("overwrite")} onFillEmpty={() => void applyBulkNumbers("empty")} />}
+    {overwriteConfirmOpen && <NumberOverwriteModal busy={bulkSaving} onCancel={() => { setOverwriteConfirmOpen(false); setNumberingTarget(null); }} onOverwrite={() => void applyBulkNumbers("overwrite")} onFillEmpty={() => void applyBulkNumbers("empty")} />}
   </section>;
 }
 
@@ -793,7 +811,7 @@ function ParticipantEditor({ id, activeYear, catalog, onCancel, onSaved, onError
     event.preventDefault(); const form = new FormData(event.currentTarget);
     try {
       await adminMutation(`/api/admin/participants/participants/${id}`, { method: "PUT", body: JSON.stringify({ trainingId, cohortId, name: form.get("name"), nik: form.get("nik"), birthPlace: form.get("birthPlace"), birthDate: form.get("birthDate"), address: form.get("address"), isActive: form.get("isActive") === "on" }) });
-      const photo = form.get("photo"); if (photo instanceof File && photo.size) { const upload = new FormData(); upload.set("photo", photo); await adminUpload(`/api/admin/participants/participants/${id}/photo`, upload); }
+      const photo = form.get("photo"); if (photo instanceof File && photo.size) { const upload = new FormData(); upload.set("photo", await optimizeImage(photo)); await adminUpload(`/api/admin/participants/participants/${id}/photo`, upload); }
       onSaved();
     } catch (processError) { onError(processError); }
   }

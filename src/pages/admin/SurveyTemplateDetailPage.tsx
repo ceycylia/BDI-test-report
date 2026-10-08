@@ -11,6 +11,7 @@ import {
   adminQuery,
   AdminApiError,
 } from "../../features/admin-auth/admin-api";
+import { IconActionButton } from "../../components/ui/IconActionButton";
 
 
 type SurveyQuestionType =
@@ -1125,18 +1126,8 @@ export function SurveyTemplateDetailPage() {
                 </div>
 
                 {isDraft && (
-                  <div className="button-row">
-                    <button
-                      className="button button--secondary"
-                      type="button"
-                      onClick={() =>
-                        openEditSection(
-                          section
-                        )
-                      }
-                    >
-                      Edit Bagian
-                    </button>
+                  <div className="row-actions">
+                    <IconActionButton action="edit" label={`Edit Bagian ${section.title}`} onClick={() => openEditSection(section)} />
 
                     <button
                       className="button"
@@ -1150,17 +1141,7 @@ export function SurveyTemplateDetailPage() {
                       + Tambah Pertanyaan
                     </button>
 
-                    <button
-                      className="danger-button"
-                      type="button"
-                      onClick={() =>
-                        requestDeleteSection(
-                          section
-                        )
-                      }
-                    >
-                      Hapus Bagian
-                    </button>
+                    <IconActionButton action="delete" label={`Hapus Bagian ${section.title}`} onClick={() => requestDeleteSection(section)} />
                   </div>
                 )}
               </div>
@@ -1339,31 +1320,9 @@ export function SurveyTemplateDetailPage() {
                               diisi
                             </span>
 
-                            <div className="button-row">
-                              <button
-                                className="text-button"
-                                type="button"
-                                onClick={() =>
-                                  openEditQuestion(
-                                    section.id,
-                                    question
-                                  )
-                                }
-                              >
-                                Edit
-                              </button>
-
-                              <button
-                                className="text-button is-danger"
-                                type="button"
-                                onClick={() =>
-                                  requestDeleteQuestion(
-                                    question
-                                  )
-                                }
-                              >
-                                Hapus
-                              </button>
+                            <div className="row-actions">
+                              <IconActionButton action="edit" label="Edit Pertanyaan" onClick={() => openEditQuestion(section.id, question)} />
+                              <IconActionButton action="delete" label="Hapus Pertanyaan" onClick={() => requestDeleteQuestion(question)} />
                             </div>
                           </div>
                         )}

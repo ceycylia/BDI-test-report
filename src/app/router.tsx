@@ -1,31 +1,32 @@
+import { lazy, Suspense } from "react";
 import { Route, Routes } from "react-router-dom";
 import { ProtectedAdminRoute } from "../features/admin-auth/ProtectedAdminRoute";
 import { AdminLayout } from "../layouts/AdminLayout";
-import { AdminFoundationPage } from "../pages/admin/AdminFoundationPage";
-import { AdminLoginFoundationPage } from "../pages/admin/AdminLoginFoundationPage";
-import { AdminManagementPage } from "../pages/admin/AdminManagementPage";
-import { AdminAccountPage } from "../pages/admin/AdminAccountPage";
-import { QuestionBankDetailPage } from "../pages/admin/QuestionBankDetailPage";
-import { QuestionBankListPage } from "../pages/admin/QuestionBankListPage";
-import { QuestionImportPage } from "../pages/admin/QuestionImportPage";
-import { TrainingCreatePage } from "../pages/admin/TrainingCreatePage";
-import { TrainingDetailPage } from "../pages/admin/TrainingDetailPage";
-import { TrainingListPage } from "../pages/admin/TrainingListPage";
-import { ResultsPage } from "../pages/admin/ResultsPage";
-import { ParticipantResultDetailPage } from "../pages/admin/ParticipantResultDetailPage";
-import { NotFoundPage } from "../pages/NotFoundPage";
-import { PublicHomePage } from "../pages/participant/PublicHomePage";
-import { TrainingEntryFoundationPage } from "../pages/participant/TrainingEntryFoundationPage";
-import { AttemptPage } from "../pages/participant/AttemptPage";
-import { ParticipantsPage } from "../pages/admin/ParticipantsPage";
-import { TrainingCatalogPage } from "../pages/admin/TrainingCatalogPage";
-import { SurveyTemplateDetailPage } from "../pages/admin/SurveyTemplateDetailPage";
-import { EvaluationPage } from "../pages/admin/EvaluationPage";
-import { EvaluationDetailPage } from "../pages/admin/EvaluationDetailPage";
-import { EvaluationParticipantPage } from "../pages/participant/EvaluationParticipantPage";
+const AdminFoundationPage = lazy(() => import("../pages/admin/AdminFoundationPage").then((m) => ({ default: m.AdminFoundationPage })));
+const AdminLoginFoundationPage = lazy(() => import("../pages/admin/AdminLoginFoundationPage").then((m) => ({ default: m.AdminLoginFoundationPage })));
+const AdminManagementPage = lazy(() => import("../pages/admin/AdminManagementPage").then((m) => ({ default: m.AdminManagementPage })));
+const AdminAccountPage = lazy(() => import("../pages/admin/AdminAccountPage").then((m) => ({ default: m.AdminAccountPage })));
+const QuestionBankDetailPage = lazy(() => import("../pages/admin/QuestionBankDetailPage").then((m) => ({ default: m.QuestionBankDetailPage })));
+const QuestionBankListPage = lazy(() => import("../pages/admin/QuestionBankListPage").then((m) => ({ default: m.QuestionBankListPage })));
+const QuestionImportPage = lazy(() => import("../pages/admin/QuestionImportPage").then((m) => ({ default: m.QuestionImportPage })));
+const TrainingCreatePage = lazy(() => import("../pages/admin/TrainingCreatePage").then((m) => ({ default: m.TrainingCreatePage })));
+const TrainingDetailPage = lazy(() => import("../pages/admin/TrainingDetailPage").then((m) => ({ default: m.TrainingDetailPage })));
+const TrainingListPage = lazy(() => import("../pages/admin/TrainingListPage").then((m) => ({ default: m.TrainingListPage })));
+const ResultsPage = lazy(() => import("../pages/admin/ResultsPage").then((m) => ({ default: m.ResultsPage })));
+const ParticipantResultDetailPage = lazy(() => import("../pages/admin/ParticipantResultDetailPage").then((m) => ({ default: m.ParticipantResultDetailPage })));
+const NotFoundPage = lazy(() => import("../pages/NotFoundPage").then((m) => ({ default: m.NotFoundPage })));
+const PublicHomePage = lazy(() => import("../pages/participant/PublicHomePage").then((m) => ({ default: m.PublicHomePage })));
+const TrainingEntryFoundationPage = lazy(() => import("../pages/participant/TrainingEntryFoundationPage").then((m) => ({ default: m.TrainingEntryFoundationPage })));
+const AttemptPage = lazy(() => import("../pages/participant/AttemptPage").then((m) => ({ default: m.AttemptPage })));
+const ParticipantsPage = lazy(() => import("../pages/admin/ParticipantsPage").then((m) => ({ default: m.ParticipantsPage })));
+const TrainingCatalogPage = lazy(() => import("../pages/admin/TrainingCatalogPage").then((m) => ({ default: m.TrainingCatalogPage })));
+const SurveyTemplateDetailPage = lazy(() => import("../pages/admin/SurveyTemplateDetailPage").then((m) => ({ default: m.SurveyTemplateDetailPage })));
+const EvaluationPage = lazy(() => import("../pages/admin/EvaluationPage").then((m) => ({ default: m.EvaluationPage })));
+const EvaluationDetailPage = lazy(() => import("../pages/admin/EvaluationDetailPage").then((m) => ({ default: m.EvaluationDetailPage })));
+const EvaluationParticipantPage = lazy(() => import("../pages/participant/EvaluationParticipantPage").then((m) => ({ default: m.EvaluationParticipantPage })));
 
 export function AppRouter() {
-  return (
+  return <Suspense fallback={<div className="route-loading" role="status">Memuat halaman…</div>}>
     <Routes>
       <Route path="/" element={<PublicHomePage />} />
       <Route path="/t/:slug" element={<TrainingEntryFoundationPage />} />
@@ -74,5 +75,5 @@ export function AppRouter() {
       </Route>
       <Route path="*" element={<NotFoundPage />} />
     </Routes>
-  );
+  </Suspense>;
 }

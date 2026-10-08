@@ -1,7 +1,8 @@
 import { useCallback, useEffect, useState } from "react";
 import { Link } from "react-router-dom";
-import { Archive, ClipboardList, RefreshCcw, Trash2, X } from "lucide-react";
+import { Archive, ClipboardList, RefreshCcw, X } from "lucide-react";
 import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
+import { IconActionButton } from "../../components/ui/IconActionButton";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 import {
   adminMutation,
@@ -202,23 +203,10 @@ export function SurveyTemplateListPage({
                         <RefreshCcw aria-hidden="true" /> Aktifkan Kembali
                       </button>
                     )}
-                    <Link
-                      className="button button--secondary"
-                      to={`/admin/evaluasi/template/${template.id}`}
-                    >
-                      Lihat Template
-                    </Link>
                     {template.canDelete && (
-                      <button
-                        type="button"
-                        className="text-button is-danger"
-                        aria-label={`Hapus Template Evaluasi versi ${template.version} ${template.name}`}
-                        title="Hapus Template"
-                        onClick={() => setDeleteTarget(template)}
-                      >
-                        <Trash2 aria-hidden="true" /> Hapus
-                      </button>
+                      <IconActionButton action="delete" label={`Hapus Template Evaluasi versi ${template.version} ${template.name}`} onClick={() => setDeleteTarget(template)} />
                     )}
+                    <Link className="button button--secondary button--detail" to={`/admin/evaluasi/template/${template.id}`}>Detail</Link>
                   </div>
                 </article>
               );

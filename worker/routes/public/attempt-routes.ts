@@ -214,6 +214,6 @@ attemptRoutes.get("/:attemptId/image", async (context) => {
     const contentType = extension === "png" ? "image/png" : extension === "webp" ? "image/webp" : "image/jpeg";
     headers.set("Content-Type", contentType);
   }
-  headers.set("Cache-Control", "private, max-age=300"); headers.set("X-Content-Type-Options", "nosniff");
+  headers.set("Cache-Control", "public, max-age=31536000, immutable"); headers.set("X-Content-Type-Options", "nosniff");
   return new Response(object.body, { headers });
 });

@@ -16,6 +16,7 @@ import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { QuestionImportModal } from "./QuestionImportPage";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
+import { IconActionButton } from "../../components/ui/IconActionButton";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 
 const emptyQuestion: QuestionInput = {
@@ -366,22 +367,9 @@ export function QuestionBankDetailPage() {
                   <div className="question-card__footer">
                     <span>Digunakan {question.timesAssigned} kali</span>
 
-                    <div className="button-row">
-                      <button
-                        className="text-button"
-                        type="button"
-                        onClick={() => editQuestion(question)}
-                      >
-                        Edit
-                      </button>
-
-                      <button
-                        className="text-button is-danger"
-                        type="button"
-                        onClick={() => setQuestionToDelete(question)}
-                      >
-                        Hapus
-                      </button>
+                    <div className="row-actions">
+                      <IconActionButton action="edit" label={`Edit Pertanyaan ${question.questionText}`} onClick={() => editQuestion(question)} />
+                      <IconActionButton action="delete" label={`Hapus Pertanyaan ${question.questionText}`} onClick={() => setQuestionToDelete(question)} />
                     </div>
                   </div>
                 </article>

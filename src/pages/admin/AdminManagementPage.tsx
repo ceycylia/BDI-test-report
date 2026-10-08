@@ -1,9 +1,10 @@
-import { KeyRound, Pencil, Plus, ShieldCheck, UserCheck, UserX, Users } from "lucide-react";
+import { KeyRound, Pencil, Plus, ShieldCheck, Users } from "lucide-react";
 import { useEffect, useState, type FormEvent } from "react";
 import { Link } from "react-router-dom";
 import { adminMutation, adminQuery, AdminApiError } from "../../features/admin-auth/admin-api";
 import { useAdminAuth } from "../../features/admin-auth/AuthProvider";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
+import { StatusIcon } from "../../components/ui/IconActionButton";
 
 type AdminListItem = {
   id: string;
@@ -80,7 +81,7 @@ export function AdminManagementPage() {
     {message && <p className="form-message is-success">{message}</p>}{error && <p className="form-message is-error" role="alert">{error}</p>}
     <div className="admin-management-grid">
       <section className="panel"><div className="panel-heading"><Users /><div><h2>Daftar admin</h2><p>{admins.length} akun terdaftar</p></div></div>
-        {loading ? <p className="muted">Memuat daftar admin…</p> : <div className="admin-list">{admins.map((item) => <button type="button" className={`admin-list__item admin-list__button${selected?.id === item.id ? " is-selected" : ""}`} key={item.id} onClick={() => setSelected(item)}><span className="admin-list__avatar">{item.name.charAt(0).toUpperCase()}</span><span className="admin-list__identity"><strong>{item.name}</strong><small>@{item.username} · {item.role === "SUPERADMIN" ? "Superadmin" : "Admin"}</small></span><span className={item.isActive ? "status-badge is-active" : "status-badge"}>{item.isActive ? <UserCheck /> : <UserX />}{item.isActive ? "Aktif" : "Nonaktif"}</span></button>)}</div>}
+        {loading ? <p className="muted">Memuat daftar admin…</p> : <div className="admin-list">{admins.map((item) => <button type="button" className={`admin-list__item admin-list__button${selected?.id === item.id ? " is-selected" : ""}`} key={item.id} onClick={() => setSelected(item)}><span className="admin-list__avatar">{item.name.charAt(0).toUpperCase()}</span><span className="admin-list__identity"><strong>{item.name}</strong><small>@{item.username} · {item.role === "SUPERADMIN" ? "Superadmin" : "Admin"}</small></span><StatusIcon active={item.isActive} /></button>)}</div>}
       </section>
       <section className="panel"><div className="panel-heading"><Plus /><div><h2>Tambah admin</h2><p>Buat akun dengan akses yang sesuai.</p></div></div>
         <form className="form-stack" autoComplete="off" onSubmit={(event) => void createAdmin(event)}><label>Nama<input name="name" value={newAdmin.name} onChange={(event) => setNewAdmin((value) => ({ ...value, name: event.target.value }))} required minLength={2} maxLength={120} autoComplete="off" /></label><label>Username<input name="username" value={newAdmin.username} onChange={(event) => setNewAdmin((value) => ({ ...value, username: event.target.value }))} required minLength={3} maxLength={80} autoComplete="off" /></label><label>Role<select name="role" value={newAdmin.role} onChange={(event) => setNewAdmin((value) => ({ ...value, role: event.target.value as AdminListItem["role"] }))}><option value="ADMIN">Admin</option><option value="SUPERADMIN">Superadmin</option></select></label><label>Password awal<input name="password" type="password" value={newAdmin.password} onChange={(event) => setNewAdmin((value) => ({ ...value, password: event.target.value }))} required minLength={12} maxLength={128} autoComplete="new-password" /><small>Minimal 12 karakter.</small></label><button className="button" disabled={busy}><Plus />{busy ? "Menyimpan…" : "Tambah admin"}</button></form>
