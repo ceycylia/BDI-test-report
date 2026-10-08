@@ -31,6 +31,7 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
         sessions.id AS training_session_id,
         sessions.training_id AS training_id, trainings.name AS training_name,
         sessions.material_id AS material_id, materials.name AS material_name,
+        materials.sort_order AS material_sort_order,
         batches.cohort_id AS cohort_id, cohorts.name AS cohort_name,
         SUBSTR(cohorts.start_date, 1, 4) AS training_year,
         sessions.passing_score,
@@ -60,7 +61,6 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
   ).bind(...bindings).all<Record<string, string | number | null>>();
   return result.results;
 }
-
 export async function listResultFilterOptions(database: D1Database, year: number) {
   const yearText = String(year);
   const [trainings, materials, cohorts] = await Promise.all([
@@ -95,7 +95,6 @@ export async function listResultFilterOptions(database: D1Database, year: number
     cohorts: cohorts.results,
   };
 }
-
 export async function getParticipantResult(database: D1Database, participantId: string, year?: number) {
   return database.prepare(
     `SELECT COALESCE(participants.id, profiles.id) AS id, COALESCE(participants.name, profiles.name) AS name, profiles.normalized_name,
@@ -118,7 +117,6 @@ export async function getParticipantResult(database: D1Database, participantId: 
     cohort_id: string; cohort_name: string; passing_score: number;
   }>();
 }
-
 export type ManualScoreContext = {
   profile_id: string;
   participant_id: string | null;
@@ -251,8 +249,10 @@ export async function saveManualAttemptScores(
 export async function listExportAnswers(database: D1Database, participantIds: string[]) {
   if (!participantIds.length) return [];
   const result = await database.prepare(
-    `SELECT participants.name, batches.batch_name, sessions.name AS training_name,
-      attempts.stage, attempts.score, snapshots.display_position, snapshots.question_text,
+    `SELECT participants.id AS participant_id, attempts.id AS attempt_id,
+      sessions.id AS training_session_id, sessions.material_id,
+      participants.name, batches.batch_name, sessions.name AS training_name,
+      attempts.stage, attempts.score, attempts.submitted_at, snapshots.question_id, snapshots.display_position, snapshots.question_text,
       answers.selected_original_option_key, answers.correct_original_option_key, answers.is_correct,
       snapshots.option_a, snapshots.option_b, snapshots.option_c, snapshots.option_d
       FROM attempt_question_snapshots AS snapshots
@@ -264,19 +264,5 @@ export async function listExportAnswers(database: D1Database, participantIds: st
       WHERE participants.id IN (SELECT value FROM json_each(?)) AND attempts.status = 'SUBMITTED'
       ORDER BY sessions.name, batches.batch_number, participants.name, attempts.created_at, snapshots.display_position`,
   ).bind(JSON.stringify(participantIds)).all<Record<string, string | number | null>>();
-  return result.results;
-}
-
-export async function listExportTrainingInfo(database: D1Database, sessionIds: string[]) {
-  if (!sessionIds.length) return [];
-  const result = await database.prepare(
-    `SELECT sessions.name AS training_name, sessions.slug, banks.name AS bank_name,
-      sessions.question_count, sessions.duration_minutes, sessions.passing_score,
-      sessions.training_start_date, sessions.training_end_date, sessions.status,
-      GROUP_CONCAT(batches.batch_name, ', ') AS batches
-      FROM training_sessions AS sessions JOIN question_banks AS banks ON banks.id = sessions.bank_id
-      LEFT JOIN batches ON batches.training_session_id = sessions.id
-      WHERE sessions.id IN (SELECT value FROM json_each(?)) GROUP BY sessions.id ORDER BY sessions.name`,
-  ).bind(JSON.stringify(sessionIds)).all<Record<string, string | number | null>>();
   return result.results;
 }

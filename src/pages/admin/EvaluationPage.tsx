@@ -1,6 +1,6 @@
 import { ClipboardCopy, ClipboardList, Plus, X } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState, type FormEvent } from "react";
-import { Link, useSearchParams } from "react-router-dom";
+import { Link, useLocation, useNavigate, useSearchParams } from "react-router-dom";
 import { DateTimeInput } from "../../components/ui/DateTimeInput";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
@@ -31,6 +31,8 @@ const statusLabels: Record<EvaluationStatus, string> = { NOT_OPEN: "Belum Dibuka
 
 export function EvaluationPage() {
   const { activeYear } = useActiveYear();
+  const location = useLocation();
+  const navigate = useNavigate();
   const [params, setParams] = useSearchParams();
   const tab = params.get("tab") === "templates" ? "templates" : "campaigns";
   const [campaigns, setCampaigns] = useState<Campaign[]>([]);
@@ -70,6 +72,12 @@ export function EvaluationPage() {
   }, [activeYear]);
 
   useEffect(() => { const timer = window.setTimeout(() => void load(), 250); return () => window.clearTimeout(timer); }, [load]);
+  useEffect(() => {
+    const message = (location.state as { notice?: string } | null)?.notice;
+    if (!message) return;
+    setNotice(message);
+    navigate(location.pathname, { replace: true, state: null });
+  }, [location.pathname, location.state, navigate]);
   useEffect(() => { void loadCatalog().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Pilihan Evaluasi tidak dapat dimuat.")); }, [loadCatalog]);
   useEffect(() => { setTrainingId(""); setCohortId(""); setSearch(""); setStatus(""); }, [activeYear]);
   useEffect(() => { setPage(1); }, [activeYear, cohortId, search, status, trainingId]);

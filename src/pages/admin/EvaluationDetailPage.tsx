@@ -1,6 +1,6 @@
 import { ClipboardCopy, Download, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
-import { Link, useParams } from "react-router-dom";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { EvaluationReportChart } from "../../components/evaluation/EvaluationReportChart";
 import { DateTimeInput } from "../../components/ui/DateTimeInput";
 import { ModalPortal } from "../../components/ui/ModalPortal";
@@ -18,13 +18,13 @@ type Campaign = {
   id: string; slug: string; training: { id: string; name: string }; template: { id: string; name: string; version: number };
   cohorts: Array<{ id: string; name: string; startDate: string; endDate: string }>;
   schedule: { mode: "MANUAL" | "SCHEDULED"; manualOpen: boolean; opensAt: string | null; closesAt: string | null };
-  status: Status; totalParticipants: number; respondentCount: number;
+  status: Status; totalParticipants: number; respondentCount: number; hasResponses: boolean;
 };
 type Results = {
   totalParticipants: number; respondentCount: number; responsePercentage: number; overallValue: number | null;
   sections: Array<{ id: string; code: string; title: string; value: number | null }>;
   indicators: Array<{ no: number; sectionCode: string; sectionTitle: string; questionId: string; indicator: string; value: number | null; responseCount: number; distribution: Array<{ value: number; count: number }> }>;
-  singleChoice: Array<{ sectionTitle: string; questionId: string; question: string; responseCount: number; options: Array<{ label: string; count: number; percentage: number }> }>;
+  singleChoice: Array<{ sectionTitle: string; questionId: string; question: string; responseCount: number; options: Array<{ label: string; count: number; percentage: number; otherTexts: string[] }> }>;
   comments: Array<{ sectionTitle: string; questionId: string; question: string; entries: Array<{ participantName: string; cohortName: string; text: string }> }>;
   participants: Array<{ id: string; name: string; nik: string; cohortId: string; cohortName: string; status: "SUBMITTED" | "NOT_SUBMITTED"; submittedAt: string | null }>;
   participantPagination: PaginationMeta;
@@ -56,6 +56,7 @@ function chartFileName(names: string[]) {
 
 export function EvaluationDetailPage() {
   const { campaignId = "" } = useParams();
+  const navigate = useNavigate();
   const { activeYear } = useActiveYear();
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [results, setResults] = useState<Results | null>(null);
@@ -66,6 +67,7 @@ export function EvaluationDetailPage() {
   const [participantPage, setParticipantPage] = useState(1);
   const [commentPage, setCommentPage] = useState(1);
   const [schedule, setSchedule] = useState<ScheduleDraft | null>(null);
+  const [deleteOpen, setDeleteOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   useAutoDismiss(error, setError);
@@ -127,6 +129,19 @@ export function EvaluationDetailPage() {
     await navigator.clipboard.writeText(`${window.location.origin}/e/${campaign.slug}`); setNotice("Link Evaluasi berhasil disalin.");
   }
 
+  async function deleteCampaign() {
+    if (!campaign || campaign.hasResponses) return;
+    setBusy(true); setError(null);
+    try {
+      await adminMutation(withActiveYear(`/api/admin/survey-campaigns/${campaign.id}`, activeYear), { method: "DELETE" });
+      navigate("/admin/evaluasi", { replace: true, state: { notice: "Evaluasi berhasil dihapus" } });
+    } catch (reason) {
+      setDeleteOpen(false);
+      setError(reason instanceof AdminApiError ? reason.message : "Evaluasi tidak dapat dihapus.");
+      await load();
+    } finally { setBusy(false); }
+  }
+
   function selectCohort(nextCohortId: string) {
     if (nextCohortId === cohortId) return;
     setResults(null);
@@ -178,18 +193,18 @@ export function EvaluationDetailPage() {
   const selectedCohortNames = selectedCohorts.map((item) => item.name);
   const cohortLabel = formatCohortList(selectedCohortNames);
   const chartTitle = `Hasil Evaluasi Penyelenggaraan Pelatihan Vokasi${cohortLabel ? ` ${cohortLabel}` : ""}`;
-  const wordPath = withActiveYear(`/api/admin/survey-campaigns/${campaign.id}/export-word`, activeYear);
-  const wordUrl = cohortId ? `${wordPath}&cohortId=${encodeURIComponent(cohortId)}` : wordPath;
+  const exportPath = withActiveYear(`/api/admin/survey-campaigns/${campaign.id}/export`, activeYear);
+  const exportUrl = cohortId ? `${exportPath}&cohortId=${encodeURIComponent(cohortId)}` : exportPath;
 
   return <>
-    <header className="admin-page-header"><div><Link className="back-link" to="/admin/evaluasi">← Evaluasi</Link><h1>{campaign.training.name}</h1><p>{campaign.cohorts.map((item) => item.name).join(" & ")} · {campaign.template.name} Versi {campaign.template.version}</p><ActiveYearIndicator /></div><div className="page-header-actions evaluation-result-actions"><span className={`status-badge evaluation-status-${campaign.status.toLowerCase()}`}>{statusLabels[campaign.status]}</span><button className="button button--secondary" type="button" onClick={() => void downloadChart(chartFileName(selectedCohortNames))}><Download /> Download Chart</button><a className="button" href={wordUrl} download><Download /> Export Hasil Evaluasi</a></div></header>
+    <header className="admin-page-header"><div><Link className="back-link" to="/admin/evaluasi">← Evaluasi</Link><h1>{campaign.training.name}</h1><p>{campaign.cohorts.map((item) => item.name).join(" & ")} · {campaign.template.name} Versi {campaign.template.version}</p><ActiveYearIndicator /></div><div className="page-header-actions evaluation-result-actions"><span className={`status-badge evaluation-status-${campaign.status.toLowerCase()}`}>{statusLabels[campaign.status]}</span><button className="button button--secondary" type="button" onClick={() => void downloadChart(chartFileName(selectedCohortNames))}><Download /> Download Chart</button><a className="button" href={exportUrl} download><Download /> Export Hasil Evaluasi</a></div></header>
     <div hidden aria-hidden="true"><EvaluationReportChart ref={chartRef} title={chartTitle} sections={results.sections} /></div>
     {notice && <p className="form-message is-success" role="status">{notice}</p>}{error && <p className="form-message is-error" role="alert">{error}</p>}
-    <section className="panel evaluation-detail-controls"><div><span>Link Evaluasi</span><code>{window.location.origin}/e/{campaign.slug}</code></div><div className="button-row"><button className="button button--secondary" onClick={() => void copyLink()}><ClipboardCopy /> Salin</button><IconActionButton action="edit" label="Edit Jadwal Evaluasi" onClick={() => { setError(null); setSchedule({ status: campaign.schedule.mode === "SCHEDULED" ? "SCHEDULED" : campaign.status === "OPEN" ? "OPEN_NOW" : "CLOSED", opensAt: campaign.schedule.opensAt ? formatDateTimeForDisplay(campaign.schedule.opensAt) : "", closesAt: campaign.schedule.closesAt ? formatDateTimeForDisplay(campaign.schedule.closesAt) : "" }); }} />{campaign.status === "OPEN" ? <button className="button button--danger" disabled={busy} onClick={() => void applySchedule({ status: "CLOSED" })}>Tutup Evaluasi</button> : <button className="button" disabled={busy} onClick={() => void applySchedule({ status: "OPEN_NOW" })}>{campaign.status === "FINISHED" ? "Buka Kembali" : "Buka Sekarang"}</button>}</div></section>
+    <section className="panel evaluation-detail-controls"><div><span>Link Evaluasi</span><code>{window.location.origin}/e/{campaign.slug}</code></div><div className="button-row"><button className="button button--secondary" onClick={() => void copyLink()}><ClipboardCopy /> Salin</button><IconActionButton action="edit" label="Edit Jadwal Evaluasi" onClick={() => { setError(null); setSchedule({ status: campaign.schedule.mode === "SCHEDULED" ? "SCHEDULED" : campaign.status === "OPEN" ? "OPEN_NOW" : "CLOSED", opensAt: campaign.schedule.opensAt ? formatDateTimeForDisplay(campaign.schedule.opensAt) : "", closesAt: campaign.schedule.closesAt ? formatDateTimeForDisplay(campaign.schedule.closesAt) : "" }); }} />{campaign.status === "OPEN" ? <button className="button button--danger" disabled={busy} onClick={() => void applySchedule({ status: "CLOSED" })}>Tutup Evaluasi</button> : <button className="button" disabled={busy} onClick={() => void applySchedule({ status: "OPEN_NOW" })}>{campaign.status === "FINISHED" ? "Buka Kembali" : "Buka Sekarang"}</button>}{!campaign.hasResponses && <button className="button button--danger" type="button" disabled={busy} onClick={() => { setError(null); setDeleteOpen(true); }}>Hapus Evaluasi</button>}</div></section>
     <nav className="evaluation-cohort-tabs" aria-label="Filter hasil per Angkatan"><button className={!cohortId ? "is-active" : ""} onClick={() => selectCohort("")}>Gabungan</button>{campaign.cohorts.map((cohort) => <button key={cohort.id} className={cohortId === cohort.id ? "is-active" : ""} onClick={() => selectCohort(cohort.id)}>{cohort.name}</button>)}</nav>
     <section className="evaluation-summary-grid"><article className="panel"><span>Total Peserta</span><strong>{results.totalParticipants}</strong></article><article className="panel"><span>Sudah Mengisi</span><strong>{results.respondentCount}</strong></article><article className="panel"><span>Belum Mengisi</span><strong>{results.totalParticipants - results.respondentCount}</strong></article><article className="panel"><span>Persentase Pengisian</span><strong>{percent(results.responsePercentage)}</strong></article><article className="panel evaluation-summary-grid__overall"><span>Nilai Keseluruhan Evaluasi</span><strong>{percent(results.overallValue)}</strong></article></section>
-    <section className="panel evaluation-report-table-panel"><div className="panel-heading"><div><p className="section-label">Skala 1–4</p><h2>Rincian Nilai Indikator</h2></div></div><div className="evaluation-result-table evaluation-report-table"><table><colgroup><col className="evaluation-report-table__number" /><col className="evaluation-report-table__section" /><col /><col className="evaluation-report-table__value" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /></colgroup><thead><tr><th rowSpan={2}>No.</th><th rowSpan={2}>Bagian</th><th rowSpan={2}>Indikator Penilaian</th><th rowSpan={2}>Nilai</th><th className="evaluation-report-table__distribution-heading" colSpan={4}>Distribusi</th></tr><tr className="evaluation-report-table__score-headings"><th>1</th><th>2</th><th>3</th><th>4</th></tr></thead><tbody>{results.indicators.map((item) => <tr key={item.questionId}><td>{item.no}</td><td>{item.sectionCode}. {item.sectionTitle}</td><td>{item.indicator}</td><td>{percent(item.value)}</td>{[1, 2, 3, 4].map((score) => <td className="evaluation-report-table__score-cell" key={score}>{item.distribution.find((entry) => entry.value === score)?.count ?? 0}</td>)}</tr>)}</tbody></table></div></section>
-    {results.singleChoice.map((group) => <section className="panel evaluation-distribution" key={group.questionId}><p className="section-label">{group.sectionTitle}</p><h2>{group.question}</h2><div className="evaluation-result-table evaluation-choice-table"><table><colgroup><col /><col className="evaluation-choice-table__count" /><col className="evaluation-choice-table__percentage" /></colgroup><thead><tr><th>Pilihan</th><th>Jumlah</th><th>Persentase</th></tr></thead><tbody>{group.options.map((option) => <tr key={option.label}><td>{option.label}</td><td>{option.count}</td><td>{option.percentage.toFixed(1).replace(".", ",")}%</td></tr>)}</tbody></table></div></section>)}
+    <section className="panel evaluation-report-table-panel"><div className="panel-heading"><div><p className="section-label">Skala 1–4</p><h2>Rincian Nilai Indikator</h2></div></div><div className="evaluation-result-table evaluation-report-table"><table><colgroup><col /><col className="evaluation-report-table__value" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /></colgroup><thead><tr><th rowSpan={2}>Indikator Penilaian</th><th rowSpan={2}>Nilai</th><th colSpan={4}>Distribusi</th></tr><tr className="evaluation-report-table__score-headings"><th>1</th><th>2</th><th>3</th><th>4</th></tr></thead><tbody>{results.indicators.map((item, index) => <Fragment key={item.questionId}>{(index === 0 || results.indicators[index - 1]?.sectionCode !== item.sectionCode) && <tr className="evaluation-report-table__section-row"><td colSpan={6}>{item.sectionCode}. {item.sectionTitle}</td></tr>}<tr><td>{item.indicator}</td><td>{percent(item.value)}</td>{[1, 2, 3, 4].map((score) => <td className="evaluation-report-table__score-cell" key={score}>{item.distribution.find((entry) => entry.value === score)?.count ?? 0}</td>)}</tr></Fragment>)}</tbody></table></div></section>
+    {results.singleChoice.map((group) => <section className="panel evaluation-distribution" key={group.questionId}><p className="section-label">{group.sectionTitle}</p><h2>{group.question}</h2><div className="evaluation-result-table evaluation-choice-table"><table><colgroup><col /><col className="evaluation-choice-table__count" /><col className="evaluation-choice-table__percentage" /></colgroup><thead><tr><th>Pilihan</th><th>Jumlah</th><th>Persentase</th></tr></thead><tbody>{group.options.map((option) => <tr key={option.label}><td>{option.label}{option.otherTexts.length > 0 && <ul className="evaluation-choice-table__other-answers">{option.otherTexts.map((text, index) => <li key={`${text}-${index}`}>{text}</li>)}</ul>}</td><td>{option.count}</td><td>{option.percentage.toFixed(1).replace(".", ",")}%</td></tr>)}</tbody></table></div></section>)}
     <section className="panel"><div className="panel-heading"><div><p className="section-label">Jawaban Teks</p><h2>Komentar & Saran</h2></div></div><div className="evaluation-comments">{results.comments.map((group) => <article key={group.questionId}><h3>{group.question}</h3><small>{group.sectionTitle}</small>{group.entries.length ? <ul>{group.entries.map((entry, index) => <li key={`${entry.participantName}-${index}`}><p>{entry.text}</p><span>{entry.participantName} · {entry.cohortName}</span></li>)}</ul> : <p className="muted">Tidak ada komentar pada halaman ini.</p>}</article>)}</div><Pagination pagination={results.commentPagination} itemLabel="komentar" onPageChange={setCommentPage} /></section>
     <section className="panel"><div className="panel-heading"><div><p className="section-label">Peserta</p><h2>Status Pengisian</h2></div></div><div className="evaluation-participant-filters"><label>Cari Nama/NIK<SearchInput value={participantSearch} onValueChange={setParticipantSearch} placeholder="Nama atau NIK" /></label><label>Status<SearchableSelect value={participantStatus} placeholder="Semua status" options={[{ value: "SUBMITTED", label: "Sudah Mengisi" }, { value: "NOT_SUBMITTED", label: "Belum Mengisi" }]} onValueChange={setParticipantStatus} /></label></div><div className="evaluation-result-table evaluation-participant-table"><table><colgroup><col className="evaluation-participant-table__name" /><col className="evaluation-participant-table__nik" /><col className="evaluation-participant-table__cohort" /><col className="evaluation-participant-table__status" /><col className="evaluation-participant-table__submitted" /></colgroup><thead><tr><th>Nama</th><th>NIK</th><th>Angkatan</th><th>Status</th><th>Waktu Submit</th></tr></thead><tbody>{participantRows.map((participant) => <tr key={participant.id}><td>{participant.name}</td><td>{participant.nik}</td><td>{participant.cohortName}</td><td><span className={`status-badge ${participant.status === "SUBMITTED" ? "is-active" : ""}`}>{participant.status === "SUBMITTED" ? "Sudah Mengisi" : "Belum Mengisi"}</span></td><td>{participant.submittedAt ? formatDateTimeForDisplay(participant.submittedAt) : "—"}</td></tr>)}</tbody></table></div><Pagination pagination={results.participantPagination} itemLabel="peserta" onPageChange={setParticipantPage} /></section>
     {schedule && <ModalPortal onClose={() => setSchedule(null)} blocked={busy}>
@@ -211,6 +226,13 @@ export function EvaluationDetailPage() {
           </>}
           <footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={busy} onClick={() => setSchedule(null)}>Batal</button><button className="button" disabled={busy || Boolean(scheduleIncomplete) || Boolean(scheduleInvalid)}>{busy ? "Menyimpan…" : "Simpan"}</button></footer>
         </form>
+      </section>
+    </ModalPortal>}
+    {deleteOpen && <ModalPortal onClose={() => setDeleteOpen(false)} blocked={busy}>
+      <section className="participant-modal" role="dialog" aria-modal="true" aria-labelledby="delete-evaluation-title">
+        <header className="participant-modal__header"><div><p className="section-label">Konfirmasi Penghapusan</p><h2 id="delete-evaluation-title">Hapus Evaluasi?</h2></div><button className="participant-modal__close" type="button" aria-label="Tutup" onClick={() => setDeleteOpen(false)} disabled={busy}><X /></button></header>
+        <div className="participant-modal__form form-stack"><p><strong>{campaign.template.name}</strong></p><p>Pelatihan: {campaign.training.name}</p><p>Angkatan: {campaign.cohorts.map((item) => item.name).join(" & ")}</p><p>Hapus evaluasi ini? Evaluasi untuk angkatan ini akan dihapus dan tindakan ini tidak dapat dibatalkan.</p></div>
+        <footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={busy} onClick={() => setDeleteOpen(false)}>Batal</button><button type="button" className="button button--danger" disabled={busy} onClick={() => void deleteCampaign()}>{busy ? "Menghapus…" : "Hapus Evaluasi"}</button></footer>
       </section>
     </ModalPortal>}
   </>;

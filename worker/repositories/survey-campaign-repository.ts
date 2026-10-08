@@ -144,6 +144,31 @@ export async function campaignCounts(database: D1Database, campaignId: string, c
   ).bind(...bindings).first<{ total_participants: number; respondent_count: number }>();
 }
 
+/** Counts every persisted response, including drafts that have not been submitted yet. */
+export async function campaignResponseCount(database: D1Database, campaignId: string) {
+  return database.prepare(
+    "SELECT COUNT(*) AS total FROM survey_responses WHERE survey_campaign_id = ?",
+  ).bind(campaignId).first<{ total: number }>();
+}
+
+/**
+ * Deletes a campaign only while it has no persisted participant response. The
+ * response predicate is part of the DELETE statement so it is checked again
+ * at the moment the destructive operation is performed.
+ */
+export async function deleteSurveyCampaignIfUnused(database: D1Database, campaignId: string) {
+  const result = await database.prepare(
+    `DELETE FROM survey_campaigns
+     WHERE id = ?
+       AND NOT EXISTS (
+         SELECT 1
+         FROM survey_responses
+         WHERE survey_campaign_id = survey_campaigns.id
+       )`,
+  ).bind(campaignId).run();
+  return Number(result.meta.changes ?? 0) === 1;
+}
+
 export async function listCampaignParticipantCandidates(
   database: D1Database,
   campaignId: string,

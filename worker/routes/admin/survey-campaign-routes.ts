@@ -1,11 +1,13 @@
 import { Hono } from "hono";
 import { z } from "zod";
 import { evaluationStatus, indicatorPercentage, sectionPercentage } from "../../domain/surveys/evaluation";
-import { createEvaluationIndicatorReportDocx } from "../../export/evaluation-report-docx";
+import { createXlsx, type WorkbookSheet } from "../../export/xlsx";
 import { HttpError } from "../../http/errors";
 import { requireAdmin, requireCsrf, requireSameOrigin } from "../../middleware/admin-auth";
 import {
   campaignCounts,
+  campaignResponseCount,
+  deleteSurveyCampaignIfUnused,
   findSurveyCampaignById,
   listSurveyCampaignCohorts,
   paginateSurveyCampaigns,
@@ -42,6 +44,16 @@ function cohortFilePart(names: string[]) {
     .toLowerCase();
 }
 
+function safeFileName(value: string) {
+  const normalized = value
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLocaleLowerCase("id-ID");
+  return normalized || "evaluasi";
+}
+
 function scheduleOf(campaign: SurveyCampaignRecord) {
   return {
     mode: campaign.mode,
@@ -65,9 +77,10 @@ async function requireCampaignInYear(database: D1Database, campaignId: string, y
 }
 
 async function mapCampaign(database: D1Database, campaign: SurveyCampaignRecord) {
-  const [cohorts, counts] = await Promise.all([
+  const [cohorts, counts, responseCount] = await Promise.all([
     listSurveyCampaignCohorts(database, campaign.id),
     campaignCounts(database, campaign.id),
+    campaignResponseCount(database, campaign.id),
   ]);
   return {
     id: campaign.id,
@@ -79,6 +92,7 @@ async function mapCampaign(database: D1Database, campaign: SurveyCampaignRecord)
     status: evaluationStatus(scheduleOf(campaign)),
     totalParticipants: Number(counts?.total_participants ?? 0),
     respondentCount: Number(counts?.respondent_count ?? 0),
+    hasResponses: Number(responseCount?.total ?? 0) > 0,
     createdAt: campaign.created_at,
     updatedAt: campaign.updated_at,
   };
@@ -233,10 +247,127 @@ surveyCampaignRoutes.put("/:campaignId/schedule", requireSameOrigin, requireCsrf
   return context.json({ campaign: await mapCampaign(context.env.DB, updated!) });
 });
 
+surveyCampaignRoutes.delete("/:campaignId", requireSameOrigin, requireCsrf, async (context) => {
+  const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
+  if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
+  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
+
+  const deleted = await deleteSurveyCampaignIfUnused(context.env.DB, campaign.id);
+  if (!deleted) {
+    const responseCount = await campaignResponseCount(context.env.DB, campaign.id);
+    if (Number(responseCount?.total ?? 0) > 0) {
+      throw new HttpError(409, "SURVEY_CAMPAIGN_HAS_RESPONSES", "Evaluasi tidak dapat dihapus karena sudah memiliki respons peserta.");
+    }
+    throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
+  }
+
+  return context.json({ ok: true });
+});
+
 type ResultAnswer = {
   question_id: string; option_id: string | null; other_text: string | null; numeric_value: number | null; text_value: string | null;
   participant_name: string; nik: string; cohort_id: string; cohort_name: string; submitted_at: string;
 };
+
+type EvaluationExportAnswer = {
+  response_id: string;
+  participant_name: string;
+  cohort_name: string;
+  question_id: string | null;
+  question_type: "SINGLE_CHOICE" | "SCALE" | "LONG_TEXT" | null;
+  option_label: string | null;
+  other_text: string | null;
+  numeric_value: number | null;
+  text_value: string | null;
+};
+
+async function listEvaluationExportAnswers(database: D1Database, campaignId: string, cohortId?: string) {
+  const cohortSql = cohortId ? " AND profiles.cohort_id = ?" : "";
+  const bindings = cohortId ? [campaignId, cohortId] : [campaignId];
+  const result = await database.prepare(
+    `SELECT responses.id AS response_id, profiles.name AS participant_name, cohorts.name AS cohort_name,
+            answers.survey_question_id AS question_id, questions.question_type,
+            options.option_label, answers.other_text, answers.numeric_value, answers.text_value
+     FROM survey_responses responses
+     JOIN participant_profiles profiles ON profiles.id = responses.participant_profile_id
+     JOIN training_cohorts cohorts ON cohorts.id = profiles.cohort_id
+     LEFT JOIN survey_answers answers ON answers.survey_response_id = responses.id
+     LEFT JOIN survey_questions questions ON questions.id = answers.survey_question_id
+     LEFT JOIN survey_question_options options ON options.id = answers.option_id
+     WHERE responses.survey_campaign_id = ?
+       AND responses.submitted_at IS NOT NULL${cohortSql}
+     ORDER BY responses.submitted_at ASC, profiles.name COLLATE NOCASE ASC, questions.sort_order ASC`,
+  ).bind(...bindings).all<EvaluationExportAnswer>();
+  return result.results;
+}
+
+function exportAnswerValue(answer: EvaluationExportAnswer | undefined) {
+  if (!answer) return "";
+  if (answer.question_type === "SINGLE_CHOICE") return answer.other_text?.trim() || answer.option_label || "";
+  if (answer.question_type === "SCALE") return answer.numeric_value ?? "";
+  return answer.text_value ?? "";
+}
+
+function buildEvaluationRespondentSheet(
+  template: NonNullable<Awaited<ReturnType<typeof getSurveyTemplateDetail>>>,
+  answers: EvaluationExportAnswer[],
+): WorkbookSheet {
+  const questions = template.sections.flatMap((section) => section.questions);
+  const responses = new Map<string, { name: string; cohortName: string; answers: Map<string, EvaluationExportAnswer> }>();
+  for (const answer of answers) {
+    const response = responses.get(answer.response_id) ?? { name: answer.participant_name, cohortName: answer.cohort_name, answers: new Map<string, EvaluationExportAnswer>() };
+    if (answer.question_id) response.answers.set(answer.question_id, answer);
+    responses.set(answer.response_id, response);
+  }
+  const rows: Array<Array<string | number | null>> = [[
+    "Nama", "Pilih angkatan", ...questions.map((question) => question.question_text),
+  ]];
+  for (const response of responses.values()) {
+    rows.push([
+      response.name,
+      response.cohortName,
+      ...questions.map((question) => exportAnswerValue(response.answers.get(question.id))),
+    ]);
+  }
+  const rowStyles: NonNullable<WorkbookSheet["rowStyles"]> = { 0: "header" };
+  const rowHeights: NonNullable<WorkbookSheet["rowHeights"]> = { 0: 22.5 };
+  rows.slice(1).forEach((_, index) => { rowStyles[index + 1] = "data"; rowHeights[index + 1] = 22.5; });
+  return {
+    name: "Responden",
+    rows,
+    variant: "test-results-reference",
+    rowStyles,
+    rowHeights,
+    columnWidths: [18.85, 18.85, ...questions.map(() => 37.57)],
+    autoFilter: false,
+    freezeRows: 0,
+  };
+}
+
+function buildEvaluationSummarySheet(
+  title: string,
+  indicators: Array<{ no: number; indicator: string; value: number | null }>,
+): WorkbookSheet {
+  const dataRows = indicators.map((indicator) => [
+    indicator.no,
+    indicator.indicator,
+    indicator.value === null ? "-" : `${indicator.value.toFixed(2).replace(".", ",")}%`,
+  ]);
+  const rowStyles: NonNullable<WorkbookSheet["rowStyles"]> = { 0: "title", 2: "header" };
+  const rowHeights: NonNullable<WorkbookSheet["rowHeights"]> = { 0: 24, 2: 22.5 };
+  dataRows.forEach((_, index) => { rowStyles[index + 3] = "data"; rowHeights[index + 3] = 22.5; });
+  return {
+    name: "Ringkasan",
+    rows: [[title], [null], ["No.", "Indikator Penilaian", "Nilai"], ...dataRows],
+    variant: "test-results",
+    rowStyles,
+    rowHeights,
+    centerColumns: [0, 2],
+    columnWidths: [10, 70, 16],
+    freezeRows: 3,
+    autoFilterRange: `A3:C${Math.max(3, dataRows.length + 3)}`,
+  };
+}
 
 async function resultData(database: D1Database, campaign: SurveyCampaignRecord, cohortId?: string, participantOptions?: { page: number; limit: number; search?: string; status?: string }, commentOptions?: { page: number; limit: number }) {
   const cohorts = await listSurveyCampaignCohorts(database, campaign.id);
@@ -321,7 +452,7 @@ async function resultData(database: D1Database, campaign: SurveyCampaignRecord, 
     current.push(answer); answersByQuestion.set(answer.question_id, current);
   }
   const indicators: Array<{ no: number; sectionId: string; sectionCode: string; sectionTitle: string; questionId: string; indicator: string; value: number | null; responseCount: number; distribution: Array<{ value: number; count: number }> }> = [];
-  const singleChoice: Array<{ sectionTitle: string; questionId: string; question: string; responseCount: number; options: Array<{ label: string; count: number; percentage: number }> }> = [];
+  const singleChoice: Array<{ sectionTitle: string; questionId: string; question: string; responseCount: number; options: Array<{ label: string; count: number; percentage: number; otherTexts: string[] }> }> = [];
   const comments: Array<{ sectionTitle: string; questionId: string; question: string; entries: Array<{ participantName: string; cohortName: string; text: string }> }> = [];
   const sections = template.sections.map((section) => {
     const sectionValues: Array<number | null> = [];
@@ -340,8 +471,11 @@ async function resultData(database: D1Database, campaign: SurveyCampaignRecord, 
         singleChoice.push({
           sectionTitle: section.title, questionId: question.id, question: question.question_text, responseCount: valid.length,
           options: question.options.map((option) => {
-            const count = valid.filter((answer) => answer.option_id === option.id).length;
-            return { label: option.option_label, count, percentage: valid.length ? (count / valid.length) * 100 : 0 };
+            const optionAnswers = valid.filter((answer) => answer.option_id === option.id);
+            const otherTexts = option.allows_other_text === 1
+              ? optionAnswers.map((answer) => answer.other_text).filter((text): text is string => Boolean(text?.trim()))
+              : [];
+            return { label: option.option_label, count: optionAnswers.length, percentage: valid.length ? (optionAnswers.length / valid.length) * 100 : 0, otherTexts };
           }),
         });
       } else {
@@ -370,7 +504,7 @@ surveyCampaignRoutes.get("/:campaignId/results", async (context) => {
   return context.json({ campaign: mapped, results: { ...data, template: undefined, participantPagination: paginationMeta(pagination, data.participantTotal), commentPagination: paginationMeta(commentPagination, data.commentTotal) } });
 });
 
-surveyCampaignRoutes.get("/:campaignId/export-word", async (context) => {
+surveyCampaignRoutes.get("/:campaignId/export", async (context) => {
   const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
   if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
   await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
@@ -379,13 +513,15 @@ surveyCampaignRoutes.get("/:campaignId/export-word", async (context) => {
   const selectedCohortNames = (cohortId ? data.cohorts.filter((item) => item.id === cohortId) : data.cohorts).map((item) => item.name);
   const cohortLabel = formatCohortList(selectedCohortNames);
   const cohortSlug = cohortFilePart(selectedCohortNames);
-  const report = await createEvaluationIndicatorReportDocx({
-    title: `Tabel. Rincian Nilai Per Indikator pada Penyelenggaraan Diklat ${campaign.training_name}${cohortLabel ? ` ${cohortLabel}` : ""}`,
-    rows: data.indicators.map((item) => ({ no: item.no, indicator: item.indicator, value: item.value })),
-  });
-  return new Response(report, { headers: {
-    "Content-Type": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-    "Content-Disposition": `attachment; filename="tabel-evaluasi-${campaign.slug}${cohortSlug ? `-angkatan-${cohortSlug}` : ""}.docx"`,
+  const exportAnswers = await listEvaluationExportAnswers(context.env.DB, campaign.id, cohortId);
+  const title = `Tabel. Rincian Nilai Per Indikator pada Penyelenggaraan Diklat ${campaign.training_name}${cohortLabel ? ` ${cohortLabel}` : ""}`;
+  const workbook = createXlsx([
+    buildEvaluationRespondentSheet(data.template, exportAnswers),
+    buildEvaluationSummarySheet(title, data.indicators),
+  ]);
+  return new Response(workbook.slice().buffer as ArrayBuffer, { headers: {
+    "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "Content-Disposition": `attachment; filename="hasil-evaluasi-${safeFileName(campaign.training_name)}${cohortSlug ? `-angkatan-${cohortSlug}` : ""}.xlsx"`,
     "Cache-Control": "no-store",
   } });
 });

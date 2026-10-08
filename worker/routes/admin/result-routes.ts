@@ -2,8 +2,7 @@ import { Hono } from "hono";
 import { z } from "zod";
 import { HttpError } from "../../http/errors";
 import { requireAdmin, requireCsrf, requireSameOrigin } from "../../middleware/admin-auth";
-import { getManualScoreContext, getParticipantResult, listParticipantAttemptDetails, listResultFilterOptions, listResultSummaries, resetAttempt, saveManualAttemptScores, updateParticipantName } from "../../repositories/result-repository";
-import { listExportAnswers, listExportTrainingInfo } from "../../repositories/result-repository";
+import { getManualScoreContext, getParticipantResult, listExportAnswers, listParticipantAttemptDetails, listResultFilterOptions, listResultSummaries, resetAttempt, saveManualAttemptScores, updateParticipantName } from "../../repositories/result-repository";
 import { findOrCreateExamParticipant } from "../../repositories/participant-repository";
 import { attemptNumberForStage, nextPostStage, type AttemptStage } from "../../domain/attempts/progression";
 import { createXlsx } from "../../export/xlsx";
@@ -40,39 +39,166 @@ function optionValue(row: Record<string, string | number | null>, key: unknown) 
   return typeof key === "string" ? row[`option_${key.toLowerCase()}`] ?? "" : "";
 }
 
-function value(row: Record<string, string | number | null>, key: string) {
-  return row[key] ?? null;
+type ExportRow = Record<string, string | number | null>;
+
+function selectedAnswer(row: ExportRow) {
+  const key = row.selected_original_option_key;
+  return typeof key === "string" ? String(optionValue(row, key) || key) : "";
+}
+
+function numericScore(value: string | number | null) {
+  const score = typeof value === "number" ? value : typeof value === "string" && value !== "" ? Number(value) : null;
+  return score !== null && Number.isFinite(score) ? score : null;
+}
+
+function averageScore(values: Array<string | number | null>) {
+  const scores = values.map(numericScore).filter((score): score is number => score !== null);
+  if (!scores.length) return "-";
+  return Math.round((scores.reduce((total, score) => total + score, 0) / scores.length) * 100) / 100;
+}
+
+function summaryStatus(rows: ExportRow[]) {
+  const statuses = [...new Set(rows.map((row) => String(row.result_status ?? "")).filter(Boolean))];
+  return statuses.length === 1 ? statuses[0]!.replaceAll("_", " ") : "-";
+}
+
+function safeSheetName(name: string, used: Set<string>) {
+  const base = name.replace(/[\\/:*?\[\]]/g, " ").replace(/\s+/g, " ").trim() || "Mata Diklat";
+  let candidate = base.slice(0, 31);
+  let suffix = 2;
+  while (used.has(candidate.toLocaleLowerCase("id-ID"))) {
+    const marker = ` (${suffix})`;
+    candidate = `${base.slice(0, 31 - marker.length)}${marker}`;
+    suffix += 1;
+  }
+  used.add(candidate.toLocaleLowerCase("id-ID"));
+  return candidate;
+}
+
+function safeFileName(name: string) {
+  const normalized = name
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLocaleLowerCase("id-ID");
+  return normalized || "pelatihan";
+}
+
+function buildMaterialSheet(
+  sheetName: string,
+  attempts: ExportRow[],
+) {
+  const questions = [...new Map(
+    attempts
+      .slice()
+      .sort((left, right) => Number(left.display_position) - Number(right.display_position) || String(left.question_id).localeCompare(String(right.question_id)))
+      .map((row) => [String(row.question_id), { id: String(row.question_id), text: String(row.question_text ?? "") }]),
+  ).values()];
+  const attemptsById = new Map<string, ExportRow[]>();
+  for (const row of attempts) {
+    const attemptId = String(row.attempt_id);
+    attemptsById.set(attemptId, [...(attemptsById.get(attemptId) ?? []), row]);
+  }
+  const formatTimestamp = (value: string | number | null | undefined) => {
+    const date = typeof value === "string" || typeof value === "number" ? new Date(value) : null;
+    if (!date || Number.isNaN(date.getTime())) return "";
+    return new Intl.DateTimeFormat("id-ID", {
+      timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", year: "numeric",
+      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+    }).format(date).replace(",", "");
+  };
+  const formatScore = (value: string | number | null | undefined) => {
+    const score = typeof value === "number" ? value : typeof value === "string" && value !== "" ? Number(value) : null;
+    if (score === null || !Number.isFinite(score)) return "";
+    return `${Math.round(score * 100) / 100} / 100`;
+  };
+  const rows: Array<Array<string | number | null>> = [[
+    "Timestamp", "Score", "NAMA",
+    ...questions.map((question, index) => `${index + 1}. ${question.text.replace(/^\s*\d+\.\s*/u, "")}`),
+  ]];
+  [...attemptsById.values()]
+    .sort((left, right) => String(left[0]?.submitted_at ?? "").localeCompare(String(right[0]?.submitted_at ?? "")) || String(left[0]?.name ?? "").localeCompare(String(right[0]?.name ?? "")))
+    .forEach((attempt) => {
+      const answers = new Map(attempt.map((row) => [String(row.question_id), selectedAnswer(row)]));
+      rows.push([
+        formatTimestamp(attempt[0]?.submitted_at), formatScore(attempt[0]?.score), attempt[0]?.name ?? "",
+        ...questions.map((question) => answers.get(question.id) ?? ""),
+      ]);
+    });
+  const rowStyles: Record<number, "title" | "section" | "header" | "data" | "alternate-data"> = { 0: "header" };
+  const rowHeights: Record<number, number> = { 0: 22.5 };
+  rows.slice(1).forEach((_, index) => { rowStyles[index + 1] = "data"; rowHeights[index + 1] = 22.5; });
+  return {
+    name: sheetName,
+    rows,
+    variant: "test-results-reference" as const,
+    rowStyles,
+    rowHeights,
+    columnWidths: [18.85, 18.85, 18.85, ...Array.from({ length: Math.max(0, questions.length) }, () => 37.57)],
+    autoFilter: false,
+    freezeRows: 0,
+  };
+}
+
+function buildSummarySheet(trainingName: string, summaries: ExportRow[]) {
+  const participants = new Map<string, ExportRow[]>();
+  for (const row of summaries) {
+    const key = `${row.id}:${row.cohort_id}`;
+    participants.set(key, [...(participants.get(key) ?? []), row]);
+  }
+  const dataRows = [...participants.values()]
+    .sort((left, right) => String(left[0]?.batch_name ?? "").localeCompare(String(right[0]?.batch_name ?? "")) || String(left[0]?.name ?? "").localeCompare(String(right[0]?.name ?? "")))
+    .map((rows) => {
+      const participant = rows[0]!;
+      return [
+        participant.name ?? "", participant.cohort_name ?? "",
+        averageScore(rows.map((row) => row.pre_score ?? null)),
+        averageScore(rows.map((row) => row.post_score ?? null)),
+        averageScore(rows.map((row) => row.remedial_2_score ?? row.remedial_1_score ?? null)),
+        summaryStatus(rows),
+      ];
+    });
+  const rowStyles: Record<number, "title" | "section" | "header" | "data" | "alternate-data"> = { 0: "title", 2: "header" };
+  const rowHeights: Record<number, number> = { 0: 24, 2: 22.5 };
+  dataRows.forEach((_, index) => { rowStyles[index + 3] = "data"; rowHeights[index + 3] = 22.5; });
+  return {
+    name: "Rangkuman",
+    rows: [[trainingName], [null], ["Nama", "Angkatan", "Rata-rata Pretest", "Rata-rata Post-test", "Rata-rata Remedial", "Status"], ...dataRows],
+    variant: "test-results" as const,
+    rowStyles,
+    rowHeights,
+    centerColumns: [2, 3, 4],
+    columnWidths: [28, 18, 20, 20, 20, 22],
+    freezeRows: 3,
+    autoFilterRange: `A3:F${Math.max(3, dataRows.length + 3)}`,
+  };
 }
 
 resultRoutes.get("/export", async (context) => {
+  const trainingId = context.req.query("trainingId")?.trim();
+  if (!trainingId) throw new HttpError(422, "TRAINING_REQUIRED", "Pilih pelatihan terlebih dahulu.");
   const summaries = await listResultSummaries(context.env.DB, {
     year: activeYear(context.req.query("year")),
-    trainingId: context.req.query("trainingId"), materialId: context.req.query("materialId"),
-    cohortId: context.req.query("cohortId"),
-    status: context.req.query("status"), search: context.req.query("search"),
+    trainingId,
   });
+  if (!summaries.length) throw new HttpError(404, "TRAINING_RESULTS_NOT_FOUND", "Belum ada hasil tes untuk pelatihan yang dipilih.");
   const participantIds = summaries.map((row) => String(row.id));
-  const sessionIds = [...new Set(summaries.map((row) => String(row.training_session_id)))];
-  const [answers, trainings] = await Promise.all([
-    listExportAnswers(context.env.DB, participantIds), listExportTrainingInfo(context.env.DB, sessionIds),
-  ]);
-  const workbook = createXlsx([
-    { name: "Ringkasan", rows: [
-      ["Nama", "Pelatihan", "Angkatan", "Pre-Test", "Post Utama", "Remedial 1", "Remedial 2", "Final Post", "Status"],
-      ...summaries.map((row) => ["name", "training_name", "batch_name", "pre_score", "post_score", "remedial_1_score", "remedial_2_score", "final_post_score", "result_status"].map((key) => value(row, key))),
-    ] },
-    { name: "Detail Jawaban", rows: [
-      ["Nama", "Pelatihan", "Angkatan", "Tahap", "Nilai", "No.", "Pertanyaan", "Jawaban Peserta", "Jawaban Benar", "Hasil"],
-      ...answers.map((row) => [value(row, "name"), value(row, "training_name"), value(row, "batch_name"), value(row, "stage"), value(row, "score"), value(row, "display_position"), value(row, "question_text"), optionValue(row, row.selected_original_option_key), optionValue(row, row.correct_original_option_key), row.is_correct === 1 ? "Benar" : "Salah"]),
-    ] },
-    { name: "Informasi Tes", dateColumns: [7, 8], rows: [
-      ["Pelatihan", "Slug", "Bank Soal", "Angkatan", "Jumlah Soal", "Durasi (menit)", "Passing Grade", "Tanggal Mulai", "Tanggal Selesai", "Status"],
-      ...trainings.map((row) => ["training_name", "slug", "bank_name", "batches", "question_count", "duration_minutes", "passing_score", "training_start_date", "training_end_date", "status"].map((key) => value(row, key))),
-    ] },
-  ]);
+  const answers = await listExportAnswers(context.env.DB, participantIds);
+  if (!answers.length) throw new HttpError(404, "TRAINING_RESULTS_NOT_FOUND", "Belum ada hasil tes untuk pelatihan yang dipilih.");
+  const trainingName = String(summaries[0]?.training_name ?? "Pelatihan");
+  const materials = [...new Map(summaries.map((row) => [String(row.training_session_id), row])).values()]
+    .sort((left, right) => Number(left.material_sort_order ?? 0) - Number(right.material_sort_order ?? 0) || String(left.material_name ?? "").localeCompare(String(right.material_name ?? "")));
+  const usedSheetNames = new Set<string>();
+  const materialSheets = materials.map((material) => buildMaterialSheet(
+    safeSheetName(String(material.material_name ?? "Mata Diklat"), usedSheetNames),
+    answers.filter((answer) => String(answer.training_session_id) === String(material.training_session_id)),
+  ));
+  const workbook = createXlsx([...materialSheets, buildSummarySheet(trainingName, summaries)]);
+  const filename = `hasil-tes-${safeFileName(trainingName)}.xlsx`;
   return new Response(workbook.slice().buffer as ArrayBuffer, { headers: {
     "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-    "Content-Disposition": 'attachment; filename="hasil-pelatihan-bdi.xlsx"',
+    "Content-Disposition": `attachment; filename="${filename}"`,
     "Cache-Control": "no-store",
   } });
 });

@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { X } from "lucide-react";
 import { Link } from "react-router-dom";
-import { adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
+import { adminDownload, adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 import { IconActionButton } from "../../components/ui/IconActionButton";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
@@ -30,6 +30,16 @@ type FilterOptions = {
   cohorts: Array<{ id: string; training_id: string; name: string }>;
 };
 
+function exportFileName(trainingName: string) {
+  const name = trainingName
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
+    .replace(/^-+|-+$/g, "")
+    .toLocaleLowerCase("id-ID");
+  return `hasil-tes-${name || "pelatihan"}.xlsx`;
+}
+
 export function ResultsPage() {
   const { activeYear } = useActiveYear();
   const [rows, setRows] = useState<ResultRow[]>([]);
@@ -47,6 +57,7 @@ export function ResultsPage() {
   const [manualScoreFields, setManualScoreFields] = useState<ManualScoreField[] | null>(null);
   const [manualScores, setManualScores] = useState<Record<string, string>>({});
   const [savingScore, setSavingScore] = useState(false);
+  const [exporting, setExporting] = useState(false);
 
   const load = (params: URLSearchParams, requestedPage = page) => {
     params.set("year", String(activeYear));
@@ -162,9 +173,30 @@ export function ResultsPage() {
     params.set("year", String(activeYear));
     return `/api/admin/results/export?${params}`;
   }, [activeYear, search, trainingId, materialId, cohortId, status]);
+  const selectedTrainingName = useMemo(() => filterOptions.trainings.find((training) => training.id === trainingId)?.name ?? "Pelatihan", [filterOptions.trainings, trainingId]);
+  const exportResults = async () => {
+    if (!trainingId || exporting) return;
+    setError(null);
+    setExporting(true);
+    try {
+      const file = await adminDownload(exportUrl, { method: "GET" });
+      const href = URL.createObjectURL(file);
+      const link = document.createElement("a");
+      link.href = href;
+      link.download = exportFileName(selectedTrainingName);
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      window.setTimeout(() => URL.revokeObjectURL(href), 0);
+    } catch (reason) {
+      setError(reason instanceof Error ? reason.message : "Hasil tes tidak dapat diexport.");
+    } finally {
+      setExporting(false);
+    }
+  };
 
   return <>
-    <header className="admin-page-header"><div><p className="section-label">Tes & Hasil</p><h1>Hasil peserta</h1><ActiveYearIndicator /></div><div className="page-header-actions"><a className="button" href={exportUrl} download>Export Excel</a></div></header>
+    <header className="admin-page-header"><div><p className="section-label">Tes & Hasil</p><h1>Hasil peserta</h1><ActiveYearIndicator /></div><div className="page-header-actions">{trainingId ? <button className="button" type="button" disabled={exporting} onClick={() => void exportResults()}>{exporting ? "Menyiapkan…" : "Export Hasil Tes"}</button> : <span title="Pilih pelatihan terlebih dahulu."><button className="button" type="button" disabled aria-disabled="true">Export Hasil Tes</button></span>}{!trainingId && <small className="muted">Pilih pelatihan terlebih dahulu.</small>}</div></header>
     <nav className="catalog-tabs test-result-tabs" aria-label="Bagian tes dan hasil"><Link to="/admin/pelatihan">Pelaksanaan Tes</Link><Link className="is-active" to="/admin/hasil" aria-current="page">Lihat Hasil</Link></nav>
     <section className="panel result-filters"><label>Cari nama<SearchInput value={search} onValueChange={setSearch} placeholder="Nama peserta" /></label><label>Pelatihan<SearchableSelect value={trainingId} placeholder="Semua pelatihan" options={filterOptions.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setMaterialId(""); setCohortId(""); }} /></label><label>Materi<SearchableSelect disabled={!trainingId} value={materialId} placeholder={trainingId ? "Semua materi" : "Pilih pelatihan terlebih dahulu"} options={materials.map((material) => ({ value: material.id, label: material.name }))} onValueChange={setMaterialId} /></label><label>Angkatan<SearchableSelect disabled={!trainingId} value={cohortId} placeholder={trainingId ? "Semua angkatan" : "Pilih pelatihan terlebih dahulu"} options={cohorts.map((cohort) => ({ value: cohort.id, label: cohort.name }))} onValueChange={setCohortId} /></label><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">Semua</option><option value="LULUS">Lulus</option><option value="BELUM_LULUS">Belum lulus</option><option value="BELUM_POST">Belum mulai Post-Test</option><option value="BELUM_PRE">Belum mulai Pre-Test</option><option value="SEDANG_MENGERJAKAN">Sedang mengerjakan</option></select></label></section>
     {error && <p className="form-message is-error" role="alert">{error}</p>}
