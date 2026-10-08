@@ -1054,7 +1054,7 @@ textarea:focus-visible {
 .admin-sidebar__brand .app-mark {
   flex-direction: column;
   width: 100%;
-  gap: .55rem;
+  gap: 1rem;
   text-align: center;
 }
 
@@ -1086,6 +1086,11 @@ textarea:focus-visible {
 .admin-sidebar .app-mark__text small {
   font-size: .9rem;
   font-weight: 400;
+}
+
+.admin-sidebar .app-mark__second-line {
+  padding-left: .75rem;
+  white-space: nowrap;
 }
 
 .admin-sidebar__nav {
