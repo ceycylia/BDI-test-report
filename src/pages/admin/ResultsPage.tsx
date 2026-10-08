@@ -1,6 +1,6 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { X } from "lucide-react";
-import { Link } from "react-router-dom";
+import { Link, useNavigate } from "react-router-dom";
 import { adminDownload, adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 import { IconActionButton } from "../../components/ui/IconActionButton";
@@ -40,7 +40,40 @@ function exportFileName(trainingName: string) {
   return `hasil-tes-${name || "pelatihan"}.xlsx`;
 }
 
+function applyManualScores(row: ResultRow, scores: Array<{ stage: ManualScoreField["stage"]; score: number }>): ResultRow {
+  const next = { ...row };
+  for (const item of scores) {
+    if (item.stage === "PRE") next.pre_score = item.score;
+    if (item.stage === "POST") next.post_score = item.score;
+    if (item.stage === "REMEDIAL_1") next.remedial_1_score = item.score;
+    if (item.stage === "REMEDIAL_2") next.remedial_2_score = item.score;
+  }
+
+  const postScores = [next.post_score, next.remedial_1_score, next.remedial_2_score]
+    .filter((score): score is number => score !== null);
+  next.final_post_score = postScores.length ? Math.max(...postScores) : null;
+  next.result_status = next.pre_score === null
+    ? "BELUM_PRE"
+    : next.final_post_score === null
+      ? "BELUM_POST"
+      : next.final_post_score >= next.passing_score
+        ? "LULUS"
+        : "BELUM_LULUS";
+  return next;
+}
+
+function resultRowKey(row: ResultRow) {
+  return `${row.id}:${row.batch_id}:${row.training_session_id}`;
+}
+
+function isSameResultRow(row: ResultRow, target: ResultRow) {
+  return row.id === target.id
+    && row.batch_id === target.batch_id
+    && row.training_session_id === target.training_session_id;
+}
+
 export function ResultsPage() {
+  const navigate = useNavigate();
   const { activeYear } = useActiveYear();
   const [rows, setRows] = useState<ResultRow[]>([]);
   const [filterOptions, setFilterOptions] = useState<FilterOptions>({ trainings: [], materials: [], cohorts: [] });
@@ -58,13 +91,25 @@ export function ResultsPage() {
   const [manualScores, setManualScores] = useState<Record<string, string>>({});
   const [savingScore, setSavingScore] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const resultRequestSequence = useRef(0);
 
-  const load = (params: URLSearchParams, requestedPage = page) => {
-    params.set("year", String(activeYear));
-    params.set("page", String(requestedPage)); params.set("limit", String(ADMIN_PAGE_SIZE));
-    return adminQuery<{ results: ResultRow[]; pagination: PaginationMeta }>(`/api/admin/results?${params}`).then((data) => { setRows(data.results); setPagination(data.pagination); });
-  };
-  const currentParams = () => {
+  const load = useCallback(async (params: URLSearchParams, requestedPage = 1) => {
+    const requestId = ++resultRequestSequence.current;
+    const query = new URLSearchParams(params);
+    query.set("year", String(activeYear));
+    query.set("page", String(requestedPage));
+    query.set("limit", String(ADMIN_PAGE_SIZE));
+    try {
+      const data = await adminQuery<{ results: ResultRow[]; pagination: PaginationMeta }>(`/api/admin/results?${query}`);
+      if (requestId !== resultRequestSequence.current) return;
+      setRows(data.results);
+      setPagination(data.pagination);
+    } catch (reason) {
+      if (requestId !== resultRequestSequence.current) return;
+      throw reason;
+    }
+  }, [activeYear]);
+  const currentParams = useCallback(() => {
     const params = new URLSearchParams();
     if (search.trim()) params.set("search", search.trim());
     if (trainingId) params.set("trainingId", trainingId);
@@ -72,7 +117,7 @@ export function ResultsPage() {
     if (cohortId) params.set("cohortId", cohortId);
     if (status) params.set("status", status);
     return params;
-  };
+  }, [search, trainingId, materialId, cohortId, status]);
   const openScoreModal = async (row: ResultRow) => {
     setError(null);
     setScoreTarget(row);
@@ -102,34 +147,40 @@ export function ResultsPage() {
           scores,
         }),
       });
+      const updatedRow = applyManualScores(scoreTarget, scores);
+      setRows((current) => {
+        if (status && updatedRow.result_status !== status) {
+          return current.filter((row) => !isSameResultRow(row, scoreTarget));
+        }
+        return current.map((row) => isSameResultRow(row, scoreTarget) ? updatedRow : row);
+      });
       setScoreTarget(null);
-      await load(currentParams(), page);
+      try {
+        await load(currentParams(), page);
+      } catch (reason) {
+        setError(reason instanceof Error
+          ? `Nilai sudah tersimpan, tetapi daftar terbaru gagal dimuat: ${reason.message}`
+          : "Nilai sudah tersimpan, tetapi daftar terbaru gagal dimuat.");
+      }
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : "Nilai gagal disimpan.");
     } finally { setSavingScore(false); }
   };
   useEffect(() => {
     setTrainingId(""); setMaterialId(""); setCohortId("");
-    void Promise.all([
-      adminQuery<{ results: ResultRow[]; pagination: PaginationMeta }>(withActiveYear(`/api/admin/results?page=1&limit=${ADMIN_PAGE_SIZE}`, activeYear)),
-      adminQuery<FilterOptions>(withActiveYear("/api/admin/results/options", activeYear)),
-    ]).then(([resultData, optionData]) => {
-      setRows(resultData.results);
-      setPagination(resultData.pagination);
-      setFilterOptions(optionData);
-    }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Hasil tidak dapat dimuat."));
+    void adminQuery<FilterOptions>(withActiveYear("/api/admin/results/options", activeYear))
+      .then(setFilterOptions)
+      .catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Pilihan filter tidak dapat dimuat."));
   }, [activeYear]);
   useEffect(() => { setPage(1); }, [search, trainingId, materialId, cohortId, status]);
   useEffect(() => {
-    const params = new URLSearchParams();
-    if (search.trim()) params.set("search", search.trim());
-    if (trainingId) params.set("trainingId", trainingId);
-    if (materialId) params.set("materialId", materialId);
-    if (cohortId) params.set("cohortId", cohortId);
-    if (status) params.set("status", status);
-    const timer = window.setTimeout(() => { void load(params, page).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Filter gagal diterapkan.")); }, 250);
+    const timer = window.setTimeout(() => {
+      void load(currentParams(), page).catch((reason: unknown) =>
+        setError(reason instanceof Error ? reason.message : "Filter gagal diterapkan."),
+      );
+    }, 250);
     return () => window.clearTimeout(timer);
-  }, [activeYear, search, trainingId, materialId, cohortId, status, page]);
+  }, [currentParams, load, page]);
 
   useEffect(() => {
     let pollingTimer: number | null = null;
@@ -159,7 +210,7 @@ export function ResultsPage() {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
       window.removeEventListener("focus", handleFocus);
     };
-  }, [activeYear, search, trainingId, materialId, cohortId, status, page]);
+  }, [currentParams, load, page]);
 
   const materials = useMemo(() => filterOptions.materials.filter((material) => material.training_id === trainingId), [filterOptions.materials, trainingId]);
   const cohorts = useMemo(() => filterOptions.cohorts.filter((cohort) => cohort.training_id === trainingId), [filterOptions.cohorts, trainingId]);
@@ -200,7 +251,18 @@ export function ResultsPage() {
     <nav className="catalog-tabs test-result-tabs" aria-label="Bagian tes dan hasil"><Link to="/admin/pelatihan">Pelaksanaan Tes</Link><Link className="is-active" to="/admin/hasil" aria-current="page">Lihat Hasil</Link></nav>
     <section className="panel result-filters"><label>Cari nama<SearchInput value={search} onValueChange={setSearch} placeholder="Nama peserta" /></label><label>Pelatihan<SearchableSelect value={trainingId} placeholder="Semua pelatihan" options={filterOptions.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setMaterialId(""); setCohortId(""); }} /></label><label>Materi<SearchableSelect disabled={!trainingId} value={materialId} placeholder={trainingId ? "Semua materi" : "Pilih pelatihan terlebih dahulu"} options={materials.map((material) => ({ value: material.id, label: material.name }))} onValueChange={setMaterialId} /></label><label>Angkatan<SearchableSelect disabled={!trainingId} value={cohortId} placeholder={trainingId ? "Semua angkatan" : "Pilih pelatihan terlebih dahulu"} options={cohorts.map((cohort) => ({ value: cohort.id, label: cohort.name }))} onValueChange={setCohortId} /></label><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">Semua</option><option value="LULUS">Lulus</option><option value="BELUM_LULUS">Belum lulus</option><option value="BELUM_POST">Belum mulai Post-Test</option><option value="BELUM_PRE">Belum mulai Pre-Test</option><option value="SEDANG_MENGERJAKAN">Sedang mengerjakan</option></select></label></section>
     {error && <p className="form-message is-error" role="alert">{error}</p>}
-    <div className="results-table-wrap"><table className="results-table"><thead><tr><th>Peserta</th><th>Pelatihan · Materi · Angkatan</th><th>Status</th><th>Pre</th><th>Post</th><th>Rem 1</th><th>Rem 2</th><th>Final</th><th>Aksi</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><strong>{row.name}</strong></td><td>{row.training_name}<small>{row.material_name} · {row.cohort_name}</small></td><td><span className={`status-badge result-${row.result_status.toLowerCase()}`}>{row.result_status.replaceAll("_", " ")}</span></td><td>{row.pre_score ?? "—"}</td><td>{row.post_score ?? "—"}</td><td>{row.remedial_1_score ?? "—"}</td><td>{row.remedial_2_score ?? "—"}</td><td><strong>{row.final_post_score ?? "—"}</strong></td><td className="result-actions"><IconActionButton action="edit" label={`Input atau koreksi nilai ${row.name}`} onClick={() => void openScoreModal(row)} /><Link className="button button--secondary button--small button--detail" to={`/admin/hasil/${row.id}`}>Detail</Link></td></tr>)}</tbody></table></div>
+    <div className="results-table-wrap">
+      <table className="results-table">
+        <thead><tr><th>Peserta</th><th>Pelatihan · Materi · Angkatan</th><th>Status</th><th>Pre</th><th>Post</th><th>Rem 1</th><th>Rem 2</th><th>Final</th><th>Aksi</th></tr></thead>
+        <tbody>{rows.map((row) => <tr key={resultRowKey(row)}>
+          <td><strong className="result-participant-name" title={row.name}>{row.name}</strong></td>
+          <td><span className="result-training-name" title={row.training_name}>{row.training_name}</span><small className="result-material-name" title={`${row.material_name} · ${row.cohort_name}`}>{row.material_name} · {row.cohort_name}</small></td>
+          <td><span className={`status-badge result-${row.result_status.toLowerCase()}`}>{row.result_status.replaceAll("_", " ")}</span></td>
+          <td>{row.pre_score ?? "—"}</td><td>{row.post_score ?? "—"}</td><td>{row.remedial_1_score ?? "—"}</td><td>{row.remedial_2_score ?? "—"}</td><td><strong>{row.final_post_score ?? "—"}</strong></td>
+          <td className="result-actions"><IconActionButton action="edit" label={`Input atau koreksi nilai ${row.name}`} onClick={() => void openScoreModal(row)} /><IconActionButton action="detail" label={`Lihat detail hasil ${row.name}`} onClick={() => navigate(`/admin/hasil/${row.id}`)} /></td>
+        </tr>)}</tbody>
+      </table>
+    </div>
     {!rows.length && <p className="muted">Belum ada peserta yang sesuai filter.</p>}
     <Pagination pagination={pagination} itemLabel="hasil peserta" onPageChange={setPage} />
     {scoreTarget && <ModalPortal onClose={() => !savingScore && setScoreTarget(null)} blocked={savingScore}><section className="participant-modal score-adjustment-modal" role="dialog" aria-modal="true" aria-labelledby="manual-score-title"><header className="participant-modal__header"><div><p className="section-label">Tindakan pengelola</p><h2 id="manual-score-title">Input nilai peserta</h2><p>{scoreTarget.name}</p></div><button type="button" className="participant-modal__close" aria-label="Tutup input nilai" disabled={savingScore} onClick={() => setScoreTarget(null)}><X /></button></header>{manualScoreFields ? <form className="participant-modal__form" onSubmit={(event) => { event.preventDefault(); void saveManualScore(); }}><p className="score-adjustment-help">Nilai disimpan pada tahap yang sesuai. Nilai final dan status kelulusan akan dihitung ulang menggunakan aturan yang berlaku.</p>{manualScoreFields.map((field, index) => <label key={field.stage}>{field.label}<input type="number" min="0" max="100" step="0.01" required autoFocus={index === 0} value={manualScores[field.stage] ?? ""} onChange={(event) => setManualScores((current) => ({ ...current, [field.stage]: event.target.value }))} /></label>)}<footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={savingScore} onClick={() => setScoreTarget(null)}>Batal</button><button className="button" disabled={savingScore}>{savingScore ? "Menyimpan…" : "Simpan nilai"}</button></footer></form> : <div className="participant-modal__form"><p className="muted">Menyiapkan tahap nilai…</p></div>}</section></ModalPortal>}

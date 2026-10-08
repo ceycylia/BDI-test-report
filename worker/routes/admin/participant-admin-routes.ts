@@ -152,6 +152,26 @@ const allowedParticipantImages = new Map([
   ["image/webp", "webp"],
 ]);
 
+function detectPdfImageFormat(bytes: Uint8Array) {
+  const isPng = bytes.length >= 8
+    && bytes[0] === 0x89
+    && bytes[1] === 0x50
+    && bytes[2] === 0x4e
+    && bytes[3] === 0x47
+    && bytes[4] === 0x0d
+    && bytes[5] === 0x0a
+    && bytes[6] === 0x1a
+    && bytes[7] === 0x0a;
+  if (isPng) return { extension: "png", contentType: "image/png" } as const;
+
+  const isJpeg = bytes.length >= 3
+    && bytes[0] === 0xff
+    && bytes[1] === 0xd8
+    && bytes[2] === 0xff;
+  if (isJpeg) return { extension: "jpg", contentType: "image/jpeg" } as const;
+  return null;
+}
+
 type ParticipantListFilters = {
   year?: string;
   trainingId?: string;
@@ -1575,6 +1595,54 @@ participantAdminRoutes.get("/certificate-settings", async (c) => {
     },
   });
 });
+
+participantAdminRoutes.get("/certificate-settings/signature", async (c) => {
+  const settings = await c.env.DB.prepare(
+    `SELECT signature_key FROM global_certificate_settings WHERE id=1`
+  ).first<{ signature_key: string | null }>();
+  if (!settings?.signature_key) {
+    throw new HttpError(404, "SIGNATURE_NOT_FOUND", "Tanda tangan belum diunggah.");
+  }
+  const object = await c.env.QUESTION_IMAGES.get(settings.signature_key);
+  if (!object) {
+    throw new HttpError(404, "SIGNATURE_NOT_FOUND", "File tanda tangan tidak ditemukan. Unggah ulang pada pengaturan global.");
+  }
+  const bytes = new Uint8Array(await object.arrayBuffer());
+  const format = detectPdfImageFormat(bytes);
+  if (!format) {
+    throw new HttpError(422, "IMAGE_INVALID", "File tanda tangan bukan PNG atau JPG yang valid.");
+  }
+  return new Response(bytes.slice().buffer, {
+    headers: {
+      "Content-Type": format.contentType,
+      "Cache-Control": "private, no-store, max-age=0",
+    },
+  });
+});
+
+async function invalidateGeneratedCertificatePdfs(
+  db: D1Database,
+  storage: R2Bucket
+) {
+  const stored = await db
+    .prepare(
+      `SELECT pdf_key,back_pdf_key FROM certificates
+       WHERE pdf_key IS NOT NULL OR back_pdf_key IS NOT NULL`
+    )
+    .all<{ pdf_key: string | null; back_pdf_key: string | null }>();
+  const keys = stored.results.flatMap((row) =>
+    [row.pdf_key, row.back_pdf_key].filter((key): key is string => Boolean(key))
+  );
+  await db
+    .prepare(
+      `UPDATE certificates
+       SET pdf_key=NULL,back_pdf_key=NULL,updated_at=CURRENT_TIMESTAMP
+       WHERE pdf_key IS NOT NULL OR back_pdf_key IS NOT NULL`
+    )
+    .run();
+  await Promise.allSettled(keys.map((key) => storage.delete(key)));
+}
+
 participantAdminRoutes.put(
   "/certificate-settings",
   requireSameOrigin,
@@ -1601,6 +1669,7 @@ participantAdminRoutes.put(
         d.issuePlace
       )
       .run();
+    await invalidateGeneratedCertificatePdfs(c.env.DB, c.env.QUESTION_IMAGES);
     return c.json({ success: true });
   }
 );
@@ -1610,6 +1679,9 @@ participantAdminRoutes.post(
   requireCsrf,
   async (c) => {
     const form = await c.req.formData();
+    const previous = await c.env.DB.prepare(
+      `SELECT signature_key FROM global_certificate_settings WHERE id=1`
+    ).first<{ signature_key: string | null }>();
     const updates: Array<{
       column:
         | "signature_key"
@@ -1624,16 +1696,17 @@ participantAdminRoutes.post(
     ] as const) {
       const file = form.get(field);
       if (file instanceof File && file.size) {
-        if (file.type !== "image/png" || file.size > 8_000_000)
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        const format = detectPdfImageFormat(bytes);
+        if (!format || file.size > 8_000_000)
           throw new HttpError(
             422,
             "IMAGE_INVALID",
-            "Tanda tangan harus berupa file PNG maksimal 8 MB."
+            "Tanda tangan harus berupa file PNG atau JPG maksimal 8 MB."
           );
-        const ext = file.type.includes("png") ? "png" : "jpg";
-        const key = `certificates/assets/global/${field}-${crypto.randomUUID()}.${ext}`;
-        await c.env.QUESTION_IMAGES.put(key, await file.arrayBuffer(), {
-          httpMetadata: { contentType: file.type },
+        const key = `certificates/assets/global/${field}-${crypto.randomUUID()}.${format.extension}`;
+        await c.env.QUESTION_IMAGES.put(key, bytes, {
+          httpMetadata: { contentType: format.contentType },
         });
         updates.push({ column, key });
       }
@@ -1649,6 +1722,15 @@ participantAdminRoutes.post(
       )
         .bind(item.key)
         .run();
+    if (updates.length) {
+      await invalidateGeneratedCertificatePdfs(c.env.DB, c.env.QUESTION_IMAGES);
+      const nextSignatureKey = updates.find((item) => item.column === "signature_key")?.key;
+      if (previous?.signature_key && previous.signature_key !== nextSignatureKey) {
+        await Promise.allSettled([
+          c.env.QUESTION_IMAGES.delete(previous.signature_key),
+        ]);
+      }
+    }
     return c.json({ success: true });
   }
 );
@@ -1919,17 +2001,25 @@ function drawJustified(
 async function embedImage(
   c: Context<AppEnvironment>,
   pdf: PDFDocument,
-  key: unknown
+  key: unknown,
+  requiredLabel?: string
 ) {
   if (!key) return null;
   const obj = await c.env.QUESTION_IMAGES.get(String(key));
-  if (!obj) return null;
-  const bytes = await obj.arrayBuffer();
+  if (!obj) {
+    if (requiredLabel) throw new HttpError(422, "IMAGE_NOT_FOUND", `${requiredLabel} tidak ditemukan. Unggah ulang file pada pengaturan global.`);
+    return null;
+  }
+  const bytes = new Uint8Array(await obj.arrayBuffer());
+  const format = detectPdfImageFormat(bytes);
+  if (!format) {
+    if (requiredLabel) throw new HttpError(422, "IMAGE_INVALID", `${requiredLabel} harus berupa file PNG atau JPG yang valid.`);
+    return null;
+  }
   try {
-    return String(key).endsWith(".png")
-      ? await pdf.embedPng(bytes)
-      : await pdf.embedJpg(bytes);
+    return format.extension === "png" ? await pdf.embedPng(bytes) : await pdf.embedJpg(bytes);
   } catch {
+    if (requiredLabel) throw new HttpError(422, "IMAGE_INVALID", `${requiredLabel} tidak dapat diproses. Unggah ulang file PNG atau JPG.`);
     return null;
   }
 }
@@ -2139,7 +2229,7 @@ async function renderCertificate(
       12,
       d
     );
-    const signature = await embedImage(c, pdf, d.signature_key);
+    const signature = await embedImage(c, pdf, d.signature_key, "Tanda tangan");
     if (signature) drawImageContained(page, signature, l.signature, d);
     drawCentered(
       page,
@@ -2412,15 +2502,15 @@ async function renderCompletionLetter(
   );
 
   const issueText = `${String(d.issue_place || "Medan")}, ${d.issue_date ? formatLongDate(String(d.issue_date)) : "Tanggal penerbitan belum diisi"}`;
-  drawCentered(page, regular, issueText, 145, 171.5, bodySize, d);
-  drawCentered(page, regular, String(d.signer_title || ""), 145, 178.5, bodySize, d);
-  const signature = await embedImage(c, pdf, d.signature_key);
-  if (signature) drawImageContained(page, signature, { x: 122, y: 183.5, width: 46, height: 14 }, d);
+  drawCentered(page, regular, issueText, 145, 178.5, bodySize, d);
+  drawCentered(page, regular, String(d.signer_title || ""), 145, 185.5, bodySize, d);
+  const signature = await embedImage(c, pdf, d.signature_key, "Tanda tangan");
+  if (signature) drawImageContained(page, signature, { x: 122, y: 190, width: 46, height: 18 }, d);
   const signerName = upperName(d.signer_name);
-  drawCentered(page, bold, signerName, 145, 204.5, bodySize, d);
+  drawCentered(page, bold, signerName, 145, 214.5, bodySize, d);
   const signerNameWidth = bold.widthOfTextAtSize(safeText(signerName), bodySize) / mm(1);
-  if (signerName) drawRule(page, 145 - signerNameWidth / 2, 205.7, 145 + signerNameWidth / 2, 205.7, d);
-  drawCentered(page, bold, d.signer_nip ? `NIP. ${d.signer_nip}` : "", 145, 211.5, bodySize, d);
+  if (signerName) drawRule(page, 145 - signerNameWidth / 2, 215.7, 145 + signerNameWidth / 2, 215.7, d);
+  drawCentered(page, bold, d.signer_nip ? `NIP. ${d.signer_nip}` : "", 145, 221.5, bodySize, d);
 
   return {
     bytes: await pdf.save(),
@@ -2846,6 +2936,7 @@ participantAdminRoutes.get(
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `inline; filename="preview-${cert.certificate_number}.pdf"`,
+        "Cache-Control": "private, no-store, max-age=0",
       },
     });
   }
@@ -2865,6 +2956,7 @@ participantAdminRoutes.get(
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": "inline; filename=preview-sertifikat.pdf",
+        "Cache-Control": "private, no-store, max-age=0",
       },
     });
   }
@@ -2897,6 +2989,7 @@ participantAdminRoutes.get("/certificates/:certificateId/pdf", async (c) => {
         /[^a-zA-Z0-9-]/g,
         "-"
       )}.pdf"`,
+      "Cache-Control": "private, no-store, max-age=0",
     },
   });
 });
@@ -2931,6 +3024,7 @@ participantAdminRoutes.get(
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="sertifikat-${safeNumber}.pdf"`,
+        "Cache-Control": "private, no-store, max-age=0",
       },
     });
   }
@@ -2944,6 +3038,7 @@ participantAdminRoutes.get(
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": "inline; filename=preview-surat-keterangan.pdf",
+        "Cache-Control": "private, no-store, max-age=0",
       },
     });
   }
@@ -2958,6 +3053,7 @@ participantAdminRoutes.get(
       headers: {
         "Content-Type": "application/pdf",
         "Content-Disposition": `attachment; filename="surat-keterangan-${safeNumber}.pdf"`,
+        "Cache-Control": "private, no-store, max-age=0",
       },
     });
   }

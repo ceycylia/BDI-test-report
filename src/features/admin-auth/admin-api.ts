@@ -122,6 +122,7 @@ export async function adminMutation<T>(
 export async function adminQuery<T>(path: string): Promise<T> {
   const response = await fetch(path, {
     credentials: "same-origin",
+    cache: "no-store",
     headers: { Accept: "application/json" },
   });
 

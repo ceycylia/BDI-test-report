@@ -2250,14 +2250,15 @@ textarea:focus-visible {
 
 .results-table {
   width: 100%;
-  min-width: 980px;
+  min-width: 0;
+  table-layout: fixed;
   border-collapse: collapse;
   font-size: .9rem;
 }
 
 .results-table th,
 .results-table td {
-  padding: .85rem .9rem;
+  padding: .72rem .62rem;
   border-bottom: 1px solid var(--color-border);
   text-align: left;
   vertical-align: middle;
@@ -2274,11 +2275,25 @@ textarea:focus-visible {
 
 .results-table tbody tr:last-child td { border-bottom: 0; }
 .results-table tbody tr:hover { background: #fbfdff; }
-.results-table td:nth-child(n+4):nth-child(-n+8) { width: 66px; text-align: center; font-variant-numeric: tabular-nums; }
+.results-table th:first-child { width: 128px; }
+.results-table th:nth-child(3) { width: 166px; }
+.results-table th:nth-child(n+4):nth-child(-n+8) { width: 60px; text-align: center; }
+.results-table th:nth-child(9) { width: 108px; }
+.results-table td:nth-child(n+4):nth-child(-n+8) { width: 60px; text-align: center; font-variant-numeric: tabular-nums; }
 .results-table td:nth-child(2) { color: var(--color-ink); font-weight: 700; }
 .results-table td small { display: block; margin-top: .2rem; color: var(--color-muted); font-weight: 500; }
 .results-table .button { padding: .55rem .8rem; white-space: nowrap; }
-.results-table .result-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: .5rem; min-width: 170px; white-space: nowrap; }
+.results-table .result-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: nowrap; gap: .4rem; min-width: 0; white-space: nowrap; }
+
+.result-participant-name,
+.result-training-name,
+.result-material-name {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
 
 .icon-action-button {
   display: inline-flex;
@@ -3605,14 +3620,57 @@ textarea:focus-visible {
 }
 
 .participant-table {
-  min-width: 940px;
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.participant-table th,
+.participant-table td {
+  padding-right: .62rem;
+  padding-left: .62rem;
+}
+
+.participant-table th:nth-child(1) { width: 52px; }
+.participant-table th:nth-child(2) { width: 29%; }
+.participant-table th:nth-child(3) { width: 78px; }
+.participant-table th:nth-child(4) { width: 31%; }
+.participant-table th:nth-child(5) { width: 128px; }
+.participant-table th:nth-child(6) { width: 78px; }
+.participant-table th:nth-child(7) { width: 62px; }
+
+.participant-table td:nth-child(3),
+.participant-table td:nth-child(5),
+.participant-table td:nth-child(6),
+.participant-table td:nth-child(7) {
+  white-space: nowrap;
+}
+
+.participant-training-name {
+  display: block;
+  width: 100%;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .participant-identity {
   display: flex;
   align-items: center;
   gap: .65rem;
-  min-width: 190px;
+  min-width: 0;
+}
+
+.participant-identity > span:last-child {
+  min-width: 0;
+}
+
+.participant-identity strong,
+.participant-identity small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .participant-avatar {
@@ -4207,6 +4265,28 @@ textarea:focus-visible {
 
 .certificate-settings-form .participant-modal__grid {
   padding: 1.25rem;
+}
+
+.certificate-signature-preview {
+  display: grid;
+  grid-template-columns: 9rem minmax(0, 1fr);
+  align-items: center;
+  gap: .75rem;
+  margin-top: .65rem;
+}
+
+.certificate-signature-preview img {
+  width: 9rem;
+  height: 4rem;
+  object-fit: contain;
+  padding: .35rem;
+  background: #fff;
+  border: 1px solid var(--color-border);
+  border-radius: .65rem;
+}
+
+.certificate-signature-preview small {
+  line-height: 1.45;
 }
 
 .certificate-preview-modal {
@@ -5498,7 +5578,25 @@ textarea:focus-visible {
   font-size: .82rem;
 }
 
+.cohort-generator-form > * {
+  min-width: 0;
+  max-width: 100%;
+}
+
+.cohort-generator-form input,
+.cohort-generator-form select,
+.cohort-generator-form .searchable-select {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
 .cohort-generator-form {
+  width: 100% !important;
+  max-width: 100% !important;
+  min-width: 0 !important;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 260px), 1fr)) !important;
   display: grid;
   grid-template-columns: minmax(360px, 1.8fr) minmax(150px, .72fr) minmax(150px, .72fr) minmax(195px, .95fr) minmax(150px, .72fr) auto;
   gap: .85rem;
@@ -5567,9 +5665,34 @@ textarea:focus-visible {
   gap: 1rem;
 }
 
-.cohort-preview-table,
-.cohort-list-table {
+.cohort-preview-table {
   min-width: 900px;
+}
+
+.cohort-list-table {
+  width: 100%;
+  min-width: 0;
+  table-layout: fixed;
+}
+
+.cohort-list-table th,
+.cohort-list-table td {
+  padding-right: .65rem;
+  padding-left: .65rem;
+}
+
+.cohort-list-table th:nth-child(1) { width: 120px; }
+.cohort-list-table th:nth-child(3) { width: 220px; }
+.cohort-list-table th:nth-child(4) { width: 112px; }
+.cohort-list-table th:nth-child(5) { width: 80px; }
+.cohort-list-table th:nth-child(6) { width: 226px; }
+
+.cohort-training-name {
+  display: block;
+  width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .cohort-preview-table td {
@@ -5596,13 +5719,14 @@ textarea:focus-visible {
 
 .cohort-list-table th:last-child,
 .cohort-list-table td:last-child {
-  width: 258px;
-  min-width: 258px;
+  width: 226px;
   white-space: nowrap;
 }
 
 .cohort-list-table .row-actions {
-  justify-content: flex-start;
+  min-width: 0;
+  justify-content: flex-end;
+  gap: .4rem;
 }
 
 .status-badge.is-complete {
@@ -5652,6 +5776,43 @@ textarea:focus-visible {
 
 .cohort-detail-card>.text-button {
   justify-self: start;
+}
+
+.cohort-detail-modal {
+  width: min(100%, 760px);
+}
+
+.cohort-detail-modal__body {
+  padding: 1.25rem 1.35rem;
+}
+
+.cohort-detail-modal__body dl {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: .85rem;
+  margin: 0;
+}
+
+.cohort-detail-modal__body dl div {
+  min-width: 0;
+  padding: .9rem 1rem;
+  border: 1px solid #dceaf3;
+  border-radius: 10px;
+  background: #f8fcff;
+}
+
+.cohort-detail-modal__body dt {
+  color: var(--color-muted);
+  font-size: .76rem;
+  font-weight: 700;
+}
+
+.cohort-detail-modal__body dd {
+  margin: .3rem 0 0;
+  color: var(--color-text);
+  font-size: .92rem;
+  font-weight: 650;
+  overflow-wrap: anywhere;
 }
 
 @media (max-width: 1100px) {
@@ -5846,7 +6007,8 @@ textarea:focus-visible {
   }
 
   .cohort-generator-form,
-  .cohort-detail-card dl {
+  .cohort-detail-card dl,
+  .cohort-detail-modal__body dl {
     grid-template-columns: 1fr;
   }
 

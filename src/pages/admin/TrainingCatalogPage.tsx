@@ -488,7 +488,7 @@ export function TrainingCatalogPage() {
                   <div className="row-actions">
                     <IconActionButton action="edit" label={`Edit Pelatihan ${training.name}`} onClick={() => setEditingTraining(training)} />
                     <IconActionButton action="delete" label={`Hapus Pelatihan ${training.name}`} onClick={() => setDeleteTarget({ kind: "training", training })} />
-                    <IconActionButton action={training.is_active ? "active" : "inactive"} label={training.is_active ? `Nonaktifkan Pelatihan ${training.name}` : `Aktifkan Pelatihan ${training.name}`} onClick={() => void updateTraining(training, { is_active: training.is_active ? 0 : 1 })} />
+                    <IconActionButton action={training.is_active ? "inactive" : "active"} label={training.is_active ? `Nonaktifkan Pelatihan ${training.name}` : `Aktifkan Pelatihan ${training.name}`} onClick={() => void updateTraining(training, { is_active: training.is_active ? 0 : 1 })} />
                   </div>
                 </article>
               ))}
@@ -581,7 +581,7 @@ export function TrainingCatalogPage() {
                           <IconActionButton action="edit" label={`Edit Mata Diklat ${material.name}`} onClick={() => setEditingMaterial(material)} />
                           <IconActionButton action="delete" label={`Hapus Mata Diklat ${material.name}`} onClick={() => setDeleteTarget({ kind: "material", material })} />
                           <IconActionButton
-                            action={material.is_active ? "active" : "inactive"}
+                            action={material.is_active ? "inactive" : "active"}
                             label={material.is_active ? "Status: Aktif — klik untuk nonaktifkan" : "Status: Nonaktif — klik untuk aktifkan"}
                             onClick={() => setMaterialStatusTarget(material)}
                           />

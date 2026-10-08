@@ -1,13 +1,14 @@
 import type { ButtonHTMLAttributes } from "react";
-import { CircleCheck, CircleMinus, Pencil, Trash2 } from "lucide-react";
+import { CircleCheck, CircleMinus, Eye, Pencil, Trash2 } from "lucide-react";
 
-type IconAction = "edit" | "delete" | "active" | "inactive";
+type IconAction = "edit" | "delete" | "active" | "inactive" | "detail";
 
 const actions = {
   edit: { Icon: Pencil, label: "Edit", className: "icon-action-button--edit" },
   delete: { Icon: Trash2, label: "Hapus", className: "icon-action-button--delete" },
   active: { Icon: CircleCheck, label: "Aktif", className: "icon-action-button--active" },
   inactive: { Icon: CircleMinus, label: "Nonaktif", className: "icon-action-button--inactive" },
+  detail: { Icon: Eye, label: "Lihat detail", className: "icon-action-button--detail" },
 } as const;
 
 type IconActionButtonProps = Omit<ButtonHTMLAttributes<HTMLButtonElement>, "children"> & {
