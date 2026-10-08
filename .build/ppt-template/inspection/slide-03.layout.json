@@ -1,0 +1,17 @@
+{"schema":"openai.presentation.layout/v5","unit":"px","slide":{"id":"sl/ofy9wn61","index":2,"layout":{"id":"ly/4v2ps7ql","name":"Slide master 2"},"backgroundColor":"rgba(255,255,255,1)","position":{"left":0,"top":0,"width":1280,"height":720}},
+"elements":[
+{"id":"sh/cza94vmx","kind":"textbox","name":"Text 0","position":{"left":48,"top":48.81,"width":1231.97,"height":32},"text":"MODUL ADMINISTRATOR","style":{"fontSize":26.67,"typeface":"Red Hat Mono SemiBold","color":"#0A1540","alignment":"left"},"geometry":"rect"},
+{"id":"sh/d0jax03i","kind":"textbox","name":"Text 1","position":{"left":48,"top":94,"width":1183.97,"height":50.67},"text":"DASHBOARD ADMIN MENJADI PUSAT KENDALI PELATIHAN","style":{"fontSize":53.33,"typeface":"Sofia Sans Extra Condensed Black","color":"#0A1540","alignment":"left"},"geometry":"rect"},
+{"id":"im/ulcnalwf","kind":"image","name":"Image 0","position":{"left":48,"top":202.67,"width":32,"height":32}},
+{"id":"sh/3ah8rqlg","kind":"textbox","name":"Text 2","position":{"left":96,"top":192.83,"width":614.65,"height":69.33},"text":"Program & materi: Membuat pelatihan, materi, angkatan, jumlah JPL, dan kode unit kompetensi.","style":{"fontSize":26.67,"typeface":"Host Grotesk Bold","color":"#0A1540","bold":true,"alignment":"left"},"geometry":"rect"},
+{"id":"im/vmlojqd0","kind":"image","name":"Image 1","position":{"left":48,"top":288,"width":32,"height":32}},
+{"id":"sh/pcjqtg36","kind":"textbox","name":"Text 3","position":{"left":96,"top":278.17,"width":614.65,"height":34.67},"text":"Jadwal: Mengatur jadwal Pre-Test dan Post-Test.","style":{"fontSize":26.67,"typeface":"Host Grotesk Bold","color":"#0A1540","bold":true,"alignment":"left"},"geometry":"rect"},
+{"id":"im/8ju58bep","kind":"image","name":"Image 2","position":{"left":48,"top":338.67,"width":32,"height":32}},
+{"id":"sh/n6ls3alk","kind":"textbox","name":"Text 4","position":{"left":96,"top":328.83,"width":614.65,"height":69.33},"text":"Monitoring: Memantau pelatihan aktif dan aktivitas sistem.","style":{"fontSize":26.67,"typeface":"Host Grotesk Bold","color":"#0A1540","bold":true,"alignment":"left"},"geometry":"rect"},
+{"id":"sh/n2l4fq98","kind":"textbox","name":"Text 5","position":{"left":48,"top":413.2,"width":662.65,"height":62.4},"text":"[Catatan: Pilih screenshot Dashboard atau Pelatihan & Materi; hapus catatan setelah selesai.]","style":{"fontSize":24,"typeface":"Host Grotesk","color":"#44507A","alignment":"left"},"geometry":"rect"},
+{"id":"sh/m1c3mlsn","kind":"shape","name":"Shape 6","position":{"left":758.65,"top":168,"width":473.32,"height":504},"geometry":"rect","fillColor":"#F1F4FD"},
+{"id":"sh/943mhgre","kind":"shape","name":"Shape 7","position":{"left":779.98,"top":189.33,"width":430.66,"height":461.33},"geometry":"rect","lineColor":"#C9D3F2","lineWidth":0.67},
+{"id":"im/tk36hgva","kind":"image","name":"Image 3","position":{"left":961.98,"top":214,"width":66.66,"height":66.67}},
+{"id":"sh/v6l4jq94","kind":"textbox","name":"Text 8","position":{"left":804.65,"top":306.42,"width":381.32,"height":67.46},"text":"[Masukkan Screenshot Sistem]","style":{"fontSize":29.33,"typeface":"Host Grotesk Bold","color":"#0A1540","bold":true,"alignment":"left"},"geometry":"rect"},
+{"id":"sh/a5c3ql8z","kind":"textbox","name":"Text 9","position":{"left":804.65,"top":391.66,"width":381.32,"height":62.4},"text":"Tampilan Dashboard Admin & Setup Diklat","style":{"fontSize":24,"typeface":"Host Grotesk","color":"#0A1540","alignment":"left"},"geometry":"rect"}
+]}
