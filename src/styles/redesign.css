@@ -7662,16 +7662,15 @@ select:not([multiple]):disabled {
 }
 
 @media (max-width: 430px) {
-<<<<<<< HEAD
   .evaluation-create-modal .date-time-picker,
   .evaluation-schedule-modal .date-time-picker {
     grid-template-columns: minmax(0, 1fr);
-=======
+  }
+
   .results-pagination { flex-wrap: wrap; }
 
   .score-adjustment-panel {
     grid-template-columns: 1fr;
->>>>>>> e1e2651 (update part 3)
   }
 
   .evaluation-summary-grid,
