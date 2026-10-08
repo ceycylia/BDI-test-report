@@ -12,6 +12,15 @@ export class AdminApiError extends Error {
   }
 }
 
+function fallbackMessage(status: number) {
+  if (status === 401) return "Sesi Anda telah berakhir. Silakan masuk kembali.";
+  if (status === 403) return "Anda tidak memiliki akses untuk melakukan tindakan ini.";
+  if (status === 404) return "Data yang diminta tidak ditemukan.";
+  if (status === 409) return "Data tidak dapat diproses karena konflik dengan data yang sudah ada.";
+  if (status >= 500) return "Terjadi gangguan pada sistem. Silakan coba kembali.";
+  return "Permintaan tidak dapat diproses.";
+}
+
 function readCookie(name: string): string | undefined {
   const prefix = `${encodeURIComponent(name)}=`;
   const cookie = document.cookie
@@ -25,7 +34,7 @@ function readCookie(name: string): string | undefined {
 async function parseError(response: Response): Promise<AdminApiError> {
   const payload = (await response.json().catch(() => ({}))) as ApiErrorPayload;
   return new AdminApiError(
-    payload.error?.message ?? "Permintaan tidak dapat diproses.",
+    payload.error?.message ?? fallbackMessage(response.status),
     response.status,
     payload.error?.code,
   );
@@ -64,7 +73,6 @@ export async function loginAdmin(input: {
 
   if (!response.ok) {
     const error = await parseError(response);
-    window.alert(error.message);
     throw error;
   }
 
@@ -105,7 +113,6 @@ export async function adminMutation<T>(
 
   if (!response.ok) {
     const error = await parseError(response);
-    window.alert(error.message);
     throw error;
   }
 
@@ -141,7 +148,6 @@ export async function adminUpload<T>(path: string, body: FormData): Promise<T> {
 
   if (!response.ok) {
     const error = await parseError(response);
-    window.alert(error.message);
     throw error;
   }
 
@@ -157,7 +163,6 @@ export async function adminDownload(path: string, init: RequestInit): Promise<Bl
   const response = await fetch(path, { ...init, credentials: "same-origin", headers });
   if (!response.ok) {
     const error = await parseError(response);
-    window.alert(error.message);
     throw error;
   }
   return response.blob();

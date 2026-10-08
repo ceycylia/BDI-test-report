@@ -12,6 +12,7 @@ import {
   AdminApiError,
 } from "../../features/admin-auth/admin-api";
 import { IconActionButton } from "../../components/ui/IconActionButton";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 
 
 type SurveyQuestionType =
@@ -195,6 +196,7 @@ export function SurveyTemplateDetailPage() {
 
   const [error, setError] =
     useState<string | null>(null);
+  useAutoDismiss(error, setError);
 
   const [message, setMessage] =
     useState<string | null>(null);

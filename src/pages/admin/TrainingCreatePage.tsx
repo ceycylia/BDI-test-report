@@ -3,6 +3,7 @@ import { Link, useNavigate } from "react-router-dom";
 import { CalendarClock, Clock3 } from "lucide-react";
 import { DateTimeInput } from "../../components/ui/DateTimeInput";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { adminMutation, adminQuery, AdminApiError } from "../../features/admin-auth/admin-api";
 import { formatDateTimeForApi } from "../../features/dates/date-format";
 import type { QuestionBankSummary } from "../../features/question-banks/types";
@@ -34,6 +35,7 @@ export function TrainingCreatePage() {
   const [banks, setBanks] = useState<QuestionBankSummary[]>([]);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
 
   useEffect(() => {
     void Promise.all([

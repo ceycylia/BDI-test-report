@@ -3,7 +3,7 @@ import { useEffect, type Dispatch, type SetStateAction } from "react";
 export function useAutoDismiss<T>(
   value: T | null,
   setValue: Dispatch<SetStateAction<T | null>>,
-  delay = 5_000,
+  delay = 7_000,
 ) {
   useEffect(() => {
     if (value === null) return;

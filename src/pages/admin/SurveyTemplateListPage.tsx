@@ -10,6 +10,7 @@ import {
   AdminApiError,
 } from "../../features/admin-auth/admin-api";
 import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 
 type SurveyTemplateSummary = {
   id: string;
@@ -50,6 +51,7 @@ export function SurveyTemplateListPage({
   const [templates, setTemplates] = useState<SurveyTemplateSummary[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const [notice, setNotice] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<SurveyTemplateSummary | null>(null);
   const [deleting, setDeleting] = useState(false);

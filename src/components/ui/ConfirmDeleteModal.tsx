@@ -8,6 +8,8 @@ type ConfirmDeleteModalProps = {
   itemName?: string;
   description?: ReactNode;
   confirmLabel?: string;
+  busyLabel?: string;
+  confirmClassName?: string;
   busy?: boolean;
   onCancel: () => void;
   onConfirm: () => void;
@@ -19,6 +21,8 @@ export function ConfirmDeleteModal({
   itemName,
   description,
   confirmLabel = "Hapus",
+  busyLabel = "Menghapus…",
+  confirmClassName = "danger-button confirm-delete-modal__confirm",
   busy = false,
   onCancel,
   onConfirm,
@@ -79,11 +83,11 @@ export function ConfirmDeleteModal({
           </button>
           <button
             type="button"
-            className="button danger-button confirm-delete-modal__confirm"
+            className={`button ${confirmClassName}`}
             disabled={busy}
             onClick={onConfirm}
           >
-            {busy ? "Menghapus…" : confirmLabel}
+            {busy ? busyLabel : confirmLabel}
           </button>
         </footer>
       </section>

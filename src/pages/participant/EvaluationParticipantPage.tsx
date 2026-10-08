@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Link, useParams } from "react-router-dom";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 import { PublicLayout } from "../../layouts/PublicLayout";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 
 type Question = { id: string; text: string; type: "SINGLE_CHOICE" | "SCALE" | "LONG_TEXT"; required: boolean; helperText: string | null; scaleMin: number | null; scaleMax: number | null; scaleMinLabel: string | null; scaleMaxLabel: string | null; options: Array<{ id: string; label: string; allowsOtherText: boolean }> };
 type Template = { id: string; name: string; description: string | null; sections: Array<{ id: string; code: string; title: string; description: string | null; questions: Question[] }> };
@@ -11,7 +12,7 @@ type FormPayload = { submitted: boolean; submittedAt: string | null; participant
 async function publicJson<T>(url: string, init?: RequestInit) {
   const response = await fetch(url, { ...init, headers: { Accept: "application/json", "Content-Type": "application/json", ...init?.headers } });
   const payload = await response.json().catch(() => ({})) as T & { error?: { message?: string; code?: string } };
-  if (!response.ok) throw new Error(payload.error?.message ?? "Permintaan tidak dapat diproses.");
+  if (!response.ok) throw new Error(payload.error?.message ?? (response.status === 404 ? "Link evaluasi atau data peserta tidak ditemukan." : response.status === 401 || response.status === 403 ? "Anda tidak memiliki akses untuk melanjutkan." : response.status >= 500 ? "Terjadi gangguan pada sistem. Silakan coba kembali." : "Permintaan tidak dapat diproses."));
   return payload;
 }
 
@@ -32,6 +33,7 @@ export function EvaluationParticipantPage() {
   const [confirming, setConfirming] = useState(false);
   const [alreadySubmitted, setAlreadySubmitted] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const questionRefs = useRef<Record<string, HTMLElement | null>>({});
   const draftSaveRef = useRef<Promise<unknown> | null>(null);
 

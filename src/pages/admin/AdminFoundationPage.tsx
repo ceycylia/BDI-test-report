@@ -6,6 +6,7 @@ import { adminQuery } from "../../features/admin-auth/admin-api";
 import { useAdminAuth } from "../../features/admin-auth/AuthProvider";
 import type { TrainingSummary } from "../../features/training/types";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 
 const metricCards = [
   { key: "trainings", label: "Pelatihan", note: "Pelatihan yang dijalankan", tone: "blue", icon: GraduationCap, to: "/admin/pelatihan" },
@@ -54,6 +55,7 @@ export function AdminFoundationPage() {
   const [activities, setActivities] = useState<DashboardActivity[]>([]);
   const [now, setNow] = useState(() => new Date());
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
 
   useEffect(() => {
     let active = true;
@@ -92,7 +94,7 @@ export function AdminFoundationPage() {
 
   return <>
     <header className="dashboard-header"><div><p className="section-label">Dashboard</p><h1>Ringkasan sistem tes</h1><p>Selamat datang, <strong>{admin?.name}</strong>! Berikut adalah ringkasan aktivitas sistem tes pelatihan.</p><ActiveYearIndicator /></div><div className="dashboard-header__tools"><label className="active-year-select"><span>Tahun Aktif</span><select value={activeYear} onChange={(event) => setActiveYear(Number(event.target.value))}>{availableYears.map((year) => <option key={year} value={year}>{year}</option>)}</select></label><div className="today-card"><CalendarDays /><span><small>Hari ini</small><strong>{today}</strong><em>{weekday}, {currentTime}</em></span></div></div></header>
-    {error && <p className="form-message is-error">{error}</p>}
+    {error && <p className="form-message is-error" role="alert">{error}</p>}
     <section className="metric-grid" aria-label="Ringkasan data">
       {metricCards.map(({ key, label, note, tone, icon: Icon, to }) => <Link to={to} className="metric-card" key={key}><span className={`metric-card__icon tone-${tone}`}><Icon /></span><span className="metric-card__copy"><strong>{metrics?.[key] ?? "—"}</strong><b>{label}</b><small>{note}</small></span><ChevronRight className="metric-card__arrow" /></Link>)}
     </section>

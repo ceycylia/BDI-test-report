@@ -31,6 +31,7 @@ export function TrainingDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
+  useAutoDismiss(error, setError);
   const [busy, setBusy] = useState(false);
   const [deleteImpact, setDeleteImpact] = useState<{ name: string; participantCount: number; attemptCount: number; answerCount: number } | null>(null);
   const [deleteConfirmation, setDeleteConfirmation] = useState("");

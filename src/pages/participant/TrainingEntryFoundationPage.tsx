@@ -3,6 +3,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { PublicLayout } from "../../layouts/PublicLayout";
 import { nextPostStage, type AttemptStage } from "../../../worker/domain/attempts/progression";
 import { formatDateForDisplay } from "../../features/dates/date-format";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 
 type EntryData = {
   training: { id: string; name: string; questionCount: number; durationMinutes: number; startDate: string; endDate: string; status: string; preOpen: boolean; postOpen: boolean };
@@ -22,7 +23,7 @@ async function publicJson<T>(url: string, init?: RequestInit): Promise<T> {
     headers: { Accept: "application/json", "Content-Type": "application/json", ...init?.headers },
   });
   const payload = await response.json() as T & { error?: { message?: string } };
-  if (!response.ok) throw new Error(payload.error?.message ?? "Permintaan tidak dapat diproses.");
+  if (!response.ok) throw new Error(payload.error?.message ?? (response.status === 404 ? "Link pelatihan atau data peserta tidak ditemukan." : response.status === 401 || response.status === 403 ? "Anda tidak memiliki akses untuk melanjutkan." : response.status >= 500 ? "Terjadi gangguan pada sistem. Silakan coba kembali." : "Permintaan tidak dapat diproses."));
   return payload;
 }
 
@@ -35,6 +36,7 @@ export function TrainingEntryFoundationPage() {
   const [nik, setNik] = useState("");
   const [batchId, setBatchId] = useState("");
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {

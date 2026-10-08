@@ -7,6 +7,7 @@ import { ModalPortal } from "../../components/ui/ModalPortal";
 import { IconActionButton } from "../../components/ui/IconActionButton";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { AdminApiError, adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
 import { formatDateTimeForApi, formatDateTimeForDisplay } from "../../features/dates/date-format";
@@ -67,6 +68,7 @@ export function EvaluationDetailPage() {
   const [schedule, setSchedule] = useState<ScheduleDraft | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const [notice, setNotice] = useState<string | null>(null);
   const chartRef = useRef<SVGSVGElement>(null);
   const loadSequence = useRef(0);

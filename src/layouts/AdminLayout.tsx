@@ -21,7 +21,7 @@ import { useAdminAuth } from "../features/admin-auth/AuthProvider";
 const primaryNavigation = [
   { label: "Dashboard", to: "/admin", end: true, icon: LayoutDashboard },
   {
-    label: "Pelatihan & Materi",
+    label: "Pelatihan & Mata Diklat",
     to: "/admin/master-pelatihan",
     icon: GraduationCap,
   },

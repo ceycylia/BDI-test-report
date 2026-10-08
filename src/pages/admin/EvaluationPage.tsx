@@ -5,6 +5,7 @@ import { DateTimeInput } from "../../components/ui/DateTimeInput";
 import { ModalPortal } from "../../components/ui/ModalPortal";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { SearchInput } from "../../components/ui/SearchInput";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { AdminApiError, adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
 import { formatDateTimeForApi, formatDateTimeForDisplay } from "../../features/dates/date-format";
@@ -44,6 +45,7 @@ export function EvaluationPage() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
 

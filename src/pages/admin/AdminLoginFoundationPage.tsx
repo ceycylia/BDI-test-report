@@ -3,6 +3,7 @@ import { Link, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { AppMark } from "../../components/ui/AppMark";
 import { AdminApiError } from "../../features/admin-auth/admin-api";
 import { useAdminAuth } from "../../features/admin-auth/AuthProvider";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 
 export function AdminLoginFoundationPage() {
   const { admin, loading, login } = useAdminAuth();
@@ -10,6 +11,7 @@ export function AdminLoginFoundationPage() {
   const [submitting, setSubmitting] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
 
   const navigate = useNavigate();
   const location = useLocation();

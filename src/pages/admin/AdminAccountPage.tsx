@@ -13,6 +13,7 @@ export function AdminAccountPage() {
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
+  useAutoDismiss(error, setError);
 
   async function updateProfile(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();

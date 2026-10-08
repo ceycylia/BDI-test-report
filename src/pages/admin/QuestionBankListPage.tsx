@@ -8,6 +8,7 @@ import {
 import type { QuestionBankSummary } from "../../features/question-banks/types";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { SearchInput } from "../../components/ui/SearchInput";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 export function QuestionBankListPage() {
@@ -15,6 +16,7 @@ export function QuestionBankListPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const [message, setMessage] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<{
     trainings: Array<{ id: string; name: string; is_active: number }>;
@@ -199,10 +201,9 @@ export function QuestionBankListPage() {
                 }}
               />
             </label>
-            {trainingId && trainingMaterials.length > 0 && <fieldset className="bank-material-picker">
-              <legend>Materi</legend>
+            {trainingId && trainingMaterials.length > 0 && <div className="bank-material-picker" role="group" aria-labelledby="bank-material-picker-title">
               <div className="bank-material-picker__header">
-                <p>Centang materi yang akan dibuatkan Bank Soal.</p>
+                <strong id="bank-material-picker-title">Pilih Mata Diklat</strong>
                 <div className="bank-material-picker__actions">
                   <button type="button" className="text-button" onClick={() => setSelectedMaterialIds(trainingMaterials.map((material) => material.id))}>Pilih Semua</button>
                   <button type="button" className="text-button" onClick={() => setSelectedMaterialIds([])}>Batalkan Semua</button>
@@ -221,13 +222,13 @@ export function QuestionBankListPage() {
                   </label>;
                 })}
               </div>
-              <p className="bank-material-picker__summary">{selectedMaterialIds.length} dari {trainingMaterials.length} materi dipilih</p>
-            </fieldset>}
+              <p className="bank-material-picker__summary">{selectedMaterialIds.length} dari {trainingMaterials.length} mata diklat dipilih</p>
+            </div>}
             {trainingId && trainingMaterials.length === 0 && <div className="empty-state bank-material-empty"><strong>Belum ada materi</strong><p>Tambahkan materi pada pelatihan ini sebelum membuat Bank Soal.</p></div>}
             {allMaterialsHaveBanks && <p className="form-message is-success">Seluruh materi pada pelatihan ini sudah memiliki Bank Soal.</p>}
             {trainingId && trainingMaterials.length > 0 && selectedMaterialIds.length === 0 && <p className="form-message">Pilih minimal satu materi untuk dibuatkan Bank Soal.</p>}
             {message && <p className="form-message is-success" role="status">{message}</p>}
-            {error && <p className="form-message is-error">{error}</p>}
+            {error && <p className="form-message is-error" role="alert">{error}</p>}
             <button className="button" type="submit" disabled={submitting || !trainingId || trainingMaterials.length === 0 || selectedCreatableCount === 0}>
               {submitting ? "Menyimpan…" : "+ Buat Bank Soal Terpilih"}
             </button>

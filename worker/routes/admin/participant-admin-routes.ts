@@ -51,6 +51,42 @@ const materialInput = z.object({
   jp: z.number().int().positive().max(999),
   sortOrder: z.number().int().positive().max(999),
 });
+const materialStatusInput = z.object({
+  isActive: z.boolean(),
+});
+
+// Completion is evaluated against the current set of active mata diklat only.
+// A training without any active mata diklat is deliberately never eligible.
+const documentEligibilityCte = `WITH scores AS (
+  SELECT p.profile_id,
+         MAX(CASE WHEN a.stage <> 'PRE' AND a.status = 'SUBMITTED' THEN a.score END) AS final_score,
+         MAX(s.passing_score) AS passing_score
+  FROM participants p
+  JOIN attempts a ON a.participant_id = p.id
+  JOIN training_sessions s ON s.id = a.training_session_id
+  WHERE p.profile_id IS NOT NULL
+  GROUP BY p.profile_id
+), active_material_counts AS (
+  SELECT training_id, COUNT(*) AS active_material_count
+  FROM training_materials
+  WHERE is_active = 1
+  GROUP BY training_id
+), completed_active_material_counts AS (
+  SELECT profiles.id AS profile_id, COUNT(DISTINCT sessions.material_id) AS completed_active_material_count
+  FROM participant_profiles profiles
+  JOIN training_sessions sessions ON sessions.training_id = profiles.training_id
+    AND sessions.material_id IS NOT NULL
+  JOIN training_materials materials ON materials.id = sessions.material_id AND materials.is_active = 1
+  JOIN batches ON batches.training_session_id = sessions.id AND batches.cohort_id = profiles.cohort_id
+  JOIN participants p ON p.batch_id = batches.id AND p.profile_id = profiles.id
+  JOIN attempts a ON a.participant_id = p.id AND a.training_session_id = sessions.id
+    AND a.stage <> 'PRE' AND a.status = 'SUBMITTED'
+  GROUP BY profiles.id
+)`;
+
+const documentEligibilitySql = `COALESCE(active_material_counts.active_material_count, 0) > 0
+  AND COALESCE(completed_active_material_counts.completed_active_material_count, 0) >= active_material_counts.active_material_count
+  AND scores.final_score >= scores.passing_score`;
 const materialImportInput = z.object({
   trainingId: z.string().min(1),
   rows: z
@@ -212,7 +248,7 @@ participantAdminRoutes.get("/catalog/trainings", async (c) => {
   const bindings: unknown[] = [];
   const search = c.req.query("search")?.trim();
   const status = c.req.query("status");
-  if (search) { clauses.push("trainings.name LIKE ? ESCAPE '\\'"); bindings.push(`%${search.replace(/[\\%_]/gu, "\\$&")}%`); }
+  if (search) { clauses.push("INSTR(LOWER(trainings.name), LOWER(?)) > 0"); bindings.push(search); }
   if (status === "true" || status === "false") { clauses.push("trainings.is_active = ?"); bindings.push(status === "true" ? 1 : 0); }
   const where = `WHERE ${clauses.join(" AND ")}`;
   const [count, rows] = await Promise.all([
@@ -233,7 +269,7 @@ participantAdminRoutes.get("/catalog/materials", async (c) => {
   const clauses = ["trainings.is_deleted = 0"];
   const bindings: unknown[] = [];
   const trainingSearch = c.req.query("trainingSearch")?.trim();
-  if (trainingSearch) { clauses.push("trainings.name LIKE ? ESCAPE '\\'"); bindings.push(`%${trainingSearch.replace(/[\\%_]/gu, "\\$&")}%`); }
+  if (trainingSearch) { clauses.push("INSTR(LOWER(trainings.name), LOWER(?)) > 0"); bindings.push(trainingSearch); }
   const where = `WHERE ${clauses.join(" AND ")}`;
   const base = `FROM training_materials materials JOIN trainings ON trainings.id=materials.training_id ${where}`;
   const [count, rows] = await Promise.all([
@@ -349,6 +385,22 @@ participantAdminRoutes.delete(
       .run();
     return c.json({ success: true, preservedHistory: true });
   }
+);
+
+participantAdminRoutes.put(
+  "/materials/:id/status",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const parsed = materialStatusInput.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw validationError(parsed);
+    const result = await c.env.DB.prepare(
+      "UPDATE training_materials SET is_active=?,updated_at=CURRENT_TIMESTAMP WHERE id=?",
+    ).bind(parsed.data.isActive ? 1 : 0, c.req.param("id")).run();
+    if (!result.meta.changes)
+      throw new HttpError(404, "MATERIAL_NOT_FOUND", "Mata diklat tidak ditemukan.");
+    return c.json({ success: true, isActive: parsed.data.isActive });
+  },
 );
 participantAdminRoutes.post(
   "/materials",
@@ -1453,19 +1505,18 @@ participantAdminRoutes.get("/certificates", async (c) => {
   if (status === "LULUS" || status === "BELUM_LULUS") { conditions.push("graduation_status = ?"); bindings.push(status); }
   if (status === "READY") conditions.push("graduation_status = 'LULUS' AND certificate_id IS NULL");
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const cte = `WITH scores AS (
-    SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score
-    FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id
-    WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id
-  ), certificate_rows AS (
+  const cte = `${documentEligibilityCte}, certificate_rows AS (
     SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,
       trainings.name training_name,cohorts.name cohort_name,SUBSTR(cohorts.start_date,1,4) training_year,
-      scores.final_score,scores.passing_score,CASE WHEN scores.final_score>=scores.passing_score THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,
+      scores.final_score,scores.passing_score,CASE WHEN ${documentEligibilitySql} THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,
       certificates.id certificate_id,certificates.certificate_number,certificates.status certificate_status,
       completion_letters.id completion_letter_id,completion_letters.completion_letter_number,
       profiles.created_at,profiles.rowid source_rowid
     FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
-    LEFT JOIN scores ON scores.profile_id=profiles.id LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id
+    LEFT JOIN scores ON scores.profile_id=profiles.id
+    LEFT JOIN active_material_counts ON active_material_counts.training_id=profiles.training_id
+    LEFT JOIN completed_active_material_counts ON completed_active_material_counts.profile_id=profiles.id
+    LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id
     LEFT JOIN completion_letters ON completion_letters.participant_profile_id=profiles.id
   )`;
   const [count, rows] = await Promise.all([
@@ -1490,18 +1541,16 @@ participantAdminRoutes.get("/certificates/numbering-targets", async (c) => {
   if (c.req.query("trainingId")) { conditions.push("profiles.training_id=?"); bindings.push(c.req.query("trainingId")!); }
   if (c.req.query("cohortId")) { conditions.push("profiles.cohort_id=?"); bindings.push(c.req.query("cohortId")!); }
   const rows = await c.env.DB.prepare(
-    `WITH scores AS (
-       SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score
-       FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id
-       WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id
-     )
+    `${documentEligibilityCte}
      SELECT profiles.id participant_id,profiles.name,profiles.training_id,profiles.cohort_id,
             certificates.certificate_number,completion_letters.completion_letter_number
      FROM participant_profiles profiles JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
-     JOIN scores ON scores.profile_id=profiles.id AND scores.final_score>=scores.passing_score
+     JOIN scores ON scores.profile_id=profiles.id
+     LEFT JOIN active_material_counts ON active_material_counts.training_id=profiles.training_id
+     LEFT JOIN completed_active_material_counts ON completed_active_material_counts.profile_id=profiles.id
      LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id
      LEFT JOIN completion_letters ON completion_letters.participant_profile_id=profiles.id
-     WHERE ${conditions.join(" AND ")}
+     WHERE ${conditions.join(" AND ")} AND ${documentEligibilitySql}
      ORDER BY profiles.created_at DESC, profiles.rowid DESC`,
   ).bind(...bindings).all<{
     participant_id: string; name: string; training_id: string; cohort_id: string;
@@ -1522,6 +1571,7 @@ participantAdminRoutes.get("/certificate-settings", async (c) => {
       signer_nip: "",
       issue_place: "",
       issue_date: "",
+      signature_key: null,
     },
   });
 });
@@ -1536,21 +1586,19 @@ participantAdminRoutes.put(
         signerTitle: z.string().max(150),
         signerNip: z.string().max(80),
         issuePlace: z.string().max(120),
-        issueDate: z.string().date().or(z.literal("")).optional().default(""),
       })
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     const d = parsed.data;
     await c.env.DB.prepare(
-      `INSERT INTO global_certificate_settings(id,certificate_prefix,signer_name,signer_title,signer_nip,issue_place,issue_date) VALUES(1,?,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET signer_name=excluded.signer_name,signer_title=excluded.signer_title,signer_nip=excluded.signer_nip,issue_place=excluded.issue_place,issue_date=excluded.issue_date,updated_at=CURRENT_TIMESTAMP`
+      `INSERT INTO global_certificate_settings(id,certificate_prefix,signer_name,signer_title,signer_nip,issue_place) VALUES(1,?,?,?,?,?) ON CONFLICT(id) DO UPDATE SET signer_name=excluded.signer_name,signer_title=excluded.signer_title,signer_nip=excluded.signer_nip,issue_place=excluded.issue_place,updated_at=CURRENT_TIMESTAMP`
     )
       .bind(
         "",
         d.signerName,
         d.signerTitle,
         d.signerNip,
-        d.issuePlace,
-        d.issueDate
+        d.issuePlace
       )
       .run();
     return c.json({ success: true });
@@ -1576,11 +1624,11 @@ participantAdminRoutes.post(
     ] as const) {
       const file = form.get(field);
       if (file instanceof File && file.size) {
-        if (!file.type.startsWith("image/") || file.size > 8_000_000)
+        if (file.type !== "image/png" || file.size > 8_000_000)
           throw new HttpError(
             422,
             "IMAGE_INVALID",
-            "Tanda tangan harus berupa gambar maksimal 8 MB."
+            "Tanda tangan harus berupa file PNG maksimal 8 MB."
           );
         const ext = file.type.includes("png") ? "png" : "jpg";
         const key = `certificates/assets/global/${field}-${crypto.randomUUID()}.${ext}`;
@@ -1619,8 +1667,31 @@ function cohortLabel(value: unknown) {
   return /^ANGKATAN\b/u.test(name) ? name : `ANGKATAN ${name}`;
 }
 function trainingLabel(value: unknown) {
-  const name = upperName(value);
-  return /^PELATIHAN\b/u.test(name) ? name : `PELATIHAN ${name}`;
+  const name = presentationCase(value);
+  return /^pelatihan\b/iu.test(name) ? name : `Pelatihan ${name}`;
+}
+function titleCase(value: unknown) {
+  return String(value ?? "")
+    .trim()
+    .toLocaleLowerCase("id-ID")
+    .replace(/(^|[\s-])(\p{L})/gu, (_, prefix: string, letter: string) =>
+      `${prefix}${letter.toLocaleUpperCase("id-ID")}`
+    );
+}
+function presentationCase(value: unknown) {
+  const text = String(value ?? "").trim();
+  return text && text === upperName(text) ? titleCase(text) : text;
+}
+function certificateTrainingTitle(training: unknown, cohort: unknown) {
+  const trainingName = presentationCase(training);
+  const cohortName = presentationCase(cohort);
+  const labelledTraining = /^pelatihan\b/iu.test(trainingName)
+    ? trainingName
+    : `Pelatihan ${trainingName}`;
+  const labelledCohort = /^angkatan\b/iu.test(cohortName)
+    ? cohortName
+    : `Angkatan ${cohortName}`;
+  return `${labelledTraining} ${labelledCohort}`.trim();
 }
 function upperName(value: unknown) {
   return String(value ?? "").trim().toLocaleUpperCase("id-ID");
@@ -1650,10 +1721,43 @@ function formatLongDate(value: string) {
 async function certificateData(db: D1Database, profileId: string) {
   return db
     .prepare(
-      `WITH score AS (SELECT MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id=?) SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date AS issue_date,(SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,score.final_score,score.passing_score,settings.signer_name,settings.signer_title,settings.signer_nip,settings.issue_place,settings.signature_key FROM participant_profiles p JOIN trainings t ON t.id=p.training_id JOIN training_cohorts c ON c.id=p.cohort_id CROSS JOIN score LEFT JOIN global_certificate_settings settings ON settings.id=1 WHERE p.id=?`
+      `${documentEligibilityCte}
+       SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date,c.end_date AS issue_date,
+              (SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,
+              scores.final_score,scores.passing_score,
+              CASE WHEN ${documentEligibilitySql} THEN 1 ELSE 0 END document_eligible,
+              settings.signer_name,settings.signer_title,settings.signer_nip,settings.issue_place,settings.signature_key
+       FROM participant_profiles p
+       JOIN trainings t ON t.id=p.training_id
+       JOIN training_cohorts c ON c.id=p.cohort_id
+       LEFT JOIN scores ON scores.profile_id=p.id
+       LEFT JOIN active_material_counts ON active_material_counts.training_id=p.training_id
+       LEFT JOIN completed_active_material_counts ON completed_active_material_counts.profile_id=p.id
+       LEFT JOIN global_certificate_settings settings ON settings.id=1
+       WHERE p.id=?`
     )
-    .bind(profileId, profileId)
+    .bind(profileId)
     .first<Record<string, unknown>>();
+}
+
+function assertDocumentConfiguration(data: Record<string, unknown>) {
+  if (!data.issue_date) {
+    throw new HttpError(409, "COHORT_END_DATE_REQUIRED", "Tanggal selesai angkatan belum tersedia.");
+  }
+  const missing = [
+    ["Tempat penerbitan", data.issue_place],
+    ["Nama pejabat", data.signer_name],
+    ["Jabatan", data.signer_title],
+    ["NIP", data.signer_nip],
+    ["Tanda tangan PNG", data.signature_key],
+  ].filter(([, value]) => !String(value ?? "").trim()).map(([label]) => label);
+  if (missing.length) {
+    throw new HttpError(
+      409,
+      "CERTIFICATE_SETTINGS_INCOMPLETE",
+      `Pengaturan sertifikat belum lengkap. Lengkapi data pejabat dan tanda tangan terlebih dahulu. Field belum lengkap: ${missing.join(", ")}.`,
+    );
+  }
 }
 function point(page: any, x: number, y: number, _d: Record<string, unknown>) {
   return {
@@ -1726,6 +1830,50 @@ function drawWrapped(
     const p = point(page, x, y + row * lineHeight, d);
     page.drawText(line, { x: p.x, y: p.y, font, size, color: rgb(0, 0, 0) });
   }
+}
+function wrappedLines(font: any, text: string, width: number, size: number, maxLines: number) {
+  const words = safeText(text).split(/\s+/).filter(Boolean);
+  const lines: string[] = [];
+  let line = "";
+  const fits = (candidate: string) => font.widthOfTextAtSize(candidate, size) <= mm(width);
+  for (const word of words) {
+    const candidate = line ? `${line} ${word}` : word;
+    if (fits(candidate)) {
+      line = candidate;
+      continue;
+    }
+    if (line) lines.push(line);
+    line = word;
+    if (lines.length === maxLines) break;
+  }
+  if (line && lines.length < maxLines) lines.push(line);
+  if (lines.length > maxLines) lines.length = maxLines;
+  if (words.length && lines.length === maxLines) {
+    const joined = lines.join(" ");
+    if (joined !== words.join(" ")) {
+      let finalLine = lines[maxLines - 1];
+      while (finalLine && !fits(`${finalLine}...`)) finalLine = finalLine.slice(0, -1).trimEnd();
+      lines[maxLines - 1] = `${finalLine}...`;
+    }
+  }
+  return lines;
+}
+function drawWrappedTableCell(
+  page: any,
+  font: any,
+  text: string,
+  x: number,
+  rowTop: number,
+  width: number,
+  rowHeight: number,
+  size: number,
+  d: Record<string, unknown>
+) {
+  const lineHeight = 3.2;
+  const lines = wrappedLines(font, text, width, size, 2);
+  const contentHeight = Math.max(1, lines.length) * lineHeight;
+  const firstY = rowTop + (rowHeight - contentHeight) / 2 + 2.25;
+  lines.forEach((line, index) => drawTextAt(page, font, line, x, firstY + index * lineHeight, size, d));
 }
 function drawJustified(
   page: any,
@@ -1879,18 +2027,13 @@ async function renderCertificate(
       "PARTICIPANT_NOT_FOUND",
       "Peserta tidak ditemukan."
     );
-  if (Number(d.final_score ?? -1) < Number(d.passing_score ?? 101))
+  if (Number(d.document_eligible) !== 1)
     throw new HttpError(
       409,
       "NOT_ELIGIBLE",
       "Sertifikat hanya dapat dibuat untuk peserta yang lulus."
     );
-  if (!preview && !d.issue_date)
-    throw new HttpError(
-      409,
-      "ISSUE_DATE_REQUIRED",
-      "Atur tanggal penerbitan sertifikat terlebih dahulu."
-    );
+  assertDocumentConfiguration(d);
   const cert = await c.env.DB.prepare(
     `SELECT * FROM certificates WHERE participant_profile_id=?`
   )
@@ -1949,21 +2092,20 @@ async function renderCertificate(
       ["NIK", String(d.nik)],
       [
         "Tempat, tanggal lahir",
-        `${d.birth_place}, ${formatLongDate(String(d.birth_date))}`,
+        `${titleCase(d.birth_place)}, ${formatLongDate(String(d.birth_date))}`,
       ],
     ];
     rows.forEach(([label, value], index) => {
       const y = l.label.y + index * l.label.lineHeight;
       drawTextAt(page, regular, label, l.label.x, y, 12, d);
-      drawTextAt(page, bold, `:  ${value}`, l.value.x, y, 12, d);
+      drawTextAt(page, regular, `:  ${value}`, l.value.x, y, 12, d);
     });
-    const narrative = `telah menyelesaikan ${trainingLabel(
-      d.training_name
-    )} ${cohortLabel(
+    const narrative = `telah menyelesaikan ${certificateTrainingTitle(
+      d.training_name,
       d.cohort_name
     )} yang dilaksanakan pada tanggal ${formatLongDate(
       String(d.start_date)
-    )} s.d. ${formatLongDate(String(d.end_date))} selama ${
+    )} s.d. ${formatLongDate(String(d.issue_date))} selama ${
       d.total_jp
     } jam pelatihan dan dinyatakan LULUS.`;
     drawJustified(
@@ -1982,11 +2124,7 @@ async function renderCertificate(
     drawCentered(
       page,
       regular,
-      `${d.issue_place || "Medan"}, ${
-        d.issue_date
-          ? formatLongDate(String(d.issue_date))
-          : "Tanggal penerbitan belum diisi"
-      }`,
+      `${String(d.issue_place)}, ${formatLongDate(String(d.issue_date))}`,
       l.issue.x,
       l.issue.y,
       12,
@@ -2041,12 +2179,39 @@ async function renderCertificate(
     const rows = Math.max(materials.results.length, 1);
     const headerBottom = l.table.top + l.table.headerHeight;
     const tableBottom = headerBottom + rows * rowHeight;
+    const tableRight = l.table.x + l.table.width;
+    const resultWidth = Math.max(
+      20,
+      regular.widthOfTextAtSize("LULUS", 9.5) / mm(1) + 10
+    );
+    const longestUnitCodeWidth = Math.max(
+      0,
+      ...materials.results.map((material) =>
+        regular.widthOfTextAtSize(
+          String(material.unit_code ?? "").trim().toLocaleUpperCase("id-ID"),
+          8.5
+        ) / mm(1)
+      )
+    );
+    const unitCodeWidth = Math.min(42, Math.max(26, longestUnitCodeWidth + 10));
+    const columns = {
+      number: l.table.number,
+      material: {
+        left: l.table.number.right,
+        right: tableRight - resultWidth - unitCodeWidth,
+      },
+      unitCode: {
+        left: tableRight - resultWidth - unitCodeWidth,
+        right: tableRight - resultWidth,
+      },
+      result: { left: tableRight - resultWidth, right: tableRight },
+    };
     const verticals = [
-      l.table.number.left,
-      l.table.number.right,
-      l.table.material.right,
-      l.table.unitCode.right,
-      l.table.result.right,
+      columns.number.left,
+      columns.number.right,
+      columns.material.right,
+      columns.unitCode.right,
+      columns.result.right,
     ];
     drawRule(
       page,
@@ -2085,10 +2250,10 @@ async function renderCertificate(
       );
     const headerY = l.table.top + 8;
     for (const [text, left, right] of [
-      ["No", l.table.number.left, l.table.number.right],
-      ["Unit Kompetensi", l.table.material.left, l.table.material.right],
-      ["Kode Unit", l.table.unitCode.left, l.table.unitCode.right],
-      ["Hasil", l.table.result.left, l.table.result.right],
+      ["No", columns.number.left, columns.number.right],
+      ["Unit Kompetensi", columns.material.left, columns.material.right],
+      ["Kode Unit", columns.unitCode.left, columns.unitCode.right],
+      ["Hasil", columns.result.left, columns.result.right],
     ] as const) {
       const lines = text.split("\n");
       lines.forEach((line, index) =>
@@ -2105,21 +2270,24 @@ async function renderCertificate(
     }
     materials.results.forEach((material, index) => {
       const y = headerBottom + (index + 0.67) * rowHeight;
+      const rowTop = headerBottom + index * rowHeight;
       drawCentered(
         page,
         regular,
         String(index + 1),
-        (l.table.number.left + l.table.number.right) / 2,
+        (columns.number.left + columns.number.right) / 2,
         y,
         9.5,
         d
       );
-      drawTextAt(
+      drawWrappedTableCell(
         page,
         regular,
         upperName(material.name),
-        l.table.material.left + 1.5,
-        y,
+        columns.material.left + 1.5,
+        rowTop,
+        columns.material.right - columns.material.left - 3,
+        rowHeight,
         9.5,
         d
       );
@@ -2127,7 +2295,7 @@ async function renderCertificate(
         page,
         regular,
         material.unit_code ? String(material.unit_code).trim().toLocaleUpperCase("id-ID") : "",
-        (l.table.unitCode.left + l.table.unitCode.right) / 2,
+        (columns.unitCode.left + columns.unitCode.right) / 2,
         y,
         8.5,
         d
@@ -2136,7 +2304,7 @@ async function renderCertificate(
         page,
         regular,
         "LULUS",
-        (l.table.result.left + l.table.result.right) / 2,
+        (columns.result.left + columns.result.right) / 2,
         y,
         9.5,
         d
@@ -2158,10 +2326,9 @@ async function renderCompletionLetter(
   const d = await certificateData(c.env.DB, profileId);
   if (!d)
     throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
-  if (Number(d.final_score ?? -1) < Number(d.passing_score ?? 101))
+  if (Number(d.document_eligible) !== 1)
     throw new HttpError(409, "NOT_ELIGIBLE", "Surat keterangan hanya dapat dibuat untuk peserta yang lulus.");
-  if (!preview && !d.issue_date)
-    throw new HttpError(409, "ISSUE_DATE_REQUIRED", "Atur tanggal penerbitan terlebih dahulu.");
+  assertDocumentConfiguration(d);
   const letter = await c.env.DB.prepare(
     `SELECT * FROM completion_letters WHERE participant_profile_id=?`
   ).bind(profileId).first<Record<string, unknown>>();
@@ -2201,31 +2368,31 @@ async function renderCompletionLetter(
     const y = 88.5 + index * 7;
     drawTextAt(page, regular, label, 25, y, bodySize, d);
     drawTextAt(page, regular, ":", 76, y, bodySize, d);
-    drawTextAt(page, regular, value, 89, y, bodySize, d);
+    drawTextAt(page, regular, value, 80, y, bodySize, d);
   });
 
-  drawTextAt(page, regular, "menerangkan bahwa:", 25, 115, bodySize, d);
+  drawTextAt(page, regular, "menerangkan bahwa:", 25, 109.5, bodySize, d);
   const participantRows = [
     ["Nama", upperName(d.name)],
     ["NIK", String(d.nik || "")],
     ["Tanggal, tempat lahir", `${formatLongDate(String(d.birth_date))}, ${String(d.birth_place || "")}`],
   ];
   participantRows.forEach(([label, value], index) => {
-    const y = 123 + index * 9;
+    const y = 117 + index * 9;
     drawTextAt(page, regular, label, 26, y, bodySize, d);
     drawTextAt(page, regular, ":", 76, y, bodySize, d);
-    drawTextAt(page, regular, value, 89, y, bodySize, d);
+    drawTextAt(page, regular, value, 80, y, bodySize, d);
   });
-  drawTextAt(page, regular, "Alamat", 26, 150, bodySize, d);
-  drawTextAt(page, regular, ":", 76, 150, bodySize, d);
-  drawWrapped(page, regular, String(d.address || "-"), 89, 150, 94, 5.7, bodySize, d);
+  drawTextAt(page, regular, "Alamat", 26, 144, bodySize, d);
+  drawTextAt(page, regular, ":", 76, 144, bodySize, d);
+  drawWrapped(page, regular, String(d.address || "-"), 80, 144, 103, 5.7, bodySize, d);
 
   drawJustified(
     page,
     regular,
     `telah menyelesaikan ${trainingLabel(d.training_name)} yang dilaksanakan pada tanggal ${formatLongDate(String(d.start_date))} s.d. ${formatLongDate(String(d.end_date))} selama ${d.total_jp} JPL.`,
     25,
-    169,
+    151,
     160,
     6.5,
     bodySize,
@@ -2236,7 +2403,7 @@ async function renderCompletionLetter(
     regular,
     "Demikian surat keterangan ini dibuat untuk dipergunakan sebagaimana mestinya.",
     25,
-    190,
+    164.5,
     160,
     6.5,
     bodySize,
@@ -2245,15 +2412,15 @@ async function renderCompletionLetter(
   );
 
   const issueText = `${String(d.issue_place || "Medan")}, ${d.issue_date ? formatLongDate(String(d.issue_date)) : "Tanggal penerbitan belum diisi"}`;
-  drawCentered(page, regular, issueText, 145, 204, bodySize, d);
-  drawCentered(page, regular, String(d.signer_title || ""), 145, 211, bodySize, d);
+  drawCentered(page, regular, issueText, 145, 171.5, bodySize, d);
+  drawCentered(page, regular, String(d.signer_title || ""), 145, 178.5, bodySize, d);
   const signature = await embedImage(c, pdf, d.signature_key);
-  if (signature) drawImageContained(page, signature, { x: 122, y: 216, width: 46, height: 14 }, d);
+  if (signature) drawImageContained(page, signature, { x: 122, y: 183.5, width: 46, height: 14 }, d);
   const signerName = upperName(d.signer_name);
-  drawCentered(page, bold, signerName, 145, 237, bodySize, d);
+  drawCentered(page, bold, signerName, 145, 204.5, bodySize, d);
   const signerNameWidth = bold.widthOfTextAtSize(safeText(signerName), bodySize) / mm(1);
-  if (signerName) drawRule(page, 145 - signerNameWidth / 2, 238.2, 145 + signerNameWidth / 2, 238.2, d);
-  drawCentered(page, bold, d.signer_nip ? `NIP. ${d.signer_nip}` : "", 145, 244, bodySize, d);
+  if (signerName) drawRule(page, 145 - signerNameWidth / 2, 205.7, 145 + signerNameWidth / 2, 205.7, d);
+  drawCentered(page, bold, d.signer_nip ? `NIP. ${d.signer_nip}` : "", 145, 211.5, bodySize, d);
 
   return {
     bytes: await pdf.save(),
@@ -2285,18 +2452,13 @@ participantAdminRoutes.put(
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     const d = await certificateData(c.env.DB, c.req.param("participantId"));
-    if (!d || Number(d.final_score ?? -1) < Number(d.passing_score ?? 101))
+    if (!d || Number(d.document_eligible) !== 1)
       throw new HttpError(
         409,
         "NOT_ELIGIBLE",
         "Nomor hanya dapat disimpan untuk peserta yang lulus."
       );
-    if (!d.issue_date)
-      throw new HttpError(
-        409,
-        "ISSUE_DATE_REQUIRED",
-        "Atur tanggal penerbitan sertifikat terlebih dahulu."
-      );
+    assertDocumentConfiguration(d);
     const existing = await c.env.DB.prepare(
       `SELECT id FROM certificates WHERE participant_profile_id=?`
     )
@@ -2333,10 +2495,9 @@ participantAdminRoutes.put(
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     const d = await certificateData(c.env.DB, c.req.param("participantId"));
-    if (!d || Number(d.final_score ?? -1) < Number(d.passing_score ?? 101))
+    if (!d || Number(d.document_eligible) !== 1)
       throw new HttpError(409, "NOT_ELIGIBLE", "Nomor surat hanya dapat disimpan untuk peserta yang lulus.");
-    if (!d.issue_date)
-      throw new HttpError(409, "ISSUE_DATE_REQUIRED", "Atur tanggal penerbitan terlebih dahulu.");
+    assertDocumentConfiguration(d);
     const existing = await c.env.DB.prepare(
       `SELECT id FROM completion_letters WHERE participant_profile_id=?`
     ).bind(c.req.param("participantId")).first<{ id: string }>();
@@ -2380,20 +2541,15 @@ participantAdminRoutes.put(
       throw new HttpError(422, "DATA_INVALID", "Peserta tidak boleh muncul lebih dari sekali.");
 
     const profiles = await c.env.DB.prepare(
-      `WITH scores AS (
-        SELECT p.profile_id,
-          MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,
-          MAX(s.passing_score) passing_score
-        FROM participants p
-        JOIN attempts a ON a.participant_id=p.id
-        JOIN training_sessions s ON s.id=a.training_session_id
-        WHERE p.profile_id IS NOT NULL
-        GROUP BY p.profile_id
-      )
-      SELECT profiles.id,profiles.training_id,profiles.cohort_id,cohorts.end_date AS issue_date,scores.final_score,scores.passing_score
+      `${documentEligibilityCte}
+      SELECT profiles.id,profiles.training_id,profiles.cohort_id,cohorts.end_date AS issue_date,
+             scores.final_score,scores.passing_score,
+             CASE WHEN ${documentEligibilitySql} THEN 1 ELSE 0 END document_eligible
       FROM participant_profiles profiles
       JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
       LEFT JOIN scores ON scores.profile_id=profiles.id
+      LEFT JOIN active_material_counts ON active_material_counts.training_id=profiles.training_id
+      LEFT JOIN completed_active_material_counts ON completed_active_material_counts.profile_id=profiles.id
       WHERE profiles.id IN (SELECT value FROM json_each(?))`
     ).bind(JSON.stringify(participantIds)).all<{
       id: string;
@@ -2401,15 +2557,20 @@ participantAdminRoutes.put(
       cohort_id: string;
       final_score: number | null;
       passing_score: number | null;
+      document_eligible: number;
       issue_date: string;
     }>();
     if (
       profiles.results.length !== participantIds.length ||
-      profiles.results.some((profile) =>
-        Number(profile.final_score ?? -1) < Number(profile.passing_score ?? 101)
-      )
+      profiles.results.some((profile) => Number(profile.document_eligible) !== 1)
     )
       throw new HttpError(409, "NOT_ELIGIBLE", "Nomor hanya dapat diterapkan kepada peserta yang lulus.");
+    if (profiles.results.some((profile) => !profile.issue_date))
+      throw new HttpError(409, "COHORT_END_DATE_REQUIRED", "Tanggal selesai angkatan belum tersedia.");
+    const settings = await c.env.DB.prepare(
+      "SELECT signer_name,signer_title,signer_nip,issue_place,signature_key FROM global_certificate_settings WHERE id=1",
+    ).first<Record<string, unknown>>();
+    assertDocumentConfiguration({ ...settings, issue_date: profiles.results[0]?.issue_date });
 
     const ensureUniqueNumbers = async (
       table: "certificates" | "completion_letters",

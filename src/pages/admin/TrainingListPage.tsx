@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Link } from "react-router-dom";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { adminQuery } from "../../features/admin-auth/admin-api";
 import { formatDateForDisplay } from "../../features/dates/date-format";
 import type { TrainingSummary } from "../../features/training/types";
@@ -25,6 +26,7 @@ export function TrainingListPage() {
   const [scheduleStatus, setScheduleStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
   const [catalog, setCatalog] = useState<{ trainings: Array<{ id: string; name: string }>; materials: Array<{ id: string; training_id: string; name: string }>; cohorts: Array<{ id: string; training_id: string; name: string }> }>({ trainings: [], materials: [], cohorts: [] });
@@ -101,7 +103,7 @@ export function TrainingListPage() {
           { value: "FINISHED", label: "Selesai" },
         ]} onValueChange={setScheduleStatus} /></label>
       </section>
-      {error && <p className="form-message is-error">{error}</p>}
+      {error && <p className="form-message is-error" role="alert">{error}</p>}
       {loading && <p className="muted">Memuat pelatihan…</p>}
       {!loading && sessions.length === 0 && !hasFilters && (
         <div className="empty-state admin-empty"><strong>Belum ada Test pada tahun {activeYear}</strong><p>Buat Test berdasarkan materi, angkatan, jadwal, dan passing grade.</p></div>

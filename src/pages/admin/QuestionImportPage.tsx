@@ -1,6 +1,7 @@
 import { Download, FileText, Upload, X } from "lucide-react";
 import { useState, type ChangeEvent } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import {
   adminMutation,
   adminUpload,
@@ -31,6 +32,7 @@ export function QuestionImportModal({
   const [parsing, setParsing] = useState(false);
   const [importing, setImporting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
 
   const invalidCount = questions.filter((question) => question.errors.length > 0).length;
   const canImport = questions.length > 0 && invalidCount === 0 && !importing;

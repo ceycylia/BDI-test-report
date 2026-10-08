@@ -46,6 +46,7 @@ export function QuestionBankDetailPage() {
   const [error, setError] = useState<string | null>(null);
   const [message, setMessage] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
+  useAutoDismiss(error, setError);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [questionToDelete, setQuestionToDelete] = useState<Question | null>(null);
@@ -378,7 +379,6 @@ export function QuestionBankDetailPage() {
 
       <section className="panel danger-zone bank-danger-zone" aria-labelledby="bank-danger-title">
         <div>
-          <p className="section-label">Zona Berbahaya</p>
           <h2 id="bank-danger-title">Hapus Bank Soal</h2>
           <p>Bank Soal hanya dapat dihapus jika belum berisi soal dan belum digunakan oleh pelaksanaan atau paket Test.</p>
         </div>

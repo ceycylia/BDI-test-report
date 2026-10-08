@@ -166,9 +166,10 @@ export async function listCampaignParticipantCandidates(
 export async function participantCompletedAllPostTests(database: D1Database, participant: CampaignParticipantRecord) {
   const row = await database.prepare(
     `SELECT
-       (SELECT COUNT(*) FROM training_materials WHERE training_id = ?) AS material_count,
+       (SELECT COUNT(*) FROM training_materials WHERE training_id = ? AND is_active = 1) AS material_count,
        COUNT(DISTINCT sessions.material_id) AS completed_material_count
      FROM training_sessions sessions
+     JOIN training_materials materials ON materials.id = sessions.material_id AND materials.is_active = 1
      JOIN batches ON batches.training_session_id = sessions.id AND batches.cohort_id = ?
      JOIN participants exam_participants ON exam_participants.batch_id = batches.id AND exam_participants.profile_id = ?
      JOIN attempts ON attempts.participant_id = exam_participants.id

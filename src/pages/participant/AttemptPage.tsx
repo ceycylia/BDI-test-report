@@ -17,7 +17,7 @@ type AttemptPayload = {
 async function requestJson<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, { ...init, headers: { Accept: "application/json", "Content-Type": "application/json", ...init?.headers } });
   const payload = await response.json() as T & { error?: { message?: string } };
-  if (!response.ok) throw new Error(payload.error?.message ?? "Permintaan tidak dapat diproses.");
+  if (!response.ok) throw new Error(payload.error?.message ?? (response.status === 404 ? "Data yang diminta tidak ditemukan." : response.status === 401 || response.status === 403 ? "Anda tidak memiliki akses untuk melanjutkan." : response.status >= 500 ? "Terjadi gangguan pada sistem. Silakan coba kembali." : "Permintaan tidak dapat diproses."));
   return payload;
 }
 
@@ -39,6 +39,7 @@ export function AttemptPage() {
   const [message, setMessage] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const [confirming, setConfirming] = useState(false);
   const [incompleteConfirming, setIncompleteConfirming] = useState(false);
   const [submitting, setSubmitting] = useState(false);
@@ -203,7 +204,8 @@ export function AttemptPage() {
       ? payload.attempt.stage === "POST" ? "REMEDIAL_1" : payload.attempt.stage === "REMEDIAL_1" ? "REMEDIAL_2" : null
       : null;
     const stageLabel = payload.attempt.stage === "PRE" ? "Pre-Test" : payload.attempt.stage === "POST" ? "Post-Test" : payload.attempt.stage.replace("_", " ").replace("REMEDIAL", "Remedial");
-    return <PublicLayout><section className="entry-card result-card"><div className="entry-card__eyebrow">{stageLabel} selesai</div><h1>Nilai Anda</h1><strong className="result-score">{result}</strong>{!isPre && <p className={`result-status ${passed ? "is-passed" : "is-failed"}`}>Status: {passed ? "LULUS" : "TIDAK LULUS"}</p>}{error && <p className="form-message is-error" role="alert">{error}</p>}{!isPre && !passed && <p>{remedialStage ? "Nilai belum memenuhi passing grade. Silakan ulangi tes dengan soal baru dan jawaban kosong." : "Nilai belum memenuhi passing grade setelah dua kali remedial. Proses tes diakhiri."}</p>}{(!isPre && !passed && remedialStage) ? <button className="button" disabled={retrying} onClick={() => void startRemedial(remedialStage)}>{retrying ? "Menyiapkan soal…" : `ULANGI ${remedialStage.replace("_", " ")}`}</button> : <Link className="button" to={`/t/${slug}`}>Kembali ke pelatihan</Link>}</section></PublicLayout>;
+    const isFailed = !isPre && !passed;
+    return <PublicLayout><section className={`entry-card result-card${isFailed ? " is-failed" : ""}`}><div className="entry-card__eyebrow">{stageLabel} selesai</div><h1>Nilai Anda</h1><strong className="result-score">{result}</strong>{!isPre && <p className={`result-status ${passed ? "is-passed" : "is-failed"}`}>Status: {passed ? "LULUS" : "TIDAK LULUS"}</p>}{error && <p className="form-message is-error" role="alert">{error}</p>}{!isPre && !passed && <p>{remedialStage ? "Nilai belum memenuhi passing grade. Silakan ulangi tes dengan soal baru dan jawaban kosong." : "Nilai belum memenuhi passing grade setelah dua kali remedial. Proses tes diakhiri."}</p>}{(!isPre && !passed && remedialStage) ? <button className="button" disabled={retrying} onClick={() => void startRemedial(remedialStage)}>{retrying ? "Menyiapkan soal…" : `ULANGI ${remedialStage.replace("_", " ")}`}</button> : <Link className="button" to={`/t/${slug}`}>Kembali ke pelatihan</Link>}</section></PublicLayout>;
   }
   if (!payload.questions.length) return <PublicLayout><section className="entry-card"><p className="form-message is-error">Soal tidak tersedia.</p></section></PublicLayout>;
 

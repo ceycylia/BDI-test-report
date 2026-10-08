@@ -9,7 +9,6 @@ export type GeneratedCohort = {
 type GenerateCohortsInput = {
   startNumber: number;
   count: number;
-  cohortsPerPeriod: number;
   firstStartDate: string;
   durationDays: number;
 };
@@ -27,8 +26,7 @@ export function addDays(value: string, days: number) {
 
 export function generateCohorts(input: GenerateCohortsInput): GeneratedCohort[] {
   return Array.from({ length: input.count }, (_, index) => {
-    const periodIndex = Math.floor(index / input.cohortsPerPeriod);
-    const startDate = addDays(input.firstStartDate, periodIndex * input.durationDays);
+    const startDate = addDays(input.firstStartDate, index * input.durationDays);
     return {
       clientId: crypto.randomUUID(),
       name: `Angkatan ${input.startNumber + index}`,

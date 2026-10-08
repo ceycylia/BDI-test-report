@@ -25,6 +25,7 @@ export function AdminManagementPage() {
   const [message, setMessage] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
   const [error, setError] = useState<string | null>(null);
+  useAutoDismiss(error, setError);
   const [newAdmin, setNewAdmin] = useState({ name: "", username: "", role: "ADMIN" as AdminListItem["role"], password: "" });
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });

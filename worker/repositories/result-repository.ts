@@ -119,6 +119,39 @@ export async function getParticipantResult(database: D1Database, participantId: 
   }>();
 }
 
+export type ManualScoreContext = {
+  profile_id: string;
+  participant_id: string | null;
+  batch_id: string;
+  training_session_id: string;
+  name: string;
+  normalized_name: string;
+  passing_score: number;
+};
+
+export async function getManualScoreContext(
+  database: D1Database,
+  referenceId: string,
+  batchId: string,
+  sessionId: string,
+) {
+  return database.prepare(
+    `SELECT profiles.id AS profile_id, participants.id AS participant_id,
+            batches.id AS batch_id, sessions.id AS training_session_id,
+            profiles.name, profiles.normalized_name, sessions.passing_score
+       FROM participant_profiles AS profiles
+       JOIN training_sessions AS sessions
+         ON sessions.id = ? AND sessions.training_id = profiles.training_id
+       JOIN batches
+         ON batches.id = ? AND batches.training_session_id = sessions.id
+         AND batches.cohort_id = profiles.cohort_id
+       LEFT JOIN participants
+         ON participants.profile_id = profiles.id AND participants.batch_id = batches.id
+      WHERE profiles.is_active = 1 AND (profiles.id = ? OR participants.id = ?)
+      LIMIT 1`,
+  ).bind(sessionId, batchId, referenceId, referenceId).first<ManualScoreContext>();
+}
+
 export async function listParticipantAttemptDetails(database: D1Database, participantId: string) {
   const attempts = await database.prepare(
     `SELECT id, stage, attempt_number, started_at, deadline_at, submitted_at, status,
@@ -168,6 +201,51 @@ export async function adjustFinalAttemptScore(database: D1Database, attemptId: s
        VALUES (?, ?, 'ADJUST_FINAL_SCORE', 'attempt', ?, json_object('participantId', ?, 'score', ?))`,
     ).bind(crypto.randomUUID(), adminId, attemptId, participantId, score),
   ]);
+}
+
+export async function saveManualAttemptScores(
+  database: D1Database,
+  input: {
+    participantId: string;
+    batchId: string;
+    sessionId: string;
+    adminId: string;
+    scores: Array<{ stage: "PRE" | "POST" | "REMEDIAL_1" | "REMEDIAL_2"; attemptNumber: number; score: number }>;
+  },
+) {
+  const stages = input.scores.map((item) => item.stage);
+  const existing = await database.prepare(
+    `SELECT id, stage, status FROM attempts
+      WHERE participant_id = ? AND stage IN (SELECT value FROM json_each(?)) AND status <> 'RESET'`,
+  ).bind(input.participantId, JSON.stringify(stages)).all<{ id: string; stage: string; status: string }>();
+  const byStage = new Map(existing.results.map((attempt) => [attempt.stage, attempt]));
+  const now = new Date().toISOString();
+  const deadline = new Date(Date.now() + 60_000).toISOString();
+  const statements = input.scores.flatMap((item) => {
+    const attempt = byStage.get(item.stage);
+    const scoreStatement = attempt
+      ? database.prepare(
+        `UPDATE attempts SET status = 'SUBMITTED', submitted_at = ?, score = ?, updated_at = ?
+          WHERE id = ? AND participant_id = ? AND status <> 'RESET'`,
+      ).bind(now, item.score, now, attempt.id, input.participantId)
+      : database.prepare(
+        `INSERT INTO attempts (
+           id, participant_id, batch_id, training_session_id, stage, attempt_number,
+           started_at, deadline_at, submitted_at, status, score
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', ?)`,
+      ).bind(
+        crypto.randomUUID(), input.participantId, input.batchId, input.sessionId,
+        item.stage, item.attemptNumber, now, deadline, now, item.score,
+      );
+    return [
+      scoreStatement,
+      database.prepare(
+        `INSERT INTO audit_logs (id, admin_id, action, entity_type, entity_id, metadata_json)
+         VALUES (?, ?, 'ADJUST_MANUAL_SCORE', 'attempt', ?, json_object('participantId', ?, 'stage', ?, 'score', ?))`,
+      ).bind(crypto.randomUUID(), input.adminId, attempt?.id ?? input.participantId, input.participantId, item.stage, item.score),
+    ];
+  });
+  await database.batch(statements);
 }
 
 export async function listExportAnswers(database: D1Database, participantIds: string[]) {

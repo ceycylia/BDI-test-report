@@ -5,7 +5,7 @@ import { isPassing } from "../../domain/scoring/outcome";
 import { evaluateSubmission, fillMissingAnswers } from "../../domain/attempts/submission-rules";
 import { personalizeQuestionOrder } from "../../domain/attempts/personalize-questions";
 import { attemptNumberForStage, nextPostStage } from "../../domain/attempts/progression";
-import { attemptDeadlines, NORMAL_TEST_MINUTES } from "../../domain/attempts/timing";
+import { attemptDeadlines } from "../../domain/attempts/timing";
 import { isTestOpen } from "../../domain/scheduling/test-availability";
 import { HttpError } from "../../http/errors";
 import { requireSameOrigin } from "../../middleware/admin-auth";
@@ -23,14 +23,10 @@ const startSchema = z.object({ participantId: z.string().uuid(), batchId: z.stri
 const draftSchema = z.object({ participantId: z.string().uuid(), revision: z.number().int().positive(), answers: answersSchema });
 const submitSchema = z.object({ participantId: z.string().uuid(), mode: z.enum(["NORMAL", "TIMEOUT"]), answers: answersSchema });
 
-function durationForAttempt(stage: AttemptStage, sessionDurationMinutes: number, previousAttempts: AttemptRecord[] = []) {
-  if (stage !== "REMEDIAL_1" && stage !== "REMEDIAL_2") return sessionDurationMinutes;
-  const carriedSeconds = previousAttempts.reduce((total, previous) => {
-    if (previous.status !== "SUBMITTED" || !previous.submitted_at) return total;
-    const unused = Date.parse(previous.deadline_at) - 60_000 - Date.parse(previous.submitted_at);
-    return total + Math.max(0, unused);
-  }, 0);
-  return NORMAL_TEST_MINUTES + carriedSeconds / 60_000;
+function durationForAttempt(_stage: AttemptStage, sessionDurationMinutes: number) {
+  // Each remedial is a fresh attempt: it always receives the session duration,
+  // never unused time from a previous Post-Test or remedial attempt.
+  return sessionDurationMinutes;
 }
 
 export const attemptRoutes = new Hono<AppEnvironment>();
@@ -109,7 +105,6 @@ attemptRoutes.post("/start", requireSameOrigin, async (context) => {
     throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Data peserta tidak ditemukan pada angkatan ini.");
   }
   let stage: AttemptStage = parsed.data.stage;
-  let previousAttemptsForTiming: AttemptRecord[] = [];
   let attempt = await findAttempt(context.env.DB, parsed.data.participantId, stage);
   if (attempt?.status === "SUBMITTED") throw new HttpError(409, "STAGE_ALREADY_COMPLETED", `${parsed.data.stage === "PRE" ? "Pre-Test" : "Post-Test"} sudah pernah diselesaikan.`);
   if (!attempt) {
@@ -121,7 +116,6 @@ attemptRoutes.post("/start", requireSameOrigin, async (context) => {
         (["POST", "REMEDIAL_1", "REMEDIAL_2"] as const)
           .map((stage) => findAttempt(context.env.DB, parsed.data.participantId, stage)),
       )).filter((item): item is AttemptRecord => item !== null);
-      previousAttemptsForTiming = postAttempts;
       const expected = nextPostStage(postAttempts, session.passing_score);
       if (!expected) throw new HttpError(409, "STAGE_NOT_AVAILABLE", "Tidak ada remedial yang tersedia.");
       stage = expected;
@@ -134,7 +128,7 @@ attemptRoutes.post("/start", requireSameOrigin, async (context) => {
     const snapshots = personalizeQuestionOrder(layoutQuestions);
     const now = new Date();
     const startedAt = now.toISOString();
-    const deadlineAt = attemptDeadlines(startedAt, durationForAttempt(stage, session.duration_minutes, previousAttemptsForTiming)).hardDeadlineAt;
+    const deadlineAt = attemptDeadlines(startedAt, durationForAttempt(stage, session.duration_minutes)).hardDeadlineAt;
     await createAttemptWithSnapshots(context.env.DB, {
         id: crypto.randomUUID(), participantId: parsed.data.participantId, batchId: parsed.data.batchId,
         sessionId: session.id, stage, attemptNumber: attemptNumberForStage(stage),
