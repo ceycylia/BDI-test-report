@@ -6,6 +6,7 @@ import { adminQuery } from "../../features/admin-auth/admin-api";
 import { formatDateForDisplay } from "../../features/dates/date-format";
 import type { TrainingSummary } from "../../features/training/types";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 const scheduleLabels: Record<TrainingSummary["scheduleStatus"], string> = {
   NOT_OPEN: "Belum Dibuka",
@@ -24,15 +25,26 @@ export function TrainingListPage() {
   const [scheduleStatus, setScheduleStatus] = useState("");
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
+  const [catalog, setCatalog] = useState<{ trainings: Array<{ id: string; name: string }>; materials: Array<{ id: string; training_id: string; name: string }>; cohorts: Array<{ id: string; training_id: string; name: string }> }>({ trainings: [], materials: [], cohorts: [] });
 
   useEffect(() => {
     let mounted = true;
     setLoading(true);
     async function loadSessions() {
       try {
-        const payload = await adminQuery<{ sessions: TrainingSummary[] }>(withActiveYear("/api/admin/training", activeYear));
+        const query = new URLSearchParams({ year: String(activeYear), page: String(page), limit: String(ADMIN_PAGE_SIZE) });
+        if (debouncedSearch) query.set("search", debouncedSearch);
+        if (trainingId) query.set("trainingId", trainingId);
+        if (materialId) query.set("materialId", materialId);
+        if (cohortId) query.set("cohortId", cohortId);
+        if (scheduleStatus) query.set("scheduleStatus", scheduleStatus);
+        const payload = await adminQuery<{ sessions: TrainingSummary[]; pagination: PaginationMeta }>(`/api/admin/training?${query}`);
         if (!mounted) return;
+        if (page > payload.pagination.totalPages) { setPage(payload.pagination.totalPages); return; }
         setSessions(payload.sessions);
+        setPagination(payload.pagination);
         setError(null);
       } catch (reason) {
         if (mounted) setError(reason instanceof Error ? reason.message : "Pelatihan tidak dapat dimuat.");
@@ -46,6 +58,10 @@ export function TrainingListPage() {
       mounted = false;
       window.clearInterval(interval);
     };
+  }, [activeYear, cohortId, debouncedSearch, materialId, page, scheduleStatus, trainingId]);
+
+  useEffect(() => {
+    void adminQuery<{ trainings: Array<{ id: string; name: string }>; materials: Array<{ id: string; training_id: string; name: string }>; cohorts: Array<{ id: string; training_id: string; name: string }> }>(withActiveYear("/api/admin/participants/catalog", activeYear)).then(setCatalog).catch(() => undefined);
   }, [activeYear]);
 
   useEffect(() => {
@@ -53,38 +69,17 @@ export function TrainingListPage() {
     return () => window.clearTimeout(timeout);
   }, [search]);
 
-  const trainingOptions = useMemo(() => [...new Map(
-    sessions.filter((session) => session.trainingId).map((session) => [
-      session.trainingId,
-      { value: session.trainingId, label: session.trainingName },
-    ] as const),
-  ).values()], [sessions]);
+  const trainingOptions = useMemo(() => catalog.trainings.map((training) => ({ value: training.id, label: training.name })), [catalog.trainings]);
 
   const materialOptions = useMemo(() => [...new Map(
-    sessions
-      .filter((session) => session.trainingId === trainingId && session.materialId)
-      .map((session) => [session.materialId, { value: session.materialId, label: session.materialName }] as const),
-  ).values()], [sessions, trainingId]);
+    catalog.materials.filter((material) => material.training_id === trainingId).map((material) => [material.id, { value: material.id, label: material.name }] as const),
+  ).values()], [catalog.materials, trainingId]);
 
   const cohortOptions = useMemo(() => [...new Map(
-    sessions
-      .filter((session) => session.trainingId === trainingId)
-      .flatMap((session) => session.cohorts)
-      .map((cohort) => [cohort.id, { value: cohort.id, label: cohort.name }] as const),
-  ).values()], [sessions, trainingId]);
+    catalog.cohorts.filter((cohort) => cohort.training_id === trainingId).map((cohort) => [cohort.id, { value: cohort.id, label: cohort.name }] as const),
+  ).values()], [catalog.cohorts, trainingId]);
 
-  const filteredSessions = useMemo(() => sessions.filter((session) => {
-    if (trainingId && session.trainingId !== trainingId) return false;
-    if (materialId && session.materialId !== materialId) return false;
-    if (cohortId && !session.cohorts.some((cohort) => cohort.id === cohortId)) return false;
-    if (scheduleStatus && session.scheduleStatus !== scheduleStatus) return false;
-    if (!debouncedSearch) return true;
-    return [
-      session.materialName,
-      session.trainingName,
-      ...session.cohorts.map((cohort) => cohort.name),
-    ].some((value) => value.toLocaleLowerCase("id").includes(debouncedSearch));
-  }), [cohortId, debouncedSearch, materialId, scheduleStatus, sessions, trainingId]);
+  useEffect(() => { setPage(1); }, [activeYear, cohortId, debouncedSearch, materialId, scheduleStatus, trainingId]);
 
   const hasFilters = Boolean(search || trainingId || materialId || cohortId || scheduleStatus);
 
@@ -108,14 +103,14 @@ export function TrainingListPage() {
       </section>
       {error && <p className="form-message is-error">{error}</p>}
       {loading && <p className="muted">Memuat pelatihan…</p>}
-      {!loading && sessions.length === 0 && (
+      {!loading && sessions.length === 0 && !hasFilters && (
         <div className="empty-state admin-empty"><strong>Belum ada Test pada tahun {activeYear}</strong><p>Buat Test berdasarkan materi, angkatan, jadwal, dan passing grade.</p></div>
       )}
-      {!loading && sessions.length > 0 && filteredSessions.length === 0 && (
+      {!loading && sessions.length === 0 && pagination.total === 0 && hasFilters && (
         <div className="empty-state admin-empty"><strong>Test tidak ditemukan</strong><p>{hasFilters ? "Ubah atau hapus pencarian dan filter yang digunakan." : "Belum ada data yang dapat ditampilkan."}</p></div>
       )}
       <div className="training-list">
-        {filteredSessions.map((session) => (
+        {sessions.map((session) => (
           <article className="training-list__item" key={session.id}>
             <div className="training-list__content">
               <div className="bank-list__title-row">
@@ -129,6 +124,7 @@ export function TrainingListPage() {
           </article>
         ))}
       </div>
+      <Pagination pagination={pagination} itemLabel="test" loading={loading} onPageChange={setPage} />
     </>
   );
 }

@@ -9,6 +9,7 @@ import { AdminApiError, adminMutation, adminQuery } from "../../features/admin-a
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
 import { formatDateTimeForApi, formatDateTimeForDisplay } from "../../features/dates/date-format";
 import { SurveyTemplateListPage } from "./SurveyTemplateListPage";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 type EvaluationStatus = "NOT_OPEN" | "OPEN" | "FINISHED";
 type Campaign = {
@@ -43,31 +44,35 @@ export function EvaluationPage() {
   const [loading, setLoading] = useState(true);
   const [notice, setNotice] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
 
   const load = useCallback(async () => {
     setLoading(true); setError(null);
     try {
-      const [list, options] = await Promise.all([
-        adminQuery<{ campaigns: Campaign[] }>(withActiveYear("/api/admin/survey-campaigns", activeYear)),
-        adminQuery<Catalog>(withActiveYear("/api/admin/survey-campaigns/catalog", activeYear)),
-      ]);
-      setCampaigns(list.campaigns); setCatalog(options);
+      const query = new URLSearchParams({ year: String(activeYear), page: String(page), limit: String(ADMIN_PAGE_SIZE) });
+      if (search.trim()) query.set("search", search.trim());
+      if (trainingId) query.set("trainingId", trainingId);
+      if (cohortId) query.set("cohortId", cohortId);
+      if (status) query.set("status", status);
+      const list = await adminQuery<{ campaigns: Campaign[]; pagination: PaginationMeta }>(`/api/admin/survey-campaigns?${query}`);
+      if (page > list.pagination.totalPages) { setPage(list.pagination.totalPages); return; }
+      setCampaigns(list.campaigns); setPagination(list.pagination);
     } catch (reason) {
       setError(reason instanceof AdminApiError ? reason.message : "Pelaksanaan Evaluasi tidak dapat dimuat.");
     } finally { setLoading(false); }
+  }, [activeYear, cohortId, page, search, status, trainingId]);
+
+  const loadCatalog = useCallback(async () => {
+    setCatalog(await adminQuery<Catalog>(withActiveYear("/api/admin/survey-campaigns/catalog", activeYear)));
   }, [activeYear]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => { const timer = window.setTimeout(() => void load(), 250); return () => window.clearTimeout(timer); }, [load]);
+  useEffect(() => { void loadCatalog().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Pilihan Evaluasi tidak dapat dimuat.")); }, [loadCatalog]);
   useEffect(() => { setTrainingId(""); setCohortId(""); setSearch(""); setStatus(""); }, [activeYear]);
+  useEffect(() => { setPage(1); }, [activeYear, cohortId, search, status, trainingId]);
 
   const filterCohorts = useMemo(() => catalog.cohorts.filter((cohort) => !trainingId || cohort.trainingId === trainingId), [catalog.cohorts, trainingId]);
-  const visible = useMemo(() => {
-    const needle = search.trim().toLocaleLowerCase("id");
-    return campaigns.filter((campaign) => {
-      const haystack = `${campaign.training.name} ${campaign.cohorts.map((cohort) => cohort.name).join(" ")}`.toLocaleLowerCase("id");
-      return (!needle || haystack.includes(needle)) && (!trainingId || campaign.training.id === trainingId) && (!cohortId || campaign.cohorts.some((cohort) => cohort.id === cohortId)) && (!status || campaign.status === status);
-    });
-  }, [campaigns, cohortId, search, status, trainingId]);
 
   const availableDraftCohorts = catalog.cohorts.filter((cohort) => cohort.trainingId === draft.trainingId);
   const scheduledOpensAt = draft.mode === "SCHEDULED" ? formatDateTimeForApi(draft.opensAt) : null;
@@ -82,7 +87,7 @@ export function EvaluationPage() {
       const closesAt = draft.mode === "SCHEDULED" ? formatDateTimeForApi(draft.closesAt) : null;
       if (draft.mode === "SCHEDULED" && (!opensAt || !closesAt || Date.parse(closesAt) <= Date.parse(opensAt))) throw new Error("Waktu tutup harus setelah waktu buka.");
       await adminMutation("/api/admin/survey-campaigns", { method: "POST", body: JSON.stringify({ trainingId: draft.trainingId, cohortIds: draft.cohortIds, templateId: draft.templateId, activeYear, mode: draft.mode, opensAt, closesAt }) });
-      setCreateOpen(false); setDraft(emptyDraft); setNotice("Pelaksanaan Evaluasi berhasil dibuat."); await load();
+      setCreateOpen(false); setDraft(emptyDraft); setNotice("Pelaksanaan Evaluasi berhasil dibuat."); setPage(1); await load();
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Pelaksanaan Evaluasi tidak dapat dibuat."); }
     finally { setBusy(false); }
   }
@@ -97,14 +102,15 @@ export function EvaluationPage() {
     <nav className="section-tabs" aria-label="Bagian Evaluasi"><button className={tab === "campaigns" ? "is-active" : ""} onClick={() => setParams({})}>Pelaksanaan Evaluasi</button><button className={tab === "templates" ? "is-active" : ""} onClick={() => setParams({ tab: "templates" })}>Template Evaluasi</button></nav>
     {notice && <p className="form-message is-success" role="status">{notice}</p>}
     {error && <p className="form-message is-error" role="alert">{error}</p>}
-    {tab === "templates" ? <SurveyTemplateListPage embedded onTemplatesChanged={load} /> : <>
+    {tab === "templates" ? <SurveyTemplateListPage embedded onTemplatesChanged={loadCatalog} /> : <>
       <section className="panel evaluation-filters">
         <label>Cari Evaluasi<SearchInput value={search} onValueChange={setSearch} placeholder="Nama pelatihan atau angkatan" /></label>
         <label>Pelatihan<SearchableSelect value={trainingId} placeholder="Semua pelatihan" options={catalog.trainings.map((item) => ({ value: item.id, label: item.name }))} onValueChange={(value) => { setTrainingId(value); setCohortId(""); }} /></label>
         <label>Angkatan<SearchableSelect disabled={!trainingId} value={cohortId} placeholder={trainingId ? "Semua angkatan" : "Pilih pelatihan terlebih dahulu"} options={filterCohorts.map((item) => ({ value: item.id, label: item.name }))} onValueChange={setCohortId} /></label>
         <label>Status<SearchableSelect value={status} placeholder="Semua status" options={[{ value: "NOT_OPEN", label: "Belum Dibuka" }, { value: "OPEN", label: "Sedang Berlangsung" }, { value: "FINISHED", label: "Selesai" }]} onValueChange={setStatus} /></label>
       </section>
-      {loading ? <p className="muted">Memuat Pelaksanaan Evaluasi…</p> : visible.length ? <section className="evaluation-campaign-list">{visible.map((campaign) => <article className="panel evaluation-campaign-card" key={campaign.id}><div className="evaluation-campaign-card__main"><div className="evaluation-campaign-card__title"><h2>{campaign.training.name}</h2><span className={`status-badge evaluation-status-${campaign.status.toLowerCase()}`}>{statusLabels[campaign.status]}</span></div><p><strong>Angkatan:</strong> {campaign.cohorts.map((item) => item.name).join(" & ")}</p><p><strong>Template:</strong> {campaign.template.name} · Versi {campaign.template.version}</p>{campaign.schedule.mode === "SCHEDULED" && <small>{formatDateTimeForDisplay(campaign.schedule.opensAt)} – {formatDateTimeForDisplay(campaign.schedule.closesAt)}</small>}<strong>{campaign.respondentCount} / {campaign.totalParticipants} peserta</strong></div><div className="evaluation-campaign-card__actions"><button className="button button--secondary" onClick={() => void copyLink(campaign.slug)}><ClipboardCopy /> Salin Link</button><Link className="button" to={`/admin/evaluasi/pelaksanaan/${campaign.id}`}>Buka</Link></div></article>)}</section> : <section className="panel empty-state"><ClipboardList /><strong>Belum ada Pelaksanaan Evaluasi</strong><p>Buat Evaluasi untuk Pelatihan dan Angkatan pada Tahun Aktif ini.</p></section>}
+      {loading ? <p className="muted">Memuat Pelaksanaan Evaluasi…</p> : campaigns.length ? <section className="evaluation-campaign-list">{campaigns.map((campaign) => <article className="panel evaluation-campaign-card" key={campaign.id}><div className="evaluation-campaign-card__main"><div className="evaluation-campaign-card__title"><h2>{campaign.training.name}</h2><span className={`status-badge evaluation-status-${campaign.status.toLowerCase()}`}>{statusLabels[campaign.status]}</span></div><p><strong>Angkatan:</strong> {campaign.cohorts.map((item) => item.name).join(" & ")}</p><p><strong>Template:</strong> {campaign.template.name} · Versi {campaign.template.version}</p>{campaign.schedule.mode === "SCHEDULED" && <small>{formatDateTimeForDisplay(campaign.schedule.opensAt)} – {formatDateTimeForDisplay(campaign.schedule.closesAt)}</small>}<strong>{campaign.respondentCount} / {campaign.totalParticipants} peserta</strong></div><div className="evaluation-campaign-card__actions"><button className="button button--secondary" onClick={() => void copyLink(campaign.slug)}><ClipboardCopy /> Salin Link</button><Link className="button" to={`/admin/evaluasi/pelaksanaan/${campaign.id}`}>Buka</Link></div></article>)}</section> : <section className="panel empty-state"><ClipboardList /><strong>Belum ada Pelaksanaan Evaluasi</strong><p>Buat Evaluasi untuk Pelatihan dan Angkatan pada Tahun Aktif ini.</p></section>}
+      <Pagination pagination={pagination} itemLabel="pelaksanaan evaluasi" loading={loading} onPageChange={setPage} />
     </>}
 
     {createOpen && <ModalPortal onClose={() => setCreateOpen(false)} blocked={busy}><section className="participant-modal evaluation-create-modal" role="dialog" aria-modal="true" aria-labelledby="create-evaluation-title"><header className="participant-modal__header"><div><p className="section-label">Pelaksanaan Evaluasi</p><h2 id="create-evaluation-title">Buat Evaluasi</h2><p>Pilih Pelatihan, satu atau beberapa Angkatan, dan Template Published.</p></div><button className="participant-modal__close" type="button" aria-label="Tutup" onClick={() => setCreateOpen(false)}><X /></button></header><form className="participant-modal__form form-stack" onSubmit={(event) => void createCampaign(event)}>{error && <p className="form-message is-error" role="alert">{error}</p>}

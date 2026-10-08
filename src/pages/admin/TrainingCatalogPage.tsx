@@ -1,8 +1,6 @@
 import { useEffect, useMemo, useState, type FormEvent } from "react";
 import {
   BookOpenText,
-  ChevronLeft,
-  ChevronRight,
   Download,
   FileSpreadsheet,
   GraduationCap,
@@ -22,6 +20,7 @@ import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
 import { ModalPortal } from "../../components/ui/ModalPortal";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 type Training = {
   id: string;
@@ -59,8 +58,6 @@ type MaterialImportRow = {
 type DeleteTarget =
   | { kind: "training"; training: Training }
   | { kind: "material"; material: Material };
-const MATERIALS_PER_PAGE = 10;
-const TRAININGS_PER_PAGE = 5;
 
 export function TrainingCatalogPage() {
   const [catalog, setCatalog] = useState<Catalog>({
@@ -93,6 +90,11 @@ export function TrainingCatalogPage() {
   const [error, setError] = useState<string | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleting, setDeleting] = useState(false);
+  const [trainingRows, setTrainingRows] = useState<Training[]>([]);
+  const [materialRows, setMaterialRows] = useState<Material[]>([]);
+  const [trainingPagination, setTrainingPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
+  const [materialPagination, setMaterialPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
+  const [listLoading, setListLoading] = useState(false);
   useAutoDismiss(message, setMessage);
 
   const load = async () => {
@@ -110,48 +112,29 @@ export function TrainingCatalogPage() {
     );
   }, []);
 
-  const materials = useMemo(
-    () =>
-      catalog.materials.filter(
-        (item) =>
-          !materialTrainingQuery.trim() ||
-          item.training_name
-            .toLocaleLowerCase("id")
-            .includes(materialTrainingQuery.trim().toLocaleLowerCase("id"))
-      ),
-    [catalog.materials, materialTrainingQuery]
-  );
-  const filteredTrainings = useMemo(
-    () =>
-      catalog.trainings.filter(
-        (training) =>
-          (!trainingNameQuery.trim() ||
-            training.name
-              .toLocaleLowerCase("id")
-              .includes(trainingNameQuery.trim().toLocaleLowerCase("id"))) &&
-          (!trainingStatus ||
-            String(Boolean(training.is_active)) === trainingStatus)
-      ),
-    [catalog.trainings, trainingNameQuery, trainingStatus]
-  );
-  const trainingPageCount = Math.max(
-    1,
-    Math.ceil(filteredTrainings.length / TRAININGS_PER_PAGE)
-  );
-  const activeTrainingPage = Math.min(trainingPage, trainingPageCount);
-  const displayedTrainings = filteredTrainings.slice(
-    (activeTrainingPage - 1) * TRAININGS_PER_PAGE,
-    activeTrainingPage * TRAININGS_PER_PAGE
-  );
-  const materialPageCount = Math.max(
-    1,
-    Math.ceil(materials.length / MATERIALS_PER_PAGE)
-  );
-  const activeMaterialPage = Math.min(materialPage, materialPageCount);
-  const displayedMaterials = materials.slice(
-    (activeMaterialPage - 1) * MATERIALS_PER_PAGE,
-    activeMaterialPage * MATERIALS_PER_PAGE
-  );
+  const loadTrainingRows = async (requestedPage = trainingPage) => {
+    const query = new URLSearchParams({ page: String(requestedPage), limit: String(ADMIN_PAGE_SIZE) });
+    if (trainingNameQuery.trim()) query.set("search", trainingNameQuery.trim());
+    if (trainingStatus) query.set("status", trainingStatus);
+    const result = await adminQuery<{ trainings: Training[]; pagination: PaginationMeta }>(`/api/admin/participants/catalog/trainings?${query}`);
+    if (requestedPage > result.pagination.totalPages) { setTrainingPage(result.pagination.totalPages); return; }
+    setTrainingRows(result.trainings); setTrainingPagination(result.pagination);
+  };
+  const loadMaterialRows = async (requestedPage = materialPage) => {
+    const query = new URLSearchParams({ page: String(requestedPage), limit: String(ADMIN_PAGE_SIZE) });
+    if (materialTrainingQuery.trim()) query.set("trainingSearch", materialTrainingQuery.trim());
+    const result = await adminQuery<{ materials: Material[]; pagination: PaginationMeta }>(`/api/admin/participants/catalog/materials?${query}`);
+    if (requestedPage > result.pagination.totalPages) { setMaterialPage(result.pagination.totalPages); return; }
+    setMaterialRows(result.materials); setMaterialPagination(result.pagination);
+  };
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setListLoading(true);
+      void Promise.all([loadTrainingRows(trainingPage), loadMaterialRows(materialPage)]).catch(fail).finally(() => setListLoading(false));
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [trainingPage, materialPage, trainingNameQuery, trainingStatus, materialTrainingQuery]);
 
   const complete = (text: string) => {
     setMessage(text);
@@ -163,6 +146,7 @@ export function TrainingCatalogPage() {
           : "Data master tidak dapat dimuat."
       )
     );
+    void Promise.all([loadTrainingRows(), loadMaterialRows()]).catch(fail);
   };
 
   const fail = (reason: unknown) => {
@@ -460,7 +444,7 @@ export function TrainingCatalogPage() {
               </div>
             </div>
             <div className="training-master-list">
-              {displayedTrainings.map((training) => (
+              {trainingRows.map((training) => (
                 <article key={training.id} className="training-master-card">
                   <span className="training-master-icon">
                     <GraduationCap />
@@ -509,56 +493,15 @@ export function TrainingCatalogPage() {
                   </div>
                 </article>
               ))}
-              {!filteredTrainings.length && (
+              {!trainingRows.length && (
                 <p className="empty-state">
-                  {catalog.trainings.length
+                  {trainingPagination.total
                     ? "Tidak ada pelatihan yang sesuai filter."
                     : "Belum ada pelatihan."}
                 </p>
               )}
             </div>
-            {filteredTrainings.length > TRAININGS_PER_PAGE && (
-              <footer className="table-pagination training-pagination">
-                <span>
-                  Menampilkan{" "}
-                  {(activeTrainingPage - 1) * TRAININGS_PER_PAGE + 1}–
-                  {Math.min(
-                    activeTrainingPage * TRAININGS_PER_PAGE,
-                    filteredTrainings.length
-                  )}{" "}
-                  dari {filteredTrainings.length} pelatihan
-                </span>
-                <div>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Halaman pelatihan sebelumnya"
-                    disabled={activeTrainingPage === 1}
-                    onClick={() =>
-                      setTrainingPage((page) => Math.max(1, page - 1))
-                    }
-                  >
-                    <ChevronLeft />
-                  </button>
-                  <strong>
-                    Halaman {activeTrainingPage} / {trainingPageCount}
-                  </strong>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Halaman pelatihan berikutnya"
-                    disabled={activeTrainingPage === trainingPageCount}
-                    onClick={() =>
-                      setTrainingPage((page) =>
-                        Math.min(trainingPageCount, page + 1)
-                      )
-                    }
-                  >
-                    <ChevronRight />
-                  </button>
-                </div>
-              </footer>
-            )}
+            <Pagination pagination={trainingPagination} itemLabel="pelatihan" loading={listLoading} onPageChange={setTrainingPage} />
           </section>
         )}
         {catalogTab === "materials" && (
@@ -591,7 +534,7 @@ export function TrainingCatalogPage() {
                 <SlidersHorizontal />
                 <div>
                   <strong>Filter materi</strong>
-                  <span>{materials.length} materi ditampilkan</span>
+                  <span>{materialPagination.total} materi ditemukan</span>
                 </div>
               </div>
               <div className="material-filter-bar__controls">
@@ -624,7 +567,7 @@ export function TrainingCatalogPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {displayedMaterials.map((material) => (
+                  {materialRows.map((material) => (
                     <tr key={material.id}>
                       <td>{material.unit_code || "—"}</td>
                       <td>
@@ -656,52 +599,11 @@ export function TrainingCatalogPage() {
                   ))}
                 </tbody>
               </table>
-              {!materials.length && (
+              {!materialRows.length && (
                 <p className="empty-state">Belum ada materi.</p>
               )}
             </div>
-            {materials.length > MATERIALS_PER_PAGE && (
-              <footer className="table-pagination">
-                <span>
-                  Menampilkan{" "}
-                  {(activeMaterialPage - 1) * MATERIALS_PER_PAGE + 1}–
-                  {Math.min(
-                    activeMaterialPage * MATERIALS_PER_PAGE,
-                    materials.length
-                  )}{" "}
-                  dari {materials.length} materi
-                </span>
-                <div>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Halaman sebelumnya"
-                    disabled={activeMaterialPage === 1}
-                    onClick={() =>
-                      setMaterialPage((page) => Math.max(1, page - 1))
-                    }
-                  >
-                    <ChevronLeft />
-                  </button>
-                  <strong>
-                    Halaman {activeMaterialPage} / {materialPageCount}
-                  </strong>
-                  <button
-                    type="button"
-                    className="icon-button"
-                    aria-label="Halaman berikutnya"
-                    disabled={activeMaterialPage === materialPageCount}
-                    onClick={() =>
-                      setMaterialPage((page) =>
-                        Math.min(materialPageCount, page + 1)
-                      )
-                    }
-                  >
-                    <ChevronRight />
-                  </button>
-                </div>
-              </footer>
-            )}
+            <Pagination pagination={materialPagination} itemLabel="materi" loading={listLoading} onPageChange={setMaterialPage} />
           </section>
         )}
       </div>

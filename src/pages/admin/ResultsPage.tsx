@@ -4,6 +4,7 @@ import { adminQuery } from "../../features/admin-auth/admin-api";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 type ResultRow = {
   id: string; name: string; batch_id: string; batch_name: string; training_id: string; training_name: string;
@@ -29,23 +30,22 @@ export function ResultsPage() {
   const [cohortId, setCohortId] = useState("");
   const [status, setStatus] = useState("");
   const [page, setPage] = useState(1);
-  const [total, setTotal] = useState(0);
-  const pageSize = 20;
+  const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
   const [error, setError] = useState<string | null>(null);
 
   const load = (params: URLSearchParams, requestedPage = page) => {
     params.set("year", String(activeYear));
-    params.set("page", String(requestedPage)); params.set("pageSize", String(pageSize));
-    return adminQuery<{ results: ResultRow[]; total: number }>(`/api/admin/results?${params}`).then((data) => { setRows(data.results); setTotal(data.total); });
+    params.set("page", String(requestedPage)); params.set("limit", String(ADMIN_PAGE_SIZE));
+    return adminQuery<{ results: ResultRow[]; pagination: PaginationMeta }>(`/api/admin/results?${params}`).then((data) => { setRows(data.results); setPagination(data.pagination); });
   };
   useEffect(() => {
     setTrainingId(""); setMaterialId(""); setCohortId("");
     void Promise.all([
-      adminQuery<{ results: ResultRow[]; total: number }>(withActiveYear(`/api/admin/results?page=1&pageSize=${pageSize}`, activeYear)),
+      adminQuery<{ results: ResultRow[]; pagination: PaginationMeta }>(withActiveYear(`/api/admin/results?page=1&limit=${ADMIN_PAGE_SIZE}`, activeYear)),
       adminQuery<FilterOptions>(withActiveYear("/api/admin/results/options", activeYear)),
     ]).then(([resultData, optionData]) => {
       setRows(resultData.results);
-      setTotal(resultData.total);
+      setPagination(resultData.pagination);
       setFilterOptions(optionData);
     }).catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Hasil tidak dapat dimuat."));
   }, [activeYear]);
@@ -81,6 +81,6 @@ export function ResultsPage() {
     {error && <p className="form-message is-error">{error}</p>}
     <div className="results-table-wrap"><table className="results-table"><thead><tr><th>Peserta</th><th>Pelatihan · Materi · Angkatan</th><th>Status</th><th>Pre</th><th>Post</th><th>Rem 1</th><th>Rem 2</th><th>Final</th><th>Aksi</th></tr></thead><tbody>{rows.map((row) => <tr key={row.id}><td><strong>{row.name}</strong></td><td>{row.training_name}<small>{row.material_name} · {row.cohort_name}</small></td><td><span className={`status-badge result-${row.result_status.toLowerCase()}`}>{row.result_status.replaceAll("_", " ")}</span></td><td>{row.pre_score ?? "—"}</td><td>{row.post_score ?? "—"}</td><td>{row.remedial_1_score ?? "—"}</td><td>{row.remedial_2_score ?? "—"}</td><td><strong>{row.final_post_score ?? "—"}</strong></td><td><Link className="button button--secondary" to={`/admin/hasil/${row.id}`}>Detail</Link></td></tr>)}</tbody></table></div>
     {!rows.length && <p className="muted">Belum ada peserta yang sesuai filter.</p>}
-    {total > pageSize && <nav className="results-pagination" aria-label="Halaman hasil peserta"><button className="button button--secondary" disabled={page <= 1} onClick={() => setPage((current) => current - 1)}>Sebelumnya</button><span>Halaman {page} dari {Math.ceil(total / pageSize)} · {total} peserta</span><button className="button button--secondary" disabled={page >= Math.ceil(total / pageSize)} onClick={() => setPage((current) => current + 1)}>Berikutnya</button></nav>}
+    <Pagination pagination={pagination} itemLabel="hasil peserta" onPageChange={setPage} />
   </>;
 }

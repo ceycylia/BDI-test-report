@@ -105,7 +105,7 @@ async function main() {
   try {
     await writeFile(sqlPath, sql, { encoding: "utf8", mode: 0o600 });
     const wrangler = join(process.cwd(), "node_modules", "wrangler", "bin", "wrangler.js");
-    const args = [wrangler, "d1", "execute", "bdi-test-db"];
+    const args = [wrangler, "d1", "execute", "DB"];
     if (remote) {
       args.push("--remote", "--env", "production");
     } else {

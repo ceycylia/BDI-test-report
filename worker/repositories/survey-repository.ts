@@ -778,6 +778,27 @@ export async function publishSurveyTemplate(
   ]);
 }
 
+export async function paginateSurveyTemplates(
+  database: D1Database,
+  input: { page: number; limit: number },
+): Promise<{ rows: SurveyTemplateSummaryRecord[]; total: number }> {
+  const [count, result] = await Promise.all([
+    database.prepare("SELECT COUNT(*) AS total FROM survey_templates").first<{ total: number }>(),
+    database.prepare(
+      `SELECT templates.id, templates.name, templates.version, templates.is_active,
+              templates.description, templates.status, templates.published_at,
+              templates.source_template_id, templates.created_at, templates.updated_at,
+              (SELECT COUNT(*) FROM survey_sections sections WHERE sections.survey_template_id=templates.id) AS section_count,
+              (SELECT COUNT(*) FROM survey_questions questions JOIN survey_sections sections ON sections.id=questions.survey_section_id WHERE sections.survey_template_id=templates.id) AS question_count,
+              (SELECT COUNT(*) FROM survey_campaigns campaigns WHERE campaigns.survey_template_id=templates.id) AS campaign_count
+       FROM survey_templates templates
+       ORDER BY templates.name COLLATE NOCASE ASC, templates.version DESC
+       LIMIT ? OFFSET ?`,
+    ).bind(input.limit, (input.page - 1) * input.limit).all<SurveyTemplateSummaryRecord>(),
+  ]);
+  return { rows: result.results, total: Number(count?.total ?? 0) };
+}
+
 
 export async function archiveSurveyTemplate(
   database: D1Database,

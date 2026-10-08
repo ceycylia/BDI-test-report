@@ -38,7 +38,7 @@ export function TrainingCreatePage() {
   useEffect(() => {
     void Promise.all([
       adminQuery<Catalog>(withActiveYear("/api/admin/participants/catalog", activeYear)),
-      adminQuery<{ banks: QuestionBankSummary[] }>("/api/admin/banks"),
+      adminQuery<{ banks: QuestionBankSummary[] }>("/api/admin/banks?options=true"),
     ]).then(([catalogPayload, bankPayload]) => {
       setCatalog(catalogPayload);
       setBanks(bankPayload.banks.filter((bank) => bank.materialId));

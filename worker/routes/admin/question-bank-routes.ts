@@ -17,12 +17,14 @@ import {
   findQuestionBank,
   getQuestionBankDependencyCounts,
   listQuestionBanks,
-  listQuestions,
+  paginateQuestionBanks,
+  paginateQuestions,
   questionHasDependencies,
   updateQuestion,
   updateQuestionBank,
   type QuestionRecord,
 } from "../../repositories/question-bank-repository";
+import { paginationMeta, parsePagination } from "../../http/pagination";
 import type { AppEnvironment } from "../../types";
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
@@ -82,10 +84,25 @@ export const questionBankRoutes = new Hono<AppEnvironment>();
 questionBankRoutes.use("*", requireAdmin);
 
 questionBankRoutes.get("/", async (context) => {
-  const banks = await listQuestionBanks(context.env.DB);
+  if (context.req.query("options") === "true") {
+    const banks = await listQuestionBanks(context.env.DB);
+    return context.json({ banks: banks.map((bank) => ({
+      id: bank.id, name: bank.name, description: bank.description, isActive: bank.is_active === 1,
+      activeQuestionCount: bank.active_question_count, inactiveQuestionCount: bank.inactive_question_count,
+      createdAt: bank.created_at, updatedAt: bank.updated_at, materialId: bank.material_id,
+      materialName: bank.material_name ?? null, trainingId: bank.training_id ?? null, trainingName: bank.training_name ?? null,
+    })) });
+  }
+  const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
+  const result = await paginateQuestionBanks(context.env.DB, {
+    page: pagination.page,
+    limit: pagination.limit,
+    trainingId: context.req.query("trainingId"),
+    search: context.req.query("search"),
+  });
   context.header("Cache-Control", "no-store");
   return context.json({
-    banks: banks.map((bank) => ({
+    banks: result.rows.map((bank) => ({
       id: bank.id,
       name: bank.name,
       description: bank.description,
@@ -99,6 +116,7 @@ questionBankRoutes.get("/", async (context) => {
       trainingId: bank.training_id ?? null,
       trainingName: bank.training_name ?? null,
     })),
+    pagination: paginationMeta(pagination, result.total),
   });
 });
 
@@ -261,7 +279,13 @@ questionBankRoutes.get("/:bankId", async (context) => {
     throw new HttpError(404, "BANK_NOT_FOUND", "Bank Soal tidak ditemukan.");
   }
 
-  const questions = await listQuestions(context.env.DB, bankId);
+  const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
+  const result = await paginateQuestions(context.env.DB, {
+    bankId,
+    page: pagination.page,
+    limit: pagination.limit,
+    search: context.req.query("search"),
+  });
   context.header("Cache-Control", "no-store");
   return context.json({
     bank: {
@@ -276,7 +300,8 @@ questionBankRoutes.get("/:bankId", async (context) => {
       trainingId: bank.training_id ?? null,
       trainingName: bank.training_name ?? null,
     },
-    questions: questions.map(mapQuestion),
+    questions: result.rows.map(mapQuestion),
+    pagination: paginationMeta(pagination, result.total),
   });
 });
 

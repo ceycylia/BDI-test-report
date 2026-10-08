@@ -3644,6 +3644,70 @@ textarea:focus-visible {
   text-align: center;
 }
 
+.app-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  width: 100%;
+  min-height: 44px;
+  margin-top: 1rem;
+  color: var(--color-muted);
+  font-size: .875rem;
+}
+
+.app-pagination__summary {
+  white-space: nowrap;
+}
+
+.app-pagination__controls,
+.app-pagination__pages {
+  display: flex;
+  align-items: center;
+  gap: .4rem;
+}
+
+.app-pagination__mobile-page {
+  display: none;
+  min-width: 7.5rem;
+  text-align: center;
+  font-weight: 700;
+}
+
+.app-pagination[aria-busy="true"] {
+  opacity: .68;
+}
+
+@media (max-width: 680px) {
+  .app-pagination {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .app-pagination__summary {
+    text-align: center;
+    white-space: normal;
+  }
+
+  .app-pagination__controls {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    width: 100%;
+  }
+
+  .app-pagination__controls > .button {
+    width: 100%;
+  }
+
+  .app-pagination__pages {
+    display: none;
+  }
+
+  .app-pagination__mobile-page {
+    display: block;
+  }
+}
+
 @media (max-width: 720px) {
   .participant-pagination__controls {
     align-items: stretch;
@@ -7662,16 +7726,19 @@ select:not([multiple]):disabled {
 }
 
 @media (max-width: 430px) {
-<<<<<<< HEAD
-  .evaluation-create-modal .date-time-picker,
-  .evaluation-schedule-modal .date-time-picker {
-    grid-template-columns: minmax(0, 1fr);
-=======
-  .results-pagination { flex-wrap: wrap; }
+  @media (max-width: 430px) {
+    .evaluation-create-modal .date-time-picker,
+    .evaluation-schedule-modal .date-time-picker {
+      grid-template-columns: minmax(0, 1fr);
+    }
 
-  .score-adjustment-panel {
-    grid-template-columns: 1fr;
->>>>>>> e1e2651 (update part 3)
+    .results-pagination {
+      flex-wrap: wrap;
+    }
+
+    .score-adjustment-panel {
+      grid-template-columns: 1fr;
+    }
   }
 
   .evaluation-summary-grid,

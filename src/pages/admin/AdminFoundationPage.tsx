@@ -61,7 +61,7 @@ export function AdminFoundationPage() {
       try {
         const [dashboard, trainingData] = await Promise.all([
           adminQuery<{ metrics: Record<string, number>; activities: DashboardActivity[] }>(withActiveYear("/api/admin/dashboard", activeYear)),
-          adminQuery<{ sessions: TrainingSummary[] }>(withActiveYear("/api/admin/training", activeYear)),
+          adminQuery<{ sessions: TrainingSummary[] }>(withActiveYear("/api/admin/training?limit=20&scheduleStatus=ONGOING", activeYear)),
         ]);
         if (!active) return;
         setMetrics(dashboard.metrics);

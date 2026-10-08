@@ -13,7 +13,7 @@ import {
   listBatches,
   listActiveQuestionUsageForSession,
   listExistingPackageAssignments,
-  listTrainingSessions,
+  paginateTrainingSessions,
   saveGeneratedPackages,
   setManualStageOpen,
   updateStageSchedule,
@@ -23,6 +23,7 @@ import {
 import { NORMAL_TEST_MINUTES } from "../../domain/attempts/timing";
 import { getTestScheduleStatus } from "../../domain/scheduling/test-availability";
 import type { AppEnvironment } from "../../types";
+import { paginationMeta, parsePagination } from "../../http/pagination";
 
 const createStageScheduleSchema = z.discriminatedUnion("status", [
   z.object({
@@ -188,10 +189,14 @@ trainingRoutes.get("/", async (context) => {
   const activeYear = Number.isInteger(requestedYear) && requestedYear >= 2000 && requestedYear <= 2200
     ? requestedYear
     : activeYearInJakarta();
-  const sessions = await listTrainingSessions(context.env.DB, activeYear);
+  const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
+  const result = await paginateTrainingSessions(context.env.DB, {
+    year: activeYear, page: pagination.page, limit: pagination.limit,
+    search: context.req.query("search"), trainingId: context.req.query("trainingId"), materialId: context.req.query("materialId"), cohortId: context.req.query("cohortId"), scheduleStatus: context.req.query("scheduleStatus"),
+  });
   return context.json({
     activeYear,
-    sessions: sessions.map((session) => ({
+    sessions: result.rows.map((session) => ({
       id: session.id,
       name: session.name,
       slug: session.slug,
@@ -210,6 +215,7 @@ trainingRoutes.get("/", async (context) => {
       materialName: session.material_name ?? session.name,
       cohorts: parseCohorts(session.cohorts_json),
     })),
+    pagination: paginationMeta(pagination, result.total),
   });
 });
 

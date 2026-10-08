@@ -35,6 +35,7 @@ import {
   mm,
 } from "../../domain/certificates/print-layout";
 import type { AppEnvironment } from "../../types";
+import { paginationMeta, parsePagination } from "../../http/pagination";
 
 export const participantAdminRoutes = new Hono<AppEnvironment>();
 participantAdminRoutes.use("*", requireAdmin);
@@ -203,6 +204,68 @@ participantAdminRoutes.get("/catalog", async (c) => {
     materials: materials.results,
     cohorts: cohorts.results,
   });
+});
+participantAdminRoutes.get("/catalog/trainings", async (c) => {
+  const pagination = parsePagination({ page: c.req.query("page"), limit: c.req.query("limit"), pageSize: c.req.query("pageSize") });
+  const clauses = ["trainings.is_deleted = 0"];
+  const bindings: unknown[] = [];
+  const search = c.req.query("search")?.trim();
+  const status = c.req.query("status");
+  if (search) { clauses.push("trainings.name LIKE ? ESCAPE '\\'"); bindings.push(`%${search.replace(/[\\%_]/gu, "\\$&")}%`); }
+  if (status === "true" || status === "false") { clauses.push("trainings.is_active = ?"); bindings.push(status === "true" ? 1 : 0); }
+  const where = `WHERE ${clauses.join(" AND ")}`;
+  const [count, rows] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) AS total FROM trainings ${where}`).bind(...bindings).first<{ total: number }>(),
+    c.env.DB.prepare(
+      `SELECT trainings.*, (SELECT COUNT(*) FROM training_materials WHERE training_id=trainings.id) material_count,
+              (SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=trainings.id) total_jp
+       FROM trainings ${where}
+       ORDER BY trainings.created_at DESC, trainings.rowid DESC LIMIT ? OFFSET ?`,
+    ).bind(...bindings, pagination.limit, pagination.offset).all(),
+  ]);
+  const total = Number(count?.total ?? 0);
+  return c.json({ trainings: rows.results, pagination: paginationMeta(pagination, total) });
+});
+
+participantAdminRoutes.get("/catalog/materials", async (c) => {
+  const pagination = parsePagination({ page: c.req.query("page"), limit: c.req.query("limit"), pageSize: c.req.query("pageSize") });
+  const clauses = ["trainings.is_deleted = 0"];
+  const bindings: unknown[] = [];
+  const trainingSearch = c.req.query("trainingSearch")?.trim();
+  if (trainingSearch) { clauses.push("trainings.name LIKE ? ESCAPE '\\'"); bindings.push(`%${trainingSearch.replace(/[\\%_]/gu, "\\$&")}%`); }
+  const where = `WHERE ${clauses.join(" AND ")}`;
+  const base = `FROM training_materials materials JOIN trainings ON trainings.id=materials.training_id ${where}`;
+  const [count, rows] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) AS total ${base}`).bind(...bindings).first<{ total: number }>(),
+    c.env.DB.prepare(
+      `SELECT materials.*, trainings.name training_name,
+              (SELECT banks.id FROM question_banks banks WHERE banks.material_id=materials.id ORDER BY banks.is_active DESC, banks.created_at DESC LIMIT 1) bank_id,
+              (SELECT banks.name FROM question_banks banks WHERE banks.material_id=materials.id ORDER BY banks.is_active DESC, banks.created_at DESC LIMIT 1) bank_name
+       ${base}
+       ORDER BY trainings.created_at DESC, materials.sort_order ASC, materials.rowid ASC LIMIT ? OFFSET ?`,
+    ).bind(...bindings, pagination.limit, pagination.offset).all(),
+  ]);
+  const total = Number(count?.total ?? 0);
+  return c.json({ materials: rows.results, pagination: paginationMeta(pagination, total) });
+});
+
+participantAdminRoutes.get("/catalog/cohorts", async (c) => {
+  const pagination = parsePagination({ page: c.req.query("page"), limit: c.req.query("limit"), pageSize: c.req.query("pageSize") });
+  const year = c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!) ? c.req.query("year")! : null;
+  const bindings: unknown[] = [];
+  const where = year ? "WHERE trainings.is_deleted=0 AND SUBSTR(cohorts.start_date,1,4)=?" : "WHERE trainings.is_deleted=0";
+  if (year) bindings.push(year);
+  const base = `FROM training_cohorts cohorts JOIN trainings ON trainings.id=cohorts.training_id ${where}`;
+  const [count, rows] = await Promise.all([
+    c.env.DB.prepare(`SELECT COUNT(*) AS total ${base}`).bind(...bindings).first<{ total: number }>(),
+    c.env.DB.prepare(
+      `SELECT cohorts.*, trainings.name training_name,
+              (SELECT COUNT(*) FROM participant_profiles WHERE cohort_id=cohorts.id) participant_count
+       ${base} ORDER BY cohorts.created_at DESC, cohorts.rowid DESC LIMIT ? OFFSET ?`,
+    ).bind(...bindings, pagination.limit, pagination.offset).all(),
+  ]);
+  const total = Number(count?.total ?? 0);
+  return c.json({ cohorts: rows.results, pagination: paginationMeta(pagination, total) });
 });
 
 participantAdminRoutes.post(
@@ -437,6 +500,7 @@ participantAdminRoutes.delete(
     return c.json({ success: true });
   }
 );
+
 participantAdminRoutes.post(
   "/materials/import-preview",
   requireSameOrigin,
@@ -839,13 +903,7 @@ participantAdminRoutes.delete(
 );
 
 participantAdminRoutes.get("/participants", async (c) => {
-  const requestedPage = Number(c.req.query("page") ?? "1");
-  const requestedPageSize = Number(c.req.query("pageSize") ?? "20");
-  const page = Number.isInteger(requestedPage) && requestedPage > 0 ? requestedPage : 1;
-  const pageSize = Number.isInteger(requestedPageSize)
-    ? Math.min(100, Math.max(1, requestedPageSize))
-    : 20;
-  const offset = (page - 1) * pageSize;
+  const pagination = parsePagination({ page: c.req.query("page"), limit: c.req.query("limit"), pageSize: c.req.query("pageSize") });
   const { where, bindings } = participantListWhere({
     year: c.req.query("year"),
     trainingId: c.req.query("trainingId"),
@@ -869,7 +927,7 @@ participantAdminRoutes.get("/participants", async (c) => {
        ${where}
        ORDER BY profiles.created_at DESC, profiles.rowid DESC
        LIMIT ? OFFSET ?`,
-    ).bind(...bindings, pageSize, offset).all<Record<string, unknown>>(),
+    ).bind(...bindings, pagination.limit, pagination.offset).all<Record<string, unknown>>(),
   ]);
   const total = Number(count?.total ?? 0);
   return c.json({
@@ -878,12 +936,7 @@ participantAdminRoutes.get("/participants", async (c) => {
       nik_masked: maskNik(String(r.nik)),
       nik: undefined,
     })),
-    pagination: {
-      page,
-      pageSize,
-      total,
-      totalPages: Math.max(1, Math.ceil(total / pageSize)),
-    },
+    pagination: paginationMeta(pagination, total),
   });
 });
 participantAdminRoutes.delete(
@@ -1389,17 +1442,71 @@ participantAdminRoutes.post(
 
 participantAdminRoutes.get("/certificates", async (c) => {
   const year = c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!) ? c.req.query("year")! : null;
-  const result = await c.env.DB.prepare(
-    `WITH scores AS (SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id) SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,trainings.name training_name,cohorts.name cohort_name,scores.final_score,scores.passing_score,CASE WHEN scores.final_score>=scores.passing_score THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,certificates.id certificate_id,certificates.certificate_number,certificates.status certificate_status,completion_letters.id completion_letter_id,completion_letters.completion_letter_number FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id LEFT JOIN scores ON scores.profile_id=profiles.id LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id LEFT JOIN completion_letters ON completion_letters.participant_profile_id=profiles.id${year ? " WHERE SUBSTR(cohorts.start_date,1,4)=?" : ""} ORDER BY profiles.created_at DESC, profiles.rowid DESC`
-  );
-  const rows = await (year ? result.bind(year) : result).all<Record<string, unknown>>();
+  const pagination = parsePagination({ page: c.req.query("page"), limit: c.req.query("limit"), pageSize: c.req.query("pageSize") });
+  const conditions: string[] = [];
+  const bindings: unknown[] = [];
+  if (year) { conditions.push("training_year = ?"); bindings.push(year); }
+  if (c.req.query("trainingId")) { conditions.push("training_id = ?"); bindings.push(c.req.query("trainingId")!); }
+  if (c.req.query("cohortId")) { conditions.push("cohort_id = ?"); bindings.push(c.req.query("cohortId")!); }
+  const status = c.req.query("status");
+  if (status === "LULUS" || status === "BELUM_LULUS") { conditions.push("graduation_status = ?"); bindings.push(status); }
+  if (status === "READY") conditions.push("graduation_status = 'LULUS' AND certificate_id IS NULL");
+  const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const cte = `WITH scores AS (
+    SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score
+    FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id
+    WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id
+  ), certificate_rows AS (
+    SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,
+      trainings.name training_name,cohorts.name cohort_name,SUBSTR(cohorts.start_date,1,4) training_year,
+      scores.final_score,scores.passing_score,CASE WHEN scores.final_score>=scores.passing_score THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,
+      certificates.id certificate_id,certificates.certificate_number,certificates.status certificate_status,
+      completion_letters.id completion_letter_id,completion_letters.completion_letter_number,
+      profiles.created_at,profiles.rowid source_rowid
+    FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
+    LEFT JOIN scores ON scores.profile_id=profiles.id LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id
+    LEFT JOIN completion_letters ON completion_letters.participant_profile_id=profiles.id
+  )`;
+  const [count, rows] = await Promise.all([
+    c.env.DB.prepare(`${cte} SELECT COUNT(*) AS total FROM certificate_rows ${where}`).bind(...bindings).first<{ total: number }>(),
+    c.env.DB.prepare(`${cte} SELECT * FROM certificate_rows ${where} ORDER BY created_at DESC, source_rowid DESC LIMIT ? OFFSET ?`).bind(...bindings, pagination.limit, pagination.offset).all<Record<string, unknown>>(),
+  ]);
+  const total = Number(count?.total ?? 0);
   return c.json({
     certificates: rows.results.map((r) => ({
       ...r,
       nik_masked: maskNik(String(r.nik)),
       nik: undefined,
     })),
+    pagination: paginationMeta(pagination, total),
   });
+});
+participantAdminRoutes.get("/certificates/numbering-targets", async (c) => {
+  const conditions = ["profiles.is_active=1"];
+  const bindings: unknown[] = [];
+  const year = c.req.query("year");
+  if (year && /^\d{4}$/u.test(year)) { conditions.push("SUBSTR(cohorts.start_date,1,4)=?"); bindings.push(year); }
+  if (c.req.query("trainingId")) { conditions.push("profiles.training_id=?"); bindings.push(c.req.query("trainingId")!); }
+  if (c.req.query("cohortId")) { conditions.push("profiles.cohort_id=?"); bindings.push(c.req.query("cohortId")!); }
+  const rows = await c.env.DB.prepare(
+    `WITH scores AS (
+       SELECT p.profile_id,MAX(CASE WHEN a.stage<>'PRE' AND a.status='SUBMITTED' THEN a.score END) final_score,MAX(s.passing_score) passing_score
+       FROM participants p JOIN attempts a ON a.participant_id=p.id JOIN training_sessions s ON s.id=a.training_session_id
+       WHERE p.profile_id IS NOT NULL GROUP BY p.profile_id
+     )
+     SELECT profiles.id participant_id,profiles.name,profiles.training_id,profiles.cohort_id,
+            certificates.certificate_number,completion_letters.completion_letter_number
+     FROM participant_profiles profiles JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
+     JOIN scores ON scores.profile_id=profiles.id AND scores.final_score>=scores.passing_score
+     LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id
+     LEFT JOIN completion_letters ON completion_letters.participant_profile_id=profiles.id
+     WHERE ${conditions.join(" AND ")}
+     ORDER BY profiles.created_at DESC, profiles.rowid DESC`,
+  ).bind(...bindings).all<{
+    participant_id: string; name: string; training_id: string; cohort_id: string;
+    certificate_number: string | null; completion_letter_number: string | null;
+  }>();
+  return c.json({ certificates: rows.results.map((row) => ({ ...row, graduation_status: "LULUS" })) });
 });
 participantAdminRoutes.get("/certificate-settings", async (c) => {
   const row = await c.env.DB.prepare(

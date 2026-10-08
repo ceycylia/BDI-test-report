@@ -66,6 +66,43 @@ export async function listTrainingSessions(
   return result.results;
 }
 
+export async function paginateTrainingSessions(
+  database: D1Database,
+  input: { year: number; page: number; limit: number; search?: string; trainingId?: string; materialId?: string; cohortId?: string; scheduleStatus?: string },
+): Promise<{ rows: TrainingSessionRecord[]; total: number }> {
+  const conditions = ["SUBSTR(sessions.training_start_date, 1, 4) = ?"];
+  const bindings: unknown[] = [String(input.year)];
+  if (input.trainingId) { conditions.push("sessions.training_id = ?"); bindings.push(input.trainingId); }
+  if (input.materialId) { conditions.push("sessions.material_id = ?"); bindings.push(input.materialId); }
+  if (input.cohortId) { conditions.push("EXISTS (SELECT 1 FROM batches cohort_batches WHERE cohort_batches.training_session_id=sessions.id AND cohort_batches.cohort_id=?)"); bindings.push(input.cohortId); }
+  if (input.search?.trim()) {
+    const needle = `%${input.search.trim().replace(/[\\%_]/gu, "\\$&")}%`;
+    conditions.push(`(materials.name LIKE ? ESCAPE '\\' OR trainings.name LIKE ? ESCAPE '\\' OR EXISTS (
+      SELECT 1 FROM batches search_batches JOIN training_cohorts search_cohorts ON search_cohorts.id=search_batches.cohort_id
+      WHERE search_batches.training_session_id=sessions.id AND search_cohorts.name LIKE ? ESCAPE '\\'
+    ))`);
+    bindings.push(needle, needle, needle);
+  }
+  const open = `((sessions.pre_mode='MANUAL' AND sessions.pre_manual_open=1) OR (sessions.pre_mode='SCHEDULED' AND datetime('now') BETWEEN datetime(sessions.pre_start_at) AND datetime(sessions.pre_end_at)) OR (sessions.post_mode='MANUAL' AND sessions.post_manual_open=1) OR (sessions.post_mode='SCHEDULED' AND datetime('now') BETWEEN datetime(sessions.post_start_at) AND datetime(sessions.post_end_at)))`;
+  const future = `((sessions.pre_mode='SCHEDULED' AND datetime('now') < datetime(sessions.pre_start_at)) OR (sessions.post_mode='SCHEDULED' AND datetime('now') < datetime(sessions.post_start_at)))`;
+  if (input.scheduleStatus === "ONGOING") conditions.push(`sessions.status='ACTIVE' AND ${open}`);
+  if (input.scheduleStatus === "NOT_OPEN") conditions.push(`(sessions.status='DRAFT' OR (sessions.status='ACTIVE' AND NOT ${open} AND ${future}))`);
+  if (input.scheduleStatus === "FINISHED") conditions.push(`(sessions.status='COMPLETED' OR (sessions.status='ACTIVE' AND NOT ${open} AND NOT ${future}))`);
+  const where = `WHERE ${conditions.join(" AND ")}`;
+  const from = `FROM training_sessions sessions JOIN question_banks banks ON banks.id=sessions.bank_id LEFT JOIN trainings ON trainings.id=sessions.training_id LEFT JOIN training_materials materials ON materials.id=sessions.material_id`;
+  const [count, result] = await Promise.all([
+    database.prepare(`SELECT COUNT(*) AS total ${from} ${where}`).bind(...bindings).first<{ total: number }>(),
+    database.prepare(
+      `SELECT sessions.*, banks.name AS bank_name, trainings.name AS training_name, materials.name AS material_name,
+              COALESCE((SELECT json_group_array(json_object('id', related.id, 'name', related.name)) FROM (
+                SELECT DISTINCT cohorts.id, cohorts.name FROM batches JOIN training_cohorts cohorts ON cohorts.id=batches.cohort_id WHERE batches.training_session_id=sessions.id
+              ) related), '[]') AS cohorts_json
+       ${from} ${where} ORDER BY sessions.created_at DESC, sessions.rowid DESC LIMIT ? OFFSET ?`,
+    ).bind(...bindings, input.limit, (input.page - 1) * input.limit).all<TrainingSessionRecord>(),
+  ]);
+  return { rows: result.results, total: Number(count?.total ?? 0) };
+}
+
 export async function findTrainingSession(
   database: D1Database,
   sessionId: string,

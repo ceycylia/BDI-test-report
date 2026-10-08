@@ -8,11 +8,12 @@ import {
   campaignCounts,
   findSurveyCampaignById,
   listSurveyCampaignCohorts,
-  listSurveyCampaigns,
+  paginateSurveyCampaigns,
   type SurveyCampaignRecord,
 } from "../../repositories/survey-campaign-repository";
 import { getSurveyTemplateDetail } from "../../repositories/survey-repository";
 import type { AppEnvironment } from "../../types";
+import { paginationMeta, parsePagination } from "../../http/pagination";
 
 export const surveyCampaignRoutes = new Hono<AppEnvironment>();
 surveyCampaignRoutes.use("*", requireAdmin);
@@ -122,8 +123,12 @@ surveyCampaignRoutes.get("/catalog", async (context) => {
 });
 
 surveyCampaignRoutes.get("/", async (context) => {
-  const campaigns = await listSurveyCampaigns(context.env.DB, activeYear(context.req.query("year")));
-  return context.json({ campaigns: await Promise.all(campaigns.map((campaign) => mapCampaign(context.env.DB, campaign))) });
+  const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
+  const result = await paginateSurveyCampaigns(context.env.DB, {
+    year: activeYear(context.req.query("year")), page: pagination.page, limit: pagination.limit,
+    search: context.req.query("search"), trainingId: context.req.query("trainingId"), cohortId: context.req.query("cohortId"), status: context.req.query("status"),
+  });
+  return context.json({ campaigns: await Promise.all(result.rows.map((campaign) => mapCampaign(context.env.DB, campaign))), pagination: paginationMeta(pagination, result.total) });
 });
 
 const createSchema = z.object({
@@ -233,14 +238,28 @@ type ResultAnswer = {
   participant_name: string; nik: string; cohort_id: string; cohort_name: string; submitted_at: string;
 };
 
-async function resultData(database: D1Database, campaign: SurveyCampaignRecord, cohortId?: string) {
+async function resultData(database: D1Database, campaign: SurveyCampaignRecord, cohortId?: string, participantOptions?: { page: number; limit: number; search?: string; status?: string }, commentOptions?: { page: number; limit: number }) {
   const cohorts = await listSurveyCampaignCohorts(database, campaign.id);
   if (cohortId && !cohorts.some((cohort) => cohort.id === cohortId)) throw new HttpError(422, "SURVEY_COHORT_INVALID", "Angkatan tidak termasuk dalam Evaluasi ini.");
   const template = await getSurveyTemplateDetail(database, campaign.survey_template_id);
   if (!template) throw new HttpError(409, "SURVEY_TEMPLATE_MISSING", "Template Evaluasi tidak ditemukan.");
   const cohortSql = cohortId ? " AND profiles.cohort_id = ?" : "";
   const params = cohortId ? [campaign.id, cohortId] : [campaign.id];
-  const [participantRows, answerRows] = await Promise.all([
+  const participantConditions: string[] = [];
+  const participantFilterBindings: unknown[] = [];
+  if (participantOptions?.search?.trim()) {
+    const needle = `%${participantOptions.search.trim().replace(/[\\%_]/gu, "\\$&")}%`;
+    participantConditions.push("(profiles.name LIKE ? ESCAPE '\\' OR profiles.nik LIKE ? ESCAPE '\\')");
+    participantFilterBindings.push(needle, needle);
+  }
+  if (participantOptions?.status === "SUBMITTED") participantConditions.push("responses.submitted_at IS NOT NULL");
+  if (participantOptions?.status === "NOT_SUBMITTED") participantConditions.push("responses.submitted_at IS NULL");
+  const participantFilterSql = participantConditions.length ? ` AND ${participantConditions.join(" AND ")}` : "";
+  const participantLimit = participantOptions?.limit ?? 20;
+  const participantOffset = ((participantOptions?.page ?? 1) - 1) * participantLimit;
+  const commentLimit = commentOptions?.limit ?? 20;
+  const commentOffset = ((commentOptions?.page ?? 1) - 1) * commentLimit;
+  const [participantRows, participantFilteredCount, counts, answerRows, commentRows, commentCount] = await Promise.all([
     database.prepare(
       `SELECT profiles.id, profiles.name, profiles.nik, profiles.cohort_id, cohorts.name AS cohort_name,
               responses.submitted_at
@@ -249,23 +268,55 @@ async function resultData(database: D1Database, campaign: SurveyCampaignRecord, 
        JOIN training_cohorts cohorts ON cohorts.id = profiles.cohort_id
        LEFT JOIN survey_responses responses ON responses.survey_campaign_id = links.survey_campaign_id
          AND responses.participant_profile_id = profiles.id
-       WHERE links.survey_campaign_id = ?${cohortSql}
-       ORDER BY cohorts.start_date, cohorts.name COLLATE NOCASE, profiles.name COLLATE NOCASE`,
-    ).bind(...params).all<{ id: string; name: string; nik: string; cohort_id: string; cohort_name: string; submitted_at: string | null }>(),
+       WHERE links.survey_campaign_id = ?${cohortSql}${participantFilterSql}
+       ORDER BY cohorts.start_date, cohorts.name COLLATE NOCASE, profiles.name COLLATE NOCASE, profiles.rowid
+       LIMIT ? OFFSET ?`,
+    ).bind(...params, ...participantFilterBindings, participantLimit, participantOffset).all<{ id: string; name: string; nik: string; cohort_id: string; cohort_name: string; submitted_at: string | null }>(),
+    database.prepare(
+      `SELECT COUNT(*) AS total FROM survey_campaign_cohorts links
+       JOIN participant_profiles profiles ON profiles.cohort_id=links.cohort_id AND profiles.is_active=1
+       LEFT JOIN survey_responses responses ON responses.survey_campaign_id=links.survey_campaign_id AND responses.participant_profile_id=profiles.id
+       WHERE links.survey_campaign_id=?${cohortSql}${participantFilterSql}`,
+    ).bind(...params, ...participantFilterBindings).first<{ total: number }>(),
+    campaignCounts(database, campaign.id, cohortId),
     database.prepare(
       `SELECT answers.survey_question_id AS question_id, answers.option_id, answers.other_text,
               answers.numeric_value, answers.text_value, profiles.name AS participant_name,
               profiles.nik, profiles.cohort_id, cohorts.name AS cohort_name, responses.submitted_at
        FROM survey_answers answers
        JOIN survey_responses responses ON responses.id = answers.survey_response_id AND responses.submitted_at IS NOT NULL
+       JOIN survey_questions questions ON questions.id = answers.survey_question_id AND questions.question_type <> 'LONG_TEXT'
        JOIN participant_profiles profiles ON profiles.id = responses.participant_profile_id
        JOIN training_cohorts cohorts ON cohorts.id = profiles.cohort_id
        WHERE responses.survey_campaign_id = ?${cohortSql}
        ORDER BY responses.submitted_at, profiles.name COLLATE NOCASE`,
     ).bind(...params).all<ResultAnswer>(),
+    database.prepare(
+      `SELECT answers.survey_question_id AS question_id, answers.option_id, answers.other_text,
+              answers.numeric_value, answers.text_value, profiles.name AS participant_name,
+              profiles.nik, profiles.cohort_id, cohorts.name AS cohort_name, responses.submitted_at
+       FROM survey_answers answers
+       JOIN survey_responses responses ON responses.id=answers.survey_response_id AND responses.submitted_at IS NOT NULL
+       JOIN survey_questions questions ON questions.id=answers.survey_question_id AND questions.question_type='LONG_TEXT'
+       JOIN participant_profiles profiles ON profiles.id=responses.participant_profile_id
+       JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
+       WHERE responses.survey_campaign_id=?${cohortSql} AND TRIM(COALESCE(answers.text_value,''))<>''
+       ORDER BY responses.submitted_at DESC, answers.rowid DESC LIMIT ? OFFSET ?`,
+    ).bind(...params, commentLimit, commentOffset).all<ResultAnswer>(),
+    database.prepare(
+      `SELECT COUNT(*) AS total FROM survey_answers answers
+       JOIN survey_responses responses ON responses.id=answers.survey_response_id AND responses.submitted_at IS NOT NULL
+       JOIN survey_questions questions ON questions.id=answers.survey_question_id AND questions.question_type='LONG_TEXT'
+       JOIN participant_profiles profiles ON profiles.id=responses.participant_profile_id
+       WHERE responses.survey_campaign_id=?${cohortSql} AND TRIM(COALESCE(answers.text_value,''))<>''`,
+    ).bind(...params).first<{ total: number }>(),
   ]);
   const answersByQuestion = new Map<string, ResultAnswer[]>();
   for (const answer of answerRows.results) {
+    const current = answersByQuestion.get(answer.question_id) ?? [];
+    current.push(answer); answersByQuestion.set(answer.question_id, current);
+  }
+  for (const answer of commentRows.results) {
     const current = answersByQuestion.get(answer.question_id) ?? [];
     current.push(answer); answersByQuestion.set(answer.question_id, current);
   }
@@ -300,18 +351,23 @@ async function resultData(database: D1Database, campaign: SurveyCampaignRecord, 
     return { id: section.id, code: section.section_code, title: section.title, value: sectionPercentage(sectionValues) };
   });
   const participants = participantRows.results.map((participant) => ({ id: participant.id, name: participant.name, nik: participant.nik, cohortId: participant.cohort_id, cohortName: participant.cohort_name, status: participant.submitted_at ? "SUBMITTED" as const : "NOT_SUBMITTED" as const, submittedAt: participant.submitted_at }));
-  const respondentCount = participants.filter((participant) => participant.status === "SUBMITTED").length;
+  const totalParticipants = Number(counts?.total_participants ?? 0);
+  const respondentCount = Number(counts?.respondent_count ?? 0);
   const overallValue = sectionPercentage(indicators.map((indicator) => indicator.value));
-  return { template, cohorts, participants, totalParticipants: participants.length, respondentCount, responsePercentage: participants.length ? (respondentCount / participants.length) * 100 : 0, overallValue, sections, indicators, singleChoice, comments };
+  return { template, cohorts, participants, participantTotal: Number(participantFilteredCount?.total ?? 0), commentTotal: Number(commentCount?.total ?? 0), totalParticipants, respondentCount, responsePercentage: totalParticipants ? (respondentCount / totalParticipants) * 100 : 0, overallValue, sections, indicators, singleChoice, comments };
 }
 
 surveyCampaignRoutes.get("/:campaignId/results", async (context) => {
   const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
   if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
   await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
-  const data = await resultData(context.env.DB, campaign, context.req.query("cohortId") || undefined);
+  const pagination = parsePagination({ page: context.req.query("participantPage"), limit: context.req.query("participantLimit") });
+  const commentPagination = parsePagination({ page: context.req.query("commentPage"), limit: context.req.query("commentLimit") });
+  const data = await resultData(context.env.DB, campaign, context.req.query("cohortId") || undefined, {
+    page: pagination.page, limit: pagination.limit, search: context.req.query("participantSearch"), status: context.req.query("participantStatus"),
+  }, { page: commentPagination.page, limit: commentPagination.limit });
   const mapped = await mapCampaign(context.env.DB, campaign);
-  return context.json({ campaign: mapped, results: { ...data, template: undefined } });
+  return context.json({ campaign: mapped, results: { ...data, template: undefined, participantPagination: paginationMeta(pagination, data.participantTotal), commentPagination: paginationMeta(commentPagination, data.commentTotal) } });
 });
 
 surveyCampaignRoutes.get("/:campaignId/export-word", async (context) => {

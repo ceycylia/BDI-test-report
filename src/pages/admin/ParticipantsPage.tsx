@@ -8,6 +8,7 @@ import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
 import { ModalPortal } from "../../components/ui/ModalPortal";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 import { formatDateForDisplay } from "../../features/dates/date-format";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
 
@@ -22,9 +23,7 @@ type CertificateSettings = { certificate_prefix: string; signer_name: string; si
 const emptyCertificateSettings: CertificateSettings = { certificate_prefix: "", signer_name: "", signer_title: "", signer_nip: "", issue_place: "", issue_date: "" };
 type BulkDocumentNumberEntry = { participantId: string; certificateNumber?: string; completionLetterNumber?: string };
 type BulkNumberMode = "overwrite" | "empty";
-type ParticipantPagination = { page: number; pageSize: number; total: number; totalPages: number };
 type ParticipantFilters = { year: number; trainingId?: string; cohortId?: string; status?: boolean; search?: string };
-const PARTICIPANTS_PER_PAGE = 20;
 const romanMonths = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"];
 
 function documentNumberPeriod(issueDate: string) {
@@ -52,18 +51,6 @@ type DeleteTarget =
   | { kind: "cohort"; cohort: Cohort }
   | { kind: "participants"; filters: ParticipantFilters; count: number; filterDescription: string };
 
-function participantPageItems(currentPage: number, totalPages: number) {
-  if (totalPages <= 7) return Array.from({ length: totalPages }, (_, index) => index + 1);
-  const items: Array<number | string> = [1];
-  const start = Math.max(2, currentPage - 1);
-  const end = Math.min(totalPages - 1, currentPage + 1);
-  if (start > 2) items.push("start-ellipsis");
-  for (let page = start; page <= end; page += 1) items.push(page);
-  if (end < totalPages - 1) items.push("end-ellipsis");
-  items.push(totalPages);
-  return items;
-}
-
 const tabs = [
   { id: "data", label: "Data Peserta", icon: Users },
   { id: "cohorts", label: "Angkatan", icon: Layers3 },
@@ -77,7 +64,7 @@ export function ParticipantsPage() {
   const [tab, setTab] = useState<(typeof tabs)[number]["id"] | "certificates" | "master">("data");
   const [catalog, setCatalog] = useState<Catalog>({ trainings: [], materials: [], cohorts: [] });
   const [participants, setParticipants] = useState<Participant[]>([]);
-  const [certificates, setCertificates] = useState<Certificate[]>([]);
+  const [certificates] = useState<Certificate[]>([]);
   const [trainingId, setTrainingId] = useState("");
   const [cohortId, setCohortId] = useState("");
   const [listTrainingId, setListTrainingId] = useState("");
@@ -87,8 +74,12 @@ export function ParticipantsPage() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [participantPage, setParticipantPage] = useState(1);
-  const [participantPagination, setParticipantPagination] = useState<ParticipantPagination>({ page: 1, pageSize: PARTICIPANTS_PER_PAGE, total: 0, totalPages: 1 });
+  const [participantPagination, setParticipantPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
   const [participantsLoading, setParticipantsLoading] = useState(false);
+  const [cohortRows, setCohortRows] = useState<Cohort[]>([]);
+  const [cohortPage, setCohortPage] = useState(1);
+  const [cohortPagination, setCohortPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
+  const [cohortsLoading, setCohortsLoading] = useState(false);
   const participantRequestRef = useRef(0);
   const [message, setMessage] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
@@ -121,11 +112,7 @@ export function ParticipantsPage() {
   const [deletingRecord, setDeletingRecord] = useState(false);
 
   const loadSupportingData = useCallback(async () => {
-    const [cat, certs] = await Promise.all([
-      adminQuery<Catalog>(withActiveYear("/api/admin/participants/catalog", activeYear)),
-      adminQuery<{ certificates: Certificate[] }>(withActiveYear("/api/admin/participants/certificates", activeYear)),
-    ]);
-    setCatalog(cat); setCertificates(certs.certificates);
+    setCatalog(await adminQuery<Catalog>(withActiveYear("/api/admin/participants/catalog", activeYear)));
   }, [activeYear]);
 
   const loadParticipants = useCallback(async () => {
@@ -135,14 +122,14 @@ export function ParticipantsPage() {
     const query = new URLSearchParams({
       year: String(activeYear),
       page: String(participantPage),
-      pageSize: String(PARTICIPANTS_PER_PAGE),
+      limit: String(ADMIN_PAGE_SIZE),
     });
     if (listTrainingId) query.set("trainingId", listTrainingId);
     if (listCohortId) query.set("cohortId", listCohortId);
     if (listStatus) query.set("status", listStatus);
     if (debouncedSearch.trim()) query.set("search", debouncedSearch.trim());
     try {
-      const result = await adminQuery<{ participants: Participant[]; pagination: ParticipantPagination }>(`/api/admin/participants/participants?${query.toString()}`);
+      const result = await adminQuery<{ participants: Participant[]; pagination: PaginationMeta }>(`/api/admin/participants/participants?${query.toString()}`);
       if (requestId !== participantRequestRef.current) return;
       if (participantPage > result.pagination.totalPages) {
         setParticipantPage(result.pagination.totalPages);
@@ -154,6 +141,15 @@ export function ParticipantsPage() {
       if (requestId === participantRequestRef.current) setParticipantsLoading(false);
     }
   }, [activeYear, debouncedSearch, listCohortId, listStatus, listTrainingId, participantPage]);
+
+  const loadCohorts = useCallback(async (requestedPage = cohortPage) => {
+    setCohortsLoading(true);
+    try {
+      const result = await adminQuery<{ cohorts: Cohort[]; pagination: PaginationMeta }>(withActiveYear(`/api/admin/participants/catalog/cohorts?page=${requestedPage}&limit=${ADMIN_PAGE_SIZE}`, activeYear));
+      if (requestedPage > result.pagination.totalPages) { setCohortPage(result.pagination.totalPages); return; }
+      setCohortRows(result.cohorts); setCohortPagination(result.pagination);
+    } finally { setCohortsLoading(false); }
+  }, [activeYear, cohortPage]);
 
   const load = useCallback(async () => {
     await Promise.all([loadSupportingData(), loadParticipants()]);
@@ -168,6 +164,7 @@ export function ParticipantsPage() {
     setMessage(text);
     setError(null);
     void load();
+    if (target === "cohort") void loadCohorts();
   };
 
   useEffect(() => {
@@ -185,6 +182,7 @@ export function ParticipantsPage() {
   useEffect(() => {
     void loadParticipants().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Data peserta tidak dapat dimuat."));
   }, [loadParticipants]);
+  useEffect(() => { void loadCohorts().catch((reason: unknown) => fail(reason, "cohort")); }, [loadCohorts]);
   useEffect(() => {
     void adminQuery<{ settings: CertificateSettings }>("/api/admin/participants/certificate-settings").then((result) => setCertificateSettings(result.settings)).catch(fail);
   }, []);
@@ -412,19 +410,8 @@ export function ParticipantsPage() {
           <label>Angkatan<select value={listCohortId} onChange={(event) => { setParticipantPage(1); setListCohortId(event.target.value); }}><option value="">Semua Angkatan</option>{catalog.cohorts.filter((cohort) => !listTrainingId || cohort.training_id === listTrainingId).map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label>
           <label>Status<select value={listStatus} onChange={(event) => { setParticipantPage(1); setListStatus(event.target.value); }}><option value="">Semua Status</option><option value="true">Aktif</option><option value="false">Nonaktif</option></select></label>
         </div>
-        <div className="data-table-wrap"><table className="clean-table participant-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}><td>{(participantPagination.page - 1) * participantPagination.pageSize + index + 1}</td><td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{participant.birth_place}, {formatDateForDisplay(participant.birth_date)}</small></span></span></td><td>{participant.nik_masked}</td><td>{participant.training_name}</td><td>{participant.cohort_name}</td><td><span className={participant.is_active ? "status-badge is-active" : "status-badge"}>{participant.is_active ? "Aktif" : "Nonaktif"}</span></td><td><button type="button" className="button button--secondary button--small" onClick={() => setSelectedParticipant(participant.id)}><Eye /> Lihat</button></td></tr>)}</tbody></table>{participantsLoading && !participants.length ? <div className="empty-state">Memuat peserta…</div> : !participants.length && <div className="empty-state">Tidak ada peserta yang sesuai pencarian atau filter.</div>}</div>
-        <footer className="table-pagination participant-pagination">
-          <span>Menampilkan {participantPagination.total ? (participantPagination.page - 1) * participantPagination.pageSize + 1 : 0}–{Math.min(participantPagination.page * participantPagination.pageSize, participantPagination.total)} dari {participantPagination.total} peserta</span>
-          <div className="participant-pagination__controls" aria-label="Navigasi halaman peserta">
-            <button type="button" className="button button--secondary button--small" disabled={participantPagination.page <= 1 || participantsLoading} onClick={() => setParticipantPage((current) => Math.max(1, current - 1))}>‹ Sebelumnya</button>
-            <div className="participant-pagination__pages">
-              {participantPageItems(participantPagination.page, participantPagination.totalPages).map((item) => typeof item === "number" ? (
-                <button key={item} type="button" className={item === participantPagination.page ? "pagination-page is-active" : "pagination-page"} aria-label={`Halaman ${item}`} aria-current={item === participantPagination.page ? "page" : undefined} disabled={participantsLoading} onClick={() => setParticipantPage(item)}>{item}</button>
-              ) : <span key={item} className="pagination-ellipsis" aria-hidden="true">…</span>)}
-            </div>
-            <button type="button" className="button button--secondary button--small" disabled={participantPagination.page >= participantPagination.totalPages || participantsLoading} onClick={() => setParticipantPage((current) => Math.min(participantPagination.totalPages, current + 1))}>Selanjutnya ›</button>
-          </div>
-        </footer>
+        <div className="data-table-wrap"><table className="clean-table participant-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}><td>{(participantPagination.page - 1) * participantPagination.limit + index + 1}</td><td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{participant.birth_place}, {formatDateForDisplay(participant.birth_date)}</small></span></span></td><td>{participant.nik_masked}</td><td>{participant.training_name}</td><td>{participant.cohort_name}</td><td><span className={participant.is_active ? "status-badge is-active" : "status-badge"}>{participant.is_active ? "Aktif" : "Nonaktif"}</span></td><td><button type="button" className="button button--secondary button--small" onClick={() => setSelectedParticipant(participant.id)}><Eye /> Lihat</button></td></tr>)}</tbody></table>{participantsLoading && !participants.length ? <div className="empty-state">Memuat peserta…</div> : !participants.length && <div className="empty-state">Tidak ada peserta yang sesuai pencarian atau filter.</div>}</div>
+        <Pagination pagination={participantPagination} itemLabel="peserta" loading={participantsLoading} onPageChange={setParticipantPage} />
       </section>
       {selectedParticipant && <ParticipantEditor id={selectedParticipant} activeYear={activeYear} catalog={catalog} onCancel={() => setSelectedParticipant(null)} onSaved={() => { setSelectedParticipant(null); report("Data peserta diperbarui."); }} onError={fail} />}
       {participantCreateOpen && <ModalPortal onClose={() => setParticipantCreateOpen(false)}><section className="participant-modal" role="dialog" aria-modal="true" aria-labelledby="add-participant-title">
@@ -491,13 +478,14 @@ export function ParticipantsPage() {
         </div>}
       </div>}
 
-      <div className="data-table-wrap cohort-list-wrap"><table className="clean-table cohort-list-table"><thead><tr><th>Angkatan</th><th>Pelatihan</th><th>Periode</th><th>Jumlah Peserta</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{catalog.cohorts.map((cohort) => <tr key={cohort.id}><td><strong>{cohort.name}</strong></td><td>{cohort.training_name}</td><td>{formatCohortDate(cohort.start_date)} – {formatCohortDate(cohort.end_date)}</td><td>{cohort.participant_count} peserta</td><td><span className={cohort.status === "ACTIVE" ? "status-badge is-active" : cohort.status === "COMPLETED" ? "status-badge is-complete" : "status-badge"}>{cohort.status === "ACTIVE" ? "Aktif" : cohort.status === "INACTIVE" ? "Nonaktif" : "Selesai"}</span></td><td><div className="row-actions"><button type="button" className="text-button" onClick={() => void editCohort(cohort)}>Edit</button><button type="button" className="text-button" onClick={() => void toggleCohort(cohort)}>{cohort.status === "ACTIVE" ? "Nonaktifkan" : "Aktifkan"}</button><button type="button" className="text-button" onClick={() => setSelectedCohortDetail((id) => id === cohort.id ? null : cohort.id)}>Detail</button><button type="button" className="text-button is-danger" onClick={() => setDeleteTarget({ kind: "cohort", cohort })}>Hapus</button></div></td></tr>)}</tbody></table>{!catalog.cohorts.length && <div className="empty-state">Belum ada angkatan. Gunakan “Buat Banyak Angkatan” untuk memulai.</div>}</div>
+      <div className="data-table-wrap cohort-list-wrap"><table className="clean-table cohort-list-table"><thead><tr><th>Angkatan</th><th>Pelatihan</th><th>Periode</th><th>Jumlah Peserta</th><th>Status</th><th>Aksi</th></tr></thead><tbody>{cohortRows.map((cohort) => <tr key={cohort.id}><td><strong>{cohort.name}</strong></td><td>{cohort.training_name}</td><td>{formatCohortDate(cohort.start_date)} – {formatCohortDate(cohort.end_date)}</td><td>{cohort.participant_count} peserta</td><td><span className={cohort.status === "ACTIVE" ? "status-badge is-active" : cohort.status === "COMPLETED" ? "status-badge is-complete" : "status-badge"}>{cohort.status === "ACTIVE" ? "Aktif" : cohort.status === "INACTIVE" ? "Nonaktif" : "Selesai"}</span></td><td><div className="row-actions"><button type="button" className="text-button" onClick={() => void editCohort(cohort)}>Edit</button><button type="button" className="text-button" onClick={() => void toggleCohort(cohort)}>{cohort.status === "ACTIVE" ? "Nonaktifkan" : "Aktifkan"}</button><button type="button" className="text-button" onClick={() => setSelectedCohortDetail((id) => id === cohort.id ? null : cohort.id)}>Detail</button><button type="button" className="text-button is-danger" onClick={() => setDeleteTarget({ kind: "cohort", cohort })}>Hapus</button></div></td></tr>)}</tbody></table>{!cohortsLoading && !cohortRows.length && <div className="empty-state">Belum ada angkatan. Gunakan “Buat Banyak Angkatan” untuk memulai.</div>}</div>
+      <Pagination pagination={cohortPagination} itemLabel="angkatan" loading={cohortsLoading} onPageChange={setCohortPage} />
 
       {selectedCohortDetail && (() => { const cohort = catalog.cohorts.find((item) => item.id === selectedCohortDetail); return cohort ? <div className="cohort-detail-card"><div><p className="section-label">Detail Angkatan</p><h3>{cohort.name}</h3></div><dl><div><dt>Pelatihan</dt><dd>{cohort.training_name}</dd></div><div><dt>Periode</dt><dd>{formatCohortDate(cohort.start_date)} – {formatCohortDate(cohort.end_date)}</dd></div><div><dt>Peserta</dt><dd>{cohort.participant_count} peserta</dd></div><div><dt>Status</dt><dd>{cohort.status === "ACTIVE" ? "Aktif" : cohort.status === "INACTIVE" ? "Nonaktif" : "Selesai"}</dd></div></dl><button type="button" className="text-button" onClick={() => setSelectedCohortDetail(null)}>Tutup detail</button></div> : null; })()}
       {editingExistingCohort && <CohortEditor cohort={editingExistingCohort} activeYear={activeYear} onCancel={() => setEditingExistingCohort(null)} onSaved={() => { setEditingExistingCohort(null); report("Angkatan diperbarui.", "cohort"); }} onError={(reason) => fail(reason, "cohort")} />}
     </section>}
 
-      {tab === "certificate-workspace" && <CertificateWorkspace catalog={catalog} certificates={certificates} onRefresh={load} />}
+      {tab === "certificate-workspace" && <CertificateWorkspace catalog={catalog} />}
 
       {tab === "certificates" && <><section className="panel certificate-settings"><div className="panel-heading"><div><p className="section-label">Pengaturan Global</p><h2>Overlay sertifikat cetak</h2><p>Pengaturan ini berlaku untuk seluruh pelatihan. Tanggal penerbitan otomatis memakai tanggal terakhir diklat.</p></div></div><form className="form-grid" onSubmit={(event) => void saveCertificateSettings(event)}><label>Tempat Penerbitan<input value={certificateSettings.issue_place} onChange={(event) => setCertificateSettings((value) => ({ ...value, issue_place: event.target.value }))} /></label><label>Pejabat Penandatangan<input value={certificateSettings.signer_name} onChange={(event) => setCertificateSettings((value) => ({ ...value, signer_name: event.target.value }))} /></label><label>Jabatan<input value={certificateSettings.signer_title} onChange={(event) => setCertificateSettings((value) => ({ ...value, signer_title: event.target.value }))} /></label><label>NIP<input value={certificateSettings.signer_nip} onChange={(event) => setCertificateSettings((value) => ({ ...value, signer_nip: event.target.value }))} /></label><label>Tanda tangan PNG transparan<input name="signature" type="file" accept="image/png" /></label><div className="form-actions"><button className="button">Simpan Pengaturan Global</button><button type="button" className="button button--secondary" onClick={() => void generateAll()}>Generate Semua Peserta Angkatan</button></div></form></section>
       <section className="panel certificate-list-panel"><div className="panel-heading"><div><p className="section-label">PDF siap cetak</p><h2>Sertifikat Peserta</h2><p>Print: A4, Landscape, Scale 100% / Actual Size. Jangan gunakan Fit to Page.</p></div></div><div className="certificate-filters"><label>Pelatihan<select value={certificateTrainingId} onChange={(event) => { setCertificateTrainingId(event.target.value); setCertificateCohort(""); }}><option value="">Semua Pelatihan</option>{catalog.trainings.map((training) => <option value={training.id} key={training.id}>{training.name}</option>)}</select></label><label>Angkatan<select value={certificateCohort} onChange={(event) => setCertificateCohort(event.target.value)}><option value="">Semua Angkatan</option>{catalog.cohorts.filter((cohort) => !certificateTrainingId || cohort.training_id === certificateTrainingId).map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label><label>Status<select value={certificateStatus} onChange={(event) => setCertificateStatus(event.target.value)}><option value="">Semua Status</option><option value="LULUS">Lulus</option><option value="BELUM_LULUS">Belum Lulus</option><option value="READY">Siap Generate</option></select></label></div><div className="data-table-wrap"><table className="clean-table"><thead><tr><th>Nama Peserta</th><th>NIK</th><th>Status</th><th>Nomor Sertifikat Resmi</th><th>Aksi</th></tr></thead><tbody>{filteredCertificates.map((participant) => <tr key={participant.participant_id}><td><strong>{participant.name}</strong><small>{participant.training_name} · {participant.cohort_name}</small></td><td>{participant.nik_masked}</td><td><span className={participant.graduation_status === "LULUS" ? "status-badge is-active" : "status-badge is-danger"}>{participant.graduation_status === "LULUS" ? "Lulus" : "Belum Lulus"}</span></td><td>{participant.graduation_status === "LULUS" && <div className="row-actions"><input aria-label={`Nomor sertifikat ${participant.name}`} value={certificateNumbers[participant.participant_id] ?? participant.certificate_number ?? ""} onChange={(event) => setCertificateNumbers((current) => ({ ...current, [participant.participant_id]: event.target.value }))} placeholder="Nomor resmi BDI" /><button className="button button--secondary button--small" onClick={() => void saveCertificateNumber(participant)}>Simpan Nomor</button></div>}</td><td>{participant.graduation_status === "LULUS" && <div className="row-actions"><button className="button button--secondary button--small" onClick={() => void generateCert(participant, "FRONT")}>Generate Depan</button><button className="button button--secondary button--small" onClick={() => void generateCert(participant, "BACK")}>Generate Belakang</button>{participant.certificate_id && <><a className="text-button" target="_blank" rel="noreferrer" href={`/api/admin/participants/certificates/${participant.certificate_id}/preview?side=FRONT`}>Preview Depan</a><a className="text-button" target="_blank" rel="noreferrer" href={`/api/admin/participants/certificates/${participant.certificate_id}/pdf?side=FRONT`}>Download Depan</a><a className="text-button" target="_blank" rel="noreferrer" href={`/api/admin/participants/certificates/${participant.certificate_id}/pdf?side=BACK`}>Download Belakang</a></>}</div>}</td></tr>)}</tbody></table></div></section></>}
@@ -519,7 +507,8 @@ export function ParticipantsPage() {
   </>;
 }
 
-function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: Catalog; certificates: Certificate[]; onRefresh: () => Promise<void> }) {
+function CertificateWorkspace({ catalog }: { catalog: Catalog }) {
+  const { activeYear } = useActiveYear();
   const [trainingId, setTrainingId] = useState("");
   const [cohortId, setCohortId] = useState("");
   const [settings, setSettings] = useState<CertificateSettings>(emptyCertificateSettings);
@@ -537,14 +526,32 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
   const [letterNumberFormat, setLetterNumberFormat] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
   const [overwriteConfirmOpen, setOverwriteConfirmOpen] = useState(false);
+  const [numberingTargets, setNumberingTargets] = useState<Certificate[]>([]);
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [rows, setRows] = useState<Certificate[]>([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
+  const [loading, setLoading] = useState(false);
   const timers = useRef<Record<string, number>>({});
   const previousIssueDate = useRef("");
   useAutoDismiss(success, setSuccess);
 
   const cohorts = catalog.cohorts.filter((cohort) => !trainingId || cohort.training_id === trainingId);
-  const rows = certificates.filter((certificate) => (!trainingId || certificate.training_id === trainingId) && (!cohortId || certificate.cohort_id === cohortId));
+  const loadRows = useCallback(async (requestedPage = page) => {
+    setLoading(true);
+    try {
+      const query = new URLSearchParams({ year: String(activeYear), page: String(requestedPage), limit: String(ADMIN_PAGE_SIZE) });
+      if (trainingId) query.set("trainingId", trainingId);
+      if (cohortId) query.set("cohortId", cohortId);
+      const result = await adminQuery<{ certificates: Certificate[]; pagination: PaginationMeta }>(`/api/admin/participants/certificates?${query}`);
+      if (requestedPage > result.pagination.totalPages) { setPage(result.pagination.totalPages); return; }
+      setRows(result.certificates); setPagination(result.pagination);
+    } finally { setLoading(false); }
+  }, [activeYear, cohortId, page, trainingId]);
+
+  useEffect(() => { void loadRows().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Dokumen peserta tidak dapat dimuat.")); }, [loadRows]);
+  useEffect(() => { setPage(1); }, [activeYear, cohortId, trainingId]);
 
   useEffect(() => {
     void adminQuery<{ settings: CertificateSettings }>("/api/admin/participants/certificate-settings")
@@ -575,7 +582,7 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
     setSavingKey(key); setError(null);
     try {
       await adminMutation(`/api/admin/participants/certificates/${certificate.participant_id}/number`, { method: "PUT", body: JSON.stringify({ certificateNumber }) });
-      await onRefresh();
+      await loadRows();
       return true;
     } catch (reason) {
       setError(reason instanceof AdminApiError ? reason.message : "Nomor sertifikat tidak dapat disimpan.");
@@ -596,7 +603,7 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
     setSavingKey(key); setError(null);
     try {
       await adminMutation(`/api/admin/participants/completion-letters/${certificate.participant_id}/number`, { method: "PUT", body: JSON.stringify({ completionLetterNumber }) });
-      await onRefresh();
+      await loadRows();
       return true;
     } catch (reason) {
       setError(reason instanceof AdminApiError ? reason.message : "Nomor surat tidak dapat disimpan.");
@@ -638,26 +645,33 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
       setError("Atur tanggal penerbitan pada Pengaturan Sertifikat terlebih dahulu.");
       return false;
     }
-    if (!rows.some((certificate) => certificate.graduation_status === "LULUS")) {
-      setError("Tidak ada peserta lulus pada daftar yang sedang tampil.");
-      return false;
-    }
     return true;
   }
-  function requestBulkNumbering() {
+  async function requestBulkNumbering() {
     setError(null); setSuccess(null);
     if (!validateBulkNumberInput()) return;
-    const passedRows = rows.filter((certificate) => certificate.graduation_status === "LULUS");
-    if (passedRows.some((certificate) => existingCertificateNumber(certificate) || existingLetterNumber(certificate))) {
-      setOverwriteConfirmOpen(true);
-      return;
-    }
-    void applyBulkNumbers("overwrite");
+    setBulkSaving(true);
+    try {
+      const query = new URLSearchParams({ year: String(activeYear) });
+      if (trainingId) query.set("trainingId", trainingId);
+      if (cohortId) query.set("cohortId", cohortId);
+      const targetResult = await adminQuery<{ certificates: Certificate[] }>(`/api/admin/participants/certificates/numbering-targets?${query}`);
+      const passedRows = targetResult.certificates;
+      if (!passedRows.length) { setError("Tidak ada peserta lulus pada hasil filter yang dapat diberi nomor."); return; }
+      setNumberingTargets(passedRows);
+      if (passedRows.some((certificate) => existingCertificateNumber(certificate) || existingLetterNumber(certificate))) {
+        setOverwriteConfirmOpen(true);
+        return;
+      }
+      await applyBulkNumbers("overwrite", passedRows);
+    } catch (reason) {
+      setError(reason instanceof AdminApiError ? reason.message : "Peserta lulus tidak dapat dimuat.");
+    } finally { setBulkSaving(false); }
   }
-  async function applyBulkNumbers(mode: BulkNumberMode) {
+  async function applyBulkNumbers(mode: BulkNumberMode, targets = numberingTargets) {
     setOverwriteConfirmOpen(false);
     if (!validateBulkNumberInput()) return;
-    const passedRows = rows.filter((certificate) => certificate.graduation_status === "LULUS");
+    const passedRows = targets;
     const entries: BulkDocumentNumberEntry[] = [];
     const nextNumbers = { ...numbers };
     const nextLetterNumbers = { ...letterNumbers };
@@ -690,7 +704,7 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
         { method: "PUT", body: JSON.stringify({ entries }) }
       );
       setSuccess(`${result.numbersUpdated} nomor berhasil diterapkan ke ${result.participantsUpdated} peserta.`);
-      await onRefresh();
+      await loadRows();
     } catch (reason) {
       setNumbers(previousNumbers); setLetterNumbers(previousLetterNumbers);
       setError(reason instanceof AdminApiError ? reason.message : "Nomor dokumen tidak dapat diterapkan.");
@@ -706,7 +720,7 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
       const archive = await adminDownload(endpoint, { method: "POST", body: JSON.stringify({ trainingId, cohortId }) });
       const url = URL.createObjectURL(archive); const link = document.createElement("a");
       link.href = url; link.download = kind === "certificates" ? "sertifikat-bdi.zip" : "surat-keterangan-bdi.zip"; link.click(); URL.revokeObjectURL(url);
-      await onRefresh();
+      await loadRows();
     } catch (reason) { setError(reason instanceof AdminApiError ? reason.message : "Arsip dokumen tidak dapat dibuat."); }
     finally { setDownloading(null); }
   }
@@ -714,12 +728,13 @@ function CertificateWorkspace({ catalog, certificates, onRefresh }: { catalog: C
   return <section className="panel certificate-workspace">
     <header className="certificate-workspace__header"><div><p className="section-label">Dokumen Kelulusan</p><h2>Sertifikat & Surat Keterangan</h2><p>Sertifikat menggunakan A4 Landscape; Surat Keterangan menggunakan A4 Portrait.</p></div><button type="button" className="button button--secondary" onClick={() => setSettingsOpen(true)}>Pengaturan Sertifikat</button></header>
     <div className="certificate-workspace__filters"><label>Pelatihan<SearchableSelect value={trainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setCohortId(""); }} /></label><label>Angkatan<select value={cohortId} disabled={!trainingId} onChange={(event) => setCohortId(event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label></div>
-    <section className="certificate-number-bulk" aria-labelledby="certificate-number-bulk-title"><div className="certificate-number-bulk__heading"><p className="section-label">Penomoran Otomatis</p><h3 id="certificate-number-bulk-title">Terapkan nomor berurutan</h3><p>Nomor diterapkan sesuai urutan peserta lulus pada daftar yang sedang tampil. Format dapat diubah sebelum diterapkan.</p></div><div className="certificate-number-bulk__fields"><label>Nomor Awal Sertifikat<input value={certificateStart} onChange={(event) => setCertificateStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 1237" /><span>Format Nomor Sertifikat</span><input value={certificateNumberFormat} onChange={(event) => setCertificateNumberFormat(event.target.value)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", settings.issue_date)} /><small>Gunakan <strong>[isi nomor]</strong> sebagai posisi nomor berurutan.</small></label><label>Nomor Awal Surat<input value={letterStart} onChange={(event) => setLetterStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 0456" /><span>Format Nomor Surat</span><input value={letterNumberFormat} onChange={(event) => setLetterNumberFormat(event.target.value)} placeholder={fullDocumentNumber("letter", "[isi nomor]", settings.issue_date)} /><small>Gunakan <strong>[isi nomor]</strong> sebagai posisi nomor berurutan.</small></label><button type="button" className="button" disabled={bulkSaving} onClick={requestBulkNumbering}>{bulkSaving ? "Menerapkan…" : "Terapkan Nomor"}</button></div></section>
+    <section className="certificate-number-bulk" aria-labelledby="certificate-number-bulk-title"><div className="certificate-number-bulk__heading"><p className="section-label">Penomoran Otomatis</p><h3 id="certificate-number-bulk-title">Terapkan nomor berurutan</h3><p>Nomor diterapkan ke seluruh peserta lulus pada hasil filter, bukan hanya halaman yang sedang dibuka. Format dapat diubah sebelum diterapkan.</p></div><div className="certificate-number-bulk__fields"><label>Nomor Awal Sertifikat<input value={certificateStart} onChange={(event) => setCertificateStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 1237" /><span>Format Nomor Sertifikat</span><input value={certificateNumberFormat} onChange={(event) => setCertificateNumberFormat(event.target.value)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", settings.issue_date)} /><small>Gunakan <strong>[isi nomor]</strong> sebagai posisi nomor berurutan.</small></label><label>Nomor Awal Surat<input value={letterStart} onChange={(event) => setLetterStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 0456" /><span>Format Nomor Surat</span><input value={letterNumberFormat} onChange={(event) => setLetterNumberFormat(event.target.value)} placeholder={fullDocumentNumber("letter", "[isi nomor]", settings.issue_date)} /><small>Gunakan <strong>[isi nomor]</strong> sebagai posisi nomor berurutan.</small></label><button type="button" className="button" disabled={bulkSaving} onClick={() => void requestBulkNumbering()}>{bulkSaving ? "Menerapkan…" : "Terapkan Nomor"}</button></div></section>
     {success && <p className="form-message is-success" role="status">{success}</p>}
     {error && <p className="form-message is-error" role="alert">{error}</p>}
     <div className="data-table-wrap"><table className="clean-table certificate-workspace__table certificate-document-table"><thead><tr><th>Nama Peserta</th><th>Status</th><th>Nomor Sertifikat</th><th>Nomor Surat</th><th>Aksi</th></tr></thead><tbody>{rows.map((certificate) => <tr key={certificate.participant_id}><td><strong>{certificate.name}</strong><small>{certificate.training_name} · {certificate.cohort_name}</small></td><td><span className={certificate.graduation_status === "LULUS" ? "status-badge is-active" : "status-badge is-danger"}>{certificate.graduation_status === "LULUS" ? "Lulus" : "Belum lulus"}</span></td><td>{certificate.graduation_status === "LULUS" ? <><input aria-label={`Nomor sertifikat ${certificate.name}`} value={numbers[certificate.participant_id] ?? certificate.certificate_number ?? ""} onChange={(event) => updateNumber(certificate, event.target.value)} onBlur={() => void persistNumber(certificate)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", settings.issue_date)} />{savingKey === `certificate-${certificate.participant_id}` && <small className="certificate-autosave">Menyimpan…</small>}</> : "—"}</td><td>{certificate.graduation_status === "LULUS" ? <><input aria-label={`Nomor surat ${certificate.name}`} value={letterNumbers[certificate.participant_id] ?? certificate.completion_letter_number ?? ""} onChange={(event) => updateLetterNumber(certificate, event.target.value)} onBlur={() => void persistLetterNumber(certificate)} placeholder={fullDocumentNumber("letter", "[isi nomor]", settings.issue_date)} />{savingKey === `letter-${certificate.participant_id}` && <small className="certificate-autosave">Menyimpan…</small>}</> : "—"}</td><td>{certificate.graduation_status === "LULUS" ? <div className="certificate-document-actions"><button type="button" className="button button--secondary button--small" onClick={() => void openPreview(certificate)}>Preview Sertifikat</button><button type="button" className="button button--secondary button--small" onClick={() => void openLetterPreview(certificate)}>Preview Surat</button></div> : "—"}</td></tr>)}</tbody></table>{trainingId && cohortId && !rows.length && <p className="empty-state">Belum ada peserta pada angkatan ini.</p>}</div>
+    <Pagination pagination={pagination} itemLabel="peserta" loading={loading} onPageChange={setPage} />
     <footer className="certificate-workspace__footer certificate-workspace__footer--documents"><p>Pilih pelatihan dan angkatan untuk mengunduh dokumen peserta lulus yang memiliki nomor resmi.</p><div className="certificate-batch-actions"><button type="button" className="button button--secondary" disabled={!trainingId || !cohortId || Boolean(downloading)} onClick={() => void downloadAll("certificates")}><Download />{downloading === "certificates" ? "Menyiapkan…" : "Download Semua Sertifikat"}</button><button type="button" className="button button--secondary" disabled={!trainingId || !cohortId || Boolean(downloading)} onClick={() => void downloadAll("letters")}><Download />{downloading === "letters" ? "Menyiapkan…" : "Download Semua Surat Keterangan"}</button></div></footer>
-    {settingsOpen && <CertificateSettingsModal settings={settings} onChange={setSettings} onSaved={onRefresh} onClose={() => setSettingsOpen(false)} />}
+    {settingsOpen && <CertificateSettingsModal settings={settings} onChange={setSettings} onSaved={loadRows} onClose={() => setSettingsOpen(false)} />}
     {preview && <CertificatePreviewModal certificate={preview} side={previewSide} onSideChange={setPreviewSide} onClose={() => setPreview(null)} />}
     {letterPreview && <CompletionLetterPreviewModal certificate={letterPreview} onClose={() => setLetterPreview(null)} />}
     {overwriteConfirmOpen && <NumberOverwriteModal busy={bulkSaving} onCancel={() => setOverwriteConfirmOpen(false)} onOverwrite={() => void applyBulkNumbers("overwrite")} onFillEmpty={() => void applyBulkNumbers("empty")} />}

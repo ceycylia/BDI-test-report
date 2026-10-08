@@ -56,6 +56,41 @@ export async function listQuestionBanks(
   return result.results;
 }
 
+export async function paginateQuestionBanks(
+  database: D1Database,
+  input: { page: number; limit: number; trainingId?: string; search?: string },
+): Promise<{ rows: QuestionBankSummaryRecord[]; total: number }> {
+  const clauses: string[] = [];
+  const bindings: unknown[] = [];
+  if (input.trainingId) {
+    clauses.push("materials.training_id = ?");
+    bindings.push(input.trainingId);
+  }
+  if (input.search?.trim()) {
+    clauses.push("(materials.name LIKE ? ESCAPE '\\' OR banks.name LIKE ? ESCAPE '\\')");
+    const needle = `%${input.search.trim().replace(/[\\%_]/gu, "\\$&")}%`;
+    bindings.push(needle, needle);
+  }
+  const where = clauses.length ? `WHERE ${clauses.join(" AND ")}` : "";
+  const base = `FROM question_banks AS banks
+    LEFT JOIN training_materials materials ON materials.id = banks.material_id
+    LEFT JOIN trainings ON trainings.id = materials.training_id`;
+  const [count, result] = await Promise.all([
+    database.prepare(`SELECT COUNT(*) AS total ${base} ${where}`).bind(...bindings).first<{ total: number }>(),
+    database.prepare(
+      `SELECT banks.id, banks.name, banks.description, banks.is_active, banks.material_id,
+              materials.name AS material_name, materials.training_id, trainings.name AS training_name,
+              banks.created_at, banks.updated_at,
+              (SELECT COUNT(*) FROM questions WHERE questions.bank_id = banks.id AND questions.is_active = 1) AS active_question_count,
+              (SELECT COUNT(*) FROM questions WHERE questions.bank_id = banks.id AND questions.is_active = 0) AS inactive_question_count
+         ${base} ${where}
+        ORDER BY banks.created_at DESC, banks.rowid DESC
+        LIMIT ? OFFSET ?`,
+    ).bind(...bindings, input.limit, (input.page - 1) * input.limit).all<QuestionBankSummaryRecord>(),
+  ]);
+  return { rows: result.results, total: Number(count?.total ?? 0) };
+}
+
 export async function findQuestionBank(
   database: D1Database,
   bankId: string
@@ -182,6 +217,32 @@ export async function listQuestions(
     .all<QuestionRecord>();
 
   return result.results;
+}
+
+export async function paginateQuestions(
+  database: D1Database,
+  input: { bankId: string; page: number; limit: number; search?: string },
+): Promise<{ rows: QuestionRecord[]; total: number }> {
+  const bindings: unknown[] = [input.bankId];
+  let searchClause = "";
+  if (input.search?.trim()) {
+    const needle = `%${input.search.trim().replace(/[\\%_]/gu, "\\$&")}%`;
+    searchClause = ` AND (question_text LIKE ? ESCAPE '\\' OR option_a LIKE ? ESCAPE '\\' OR option_b LIKE ? ESCAPE '\\' OR option_c LIKE ? ESCAPE '\\' OR option_d LIKE ? ESCAPE '\\')`;
+    bindings.push(needle, needle, needle, needle, needle);
+  }
+  const [count, result] = await Promise.all([
+    database.prepare(`SELECT COUNT(*) AS total FROM questions WHERE bank_id = ?${searchClause}`).bind(...bindings).first<{ total: number }>(),
+    database.prepare(
+      `SELECT id, bank_id, question_text, image_key,
+              option_a, option_b, option_c, option_d, correct_option_key,
+              is_active, times_assigned, created_at, updated_at
+         FROM questions
+        WHERE bank_id = ?${searchClause}
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ? OFFSET ?`,
+    ).bind(...bindings, input.limit, (input.page - 1) * input.limit).all<QuestionRecord>(),
+  ]);
+  return { rows: result.results, total: Number(count?.total ?? 0) };
 }
 
 export async function findQuestion(

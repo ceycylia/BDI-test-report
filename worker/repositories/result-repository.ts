@@ -21,7 +21,7 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
   if (filters.status) { conditions.push("result_status = ?"); bindings.push(filters.status); }
   if (filters.search) { conditions.push("normalized_name LIKE ?"); bindings.push(`%${normalizeParticipantName(filters.search)}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
-  const pageSize = Math.min(50, Math.max(1, Math.floor(filters.pageSize ?? 20)));
+  const pageSize = Math.min(20, Math.max(1, Math.floor(filters.pageSize ?? 20)));
   const page = Math.max(1, Math.floor(filters.page ?? 1));
   const pagination = filters.page === undefined && filters.pageSize === undefined ? "" : ` LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`;
   const result = await database.prepare(

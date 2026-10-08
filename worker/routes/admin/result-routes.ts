@@ -6,6 +6,7 @@ import { adjustFinalAttemptScore, getParticipantResult, listParticipantAttemptDe
 import { listExportAnswers, listExportTrainingInfo } from "../../repositories/result-repository";
 import { createXlsx } from "../../export/xlsx";
 import type { AppEnvironment } from "../../types";
+import { paginationMeta, parsePagination } from "../../http/pagination";
 
 export const resultRoutes = new Hono<AppEnvironment>();
 resultRoutes.use("*", requireAdmin);
@@ -17,14 +18,16 @@ function activeYear(value: string | undefined) {
 }
 
 resultRoutes.get("/", async (context) => {
+  const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
   const results = await listResultSummaries(context.env.DB, {
     year: activeYear(context.req.query("year")),
     trainingId: context.req.query("trainingId"), materialId: context.req.query("materialId"),
     cohortId: context.req.query("cohortId"),
     status: context.req.query("status"), search: context.req.query("search"),
-    page: Number(context.req.query("page") ?? 1), pageSize: Number(context.req.query("pageSize") ?? 20),
+    page: pagination.page, pageSize: pagination.limit,
   });
-  return context.json({ results, total: Number(results[0]?.total_count ?? 0), page: Number(context.req.query("page") ?? 1), pageSize: Number(context.req.query("pageSize") ?? 20) });
+  const total = Number(results[0]?.total_count ?? 0);
+  return context.json({ results, pagination: paginationMeta(pagination, total), total });
 });
 
 resultRoutes.get("/options", async (context) => {

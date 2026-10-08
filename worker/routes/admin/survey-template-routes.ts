@@ -19,7 +19,7 @@ import {
   getNextSurveySectionSortOrder,
   getNextSurveyTemplateVersion,
   getSurveyTemplateDetail,
-  listSurveyTemplates,
+  paginateSurveyTemplates,
   publishSurveyTemplate,
   reactivateSurveyTemplate,
   updateSurveyQuestion,
@@ -30,6 +30,7 @@ import {
   type SurveyTemplateRecord,
 } from "../../repositories/survey-repository";
 import type { AppEnvironment } from "../../types";
+import { paginationMeta, parsePagination } from "../../http/pagination";
 
 
 function mapOption(option: SurveyQuestionOptionRecord) {
@@ -308,14 +309,13 @@ surveyTemplateRoutes.use("*", requireAdmin);
 // =========================================================
 
 surveyTemplateRoutes.get("/", async (context) => {
-  const templates = await listSurveyTemplates(
-    context.env.DB
-  );
+  const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
+  const result = await paginateSurveyTemplates(context.env.DB, pagination);
 
   context.header("Cache-Control", "no-store");
 
   return context.json({
-    templates: templates.map((template) => {
+    templates: result.rows.map((template) => {
       const deletion = surveyTemplateDeletionPolicy({
         campaignCount: Number(template.campaign_count),
       });
@@ -328,6 +328,7 @@ surveyTemplateRoutes.get("/", async (context) => {
         deleteBlockedReason: deletion.reason,
       };
     }),
+    pagination: paginationMeta(pagination, result.total),
   });
 });
 

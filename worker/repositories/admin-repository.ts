@@ -91,6 +91,23 @@ export async function listAdmins(database: D1Database): Promise<AdminRecord[]> {
   return result.results;
 }
 
+export async function paginateAdmins(
+  database: D1Database,
+  input: { page: number; limit: number },
+): Promise<{ rows: AdminRecord[]; total: number }> {
+  const [count, result] = await Promise.all([
+    database.prepare("SELECT COUNT(*) AS total FROM admins").first<{ total: number }>(),
+    database.prepare(
+      `SELECT id, name, username, password_hash, password_salt,
+              password_iterations, is_active, role, created_at
+         FROM admins
+        ORDER BY created_at DESC, rowid DESC
+        LIMIT ? OFFSET ?`,
+    ).bind(input.limit, (input.page - 1) * input.limit).all<AdminRecord>(),
+  ]);
+  return { rows: result.results, total: Number(count?.total ?? 0) };
+}
+
 export async function createAdminSession(
   database: D1Database,
   input: {

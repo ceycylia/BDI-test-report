@@ -43,7 +43,7 @@
 				{
 					"binding": "DB",
 					"database_name": "bdi-test-db-production-v2",
-					"database_id": "e5a44760-93ec-4016-b466-60628bf5b94d",
+					"database_id": "e75925a3-0409-42b9-968f-97dbac3ce105",
 					"migrations_dir": "migrations"
 				}
 			],

@@ -7,12 +7,13 @@ import {
   countActiveSuperadmins,
   findAdminById,
   findAdminByUsername,
-  listAdmins,
+  paginateAdmins,
   updateAdminPassword,
   updateManagedAdmin,
 } from "../../repositories/admin-repository";
 import { hashPassword } from "../../security/password";
 import type { AppEnvironment } from "../../types";
+import { paginationMeta, parsePagination } from "../../http/pagination";
 
 const createAdminSchema = z.object({
   name: z.string().trim().min(2, "Nama minimal 2 karakter.").max(120),
@@ -49,10 +50,11 @@ adminRoutes.use("*", requireAdmin);
 adminRoutes.use("*", requireSuperadmin);
 
 adminRoutes.get("/", async (context) => {
-  const admins = await listAdmins(context.env.DB);
+  const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
+  const result = await paginateAdmins(context.env.DB, pagination);
   context.header("Cache-Control", "no-store");
   return context.json({
-    admins: admins.map((admin) => ({
+    admins: result.rows.map((admin) => ({
       id: admin.id,
       name: admin.name,
       username: admin.username,
@@ -60,6 +62,7 @@ adminRoutes.get("/", async (context) => {
       role: admin.role,
       createdAt: admin.created_at,
     })),
+    pagination: paginationMeta(pagination, result.total),
   });
 });
 

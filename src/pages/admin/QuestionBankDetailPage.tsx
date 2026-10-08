@@ -1,5 +1,5 @@
 import { ArrowUp } from "lucide-react";
-import { useEffect, useMemo, useState, type FormEvent } from "react";
+import { useEffect, useState, type FormEvent } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import {
   adminMutation,
@@ -17,6 +17,7 @@ import { QuestionImportModal } from "./QuestionImportPage";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { ConfirmDeleteModal } from "../../components/ui/ConfirmDeleteModal";
 import { ModalPortal } from "../../components/ui/ModalPortal";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 const emptyQuestion: QuestionInput = {
   questionText: "",
@@ -50,18 +51,28 @@ export function QuestionBankDetailPage() {
   const [questionModalOpen, setQuestionModalOpen] = useState(false);
   const [importModalOpen, setImportModalOpen] = useState(false);
   const [showScrollTop, setShowScrollTop] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
 
-  const loadDetail = async () => {
+  const loadDetail = async (requestedPage = page) => {
+    const query = new URLSearchParams({ page: String(requestedPage), limit: String(ADMIN_PAGE_SIZE) });
+    if (search.trim()) query.set("search", search.trim());
     const payload = await adminQuery<{
       bank: QuestionBank;
       questions: Question[];
-    }>(`/api/admin/banks/${bankId}`);
+      pagination: PaginationMeta;
+    }>(`/api/admin/banks/${bankId}?${query}`);
+    if (requestedPage > payload.pagination.totalPages) {
+      setPage(payload.pagination.totalPages);
+      return;
+    }
     setBank(payload.bank);
     setQuestions(payload.questions);
+    setPagination(payload.pagination);
   };
 
   useEffect(() => {
-    void loadDetail()
+    const timer = window.setTimeout(() => void loadDetail(page)
       .catch((reason: unknown) =>
         setError(
           reason instanceof Error
@@ -69,8 +80,10 @@ export function QuestionBankDetailPage() {
             : "Bank Soal tidak dapat dimuat."
         )
       )
-      .finally(() => setLoading(false));
-  }, [bankId]);
+      .finally(() => setLoading(false)), 250);
+    return () => window.clearTimeout(timer);
+  }, [bankId, page, search]);
+  useEffect(() => { setPage(1); }, [search]);
 
   useEffect(() => {
     const updateVisibility = () => setShowScrollTop(window.scrollY >= 480);
@@ -78,23 +91,6 @@ export function QuestionBankDetailPage() {
     window.addEventListener("scroll", updateVisibility, { passive: true });
     return () => window.removeEventListener("scroll", updateVisibility);
   }, []);
-
-  const filteredQuestions = useMemo(() => {
-    const needle = search.trim().toLowerCase();
-    if (!needle) return questions;
-    return questions.filter((question) =>
-      [
-        question.questionText,
-        question.optionA,
-        question.optionB,
-        question.optionC,
-        question.optionD,
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(needle)
-    );
-  }, [questions, search]);
 
   const resetQuestionEditor = () => {
     setEditingQuestionId(null);
@@ -172,7 +168,8 @@ export function QuestionBankDetailPage() {
       }
       resetQuestionEditor();
       setQuestionModalOpen(false);
-      await loadDetail();
+      setPage(1);
+      await loadDetail(1);
     } catch (reason) {
       setError(
         reason instanceof AdminApiError
@@ -210,7 +207,7 @@ export function QuestionBankDetailPage() {
         }
       );
       setQuestionToDelete(null);
-      await loadDetail();
+      await loadDetail(page);
     } catch (reason) {
       setQuestionToDelete(null);
       setError(
@@ -286,7 +283,7 @@ export function QuestionBankDetailPage() {
           <div className="question-list-toolbar">
             <div>
               <p className="section-label">Daftar soal</p>
-              <h2 id="question-list-title">{questions.length} soal</h2>
+              <h2 id="question-list-title">{pagination.total} soal</h2>
             </div>
 
             <label className="search-field">
@@ -299,7 +296,7 @@ export function QuestionBankDetailPage() {
             </label>
           </div>
 
-          {filteredQuestions.length === 0 ? (
+          {questions.length === 0 ? (
             <div className="empty-state empty-state--bank">
               <div className="empty-state__icon" aria-hidden="true">
                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor">
@@ -330,10 +327,10 @@ export function QuestionBankDetailPage() {
             </div>
           ) : (
             <div className="question-list">
-              {filteredQuestions.map((question, index) => (
+              {questions.map((question, index) => (
                 <article className="question-card" key={question.id}>
                   <div className="question-card__header">
-                    <strong>Soal {index + 1}</strong>
+                    <strong>Soal {(pagination.page - 1) * pagination.limit + index + 1}</strong>
                   </div>
 
                   <p className="question-card__text">{question.questionText}</p>
@@ -388,6 +385,7 @@ export function QuestionBankDetailPage() {
               ))}
             </div>
           )}
+          <Pagination pagination={pagination} itemLabel="soal" loading={loading} onPageChange={setPage} />
       </section>
 
       <section className="panel danger-zone bank-danger-zone" aria-labelledby="bank-danger-title">
@@ -587,7 +585,8 @@ export function QuestionBankDetailPage() {
         bankId={bankId}
         onClose={() => setImportModalOpen(false)}
         onImported={async (count) => {
-          await loadDetail();
+          setPage(1);
+          await loadDetail(1);
           setMessage(`${count} soal berhasil diimport.`);
           setImportModalOpen(false);
         }}

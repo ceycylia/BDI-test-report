@@ -8,6 +8,7 @@ import {
 import type { QuestionBankSummary } from "../../features/question-banks/types";
 import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { SearchInput } from "../../components/ui/SearchInput";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 export function QuestionBankListPage() {
   const [banks, setBanks] = useState<QuestionBankSummary[]>([]);
@@ -27,6 +28,8 @@ export function QuestionBankListPage() {
   const [trainingId, setTrainingId] = useState("");
   const [materialSearch, setMaterialSearch] = useState("");
   const [selectedMaterialIds, setSelectedMaterialIds] = useState<string[]>([]);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
 
   const trainingMaterials = catalog.materials.filter(
     (material) => material.training_id === trainingId
@@ -41,23 +44,25 @@ export function QuestionBankListPage() {
   const allMaterialsHaveBanks =
     trainingMaterials.length > 0 &&
     trainingMaterials.every((material) => materialsWithBanks.has(material.id));
-  const normalizedMaterialSearch = materialSearch.trim().toLocaleLowerCase("id");
-  const filteredBanks = banks.filter((bank) =>
-    (!trainingId || bank.trainingId === trainingId) &&
-    (!normalizedMaterialSearch || (bank.materialName ?? bank.name)
-      .toLocaleLowerCase("id")
-      .includes(normalizedMaterialSearch))
-  );
-
-  const loadBanks = async () => {
-    const payload = await adminQuery<{ banks: QuestionBankSummary[] }>(
-      "/api/admin/banks"
+  const loadBanks = async (requestedPage = page) => {
+    const query = new URLSearchParams({ page: String(requestedPage), limit: String(ADMIN_PAGE_SIZE) });
+    if (trainingId) query.set("trainingId", trainingId);
+    if (materialSearch.trim()) query.set("search", materialSearch.trim());
+    const payload = await adminQuery<{ banks: QuestionBankSummary[]; pagination: PaginationMeta }>(
+      `/api/admin/banks?${query}`
     );
+    if (requestedPage > payload.pagination.totalPages) {
+      setPage(payload.pagination.totalPages);
+      return;
+    }
     setBanks(payload.banks);
+    setPagination(payload.pagination);
   };
 
   useEffect(() => {
-    void loadBanks()
+    const timer = window.setTimeout(() => {
+      setLoading(true);
+      void loadBanks(page)
       .catch((reason: unknown) =>
         setError(
           reason instanceof Error
@@ -66,7 +71,10 @@ export function QuestionBankListPage() {
         )
       )
       .finally(() => setLoading(false));
-  }, []);
+    }, 250);
+    return () => window.clearTimeout(timer);
+  }, [page, trainingId, materialSearch]);
+  useEffect(() => { setPage(1); }, [trainingId, materialSearch]);
   useEffect(() => {
     void adminQuery<typeof catalog>("/api/admin/participants/catalog")
       .then(setCatalog)
@@ -90,7 +98,8 @@ export function QuestionBankListPage() {
           materialIds: selectedMaterialIds,
         }),
       });
-      await loadBanks();
+      setPage(1);
+      await loadBanks(1);
       setMessage(
         result.createdCount === 0
           ? "Seluruh materi yang dipilih sudah memiliki Bank Soal."
@@ -121,7 +130,7 @@ export function QuestionBankListPage() {
           <div className="bank-list-toolbar">
             <div>
               <h2 id="bank-list-title">Daftar Bank Soal</h2>
-              <p>{trainingId ? `${filteredBanks.length} bank soal pada pelatihan terpilih` : `${filteredBanks.length} bank soal ditampilkan`}</p>
+              <p>{pagination.total} bank soal ditemukan</p>
             </div>
             <label>
               <span>Cari nama materi</span>
@@ -139,14 +148,14 @@ export function QuestionBankListPage() {
               <p>Buat Bank Soal sesuai materi atau jenis pelatihan.</p>
             </div>
           )}
-          {!loading && banks.length > 0 && filteredBanks.length === 0 && (
+          {!loading && pagination.total === 0 && (trainingId || materialSearch.trim()) && (
             <div className="empty-state">
               <strong>Bank Soal tidak ditemukan</strong>
               <p>Ubah pilihan Pelatihan atau hapus pencarian nama materi.</p>
             </div>
           )}
           <div className="bank-list">
-            {filteredBanks.map((bank) => (
+            {banks.map((bank) => (
               <article className="bank-list__item" key={bank.id}>
                 <div className="bank-list__content">
                   <div className="bank-list__title-row">
@@ -166,6 +175,7 @@ export function QuestionBankListPage() {
               </article>
             ))}
           </div>
+          <Pagination pagination={pagination} itemLabel="bank soal" loading={loading} onPageChange={setPage} />
         </section>
 
         <section className="panel" aria-labelledby="create-bank-title">

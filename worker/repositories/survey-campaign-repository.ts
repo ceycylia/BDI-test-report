@@ -93,6 +93,41 @@ export async function listSurveyCampaigns(database: D1Database, year: number) {
   return result.results;
 }
 
+export async function paginateSurveyCampaigns(
+  database: D1Database,
+  input: { year: number; page: number; limit: number; search?: string; trainingId?: string; cohortId?: string; status?: string },
+) {
+  const conditions = [`EXISTS (
+    SELECT 1 FROM survey_campaign_cohorts year_links
+    JOIN training_cohorts year_cohorts ON year_cohorts.id = year_links.cohort_id
+    WHERE year_links.survey_campaign_id = campaigns.id
+      AND SUBSTR(year_cohorts.start_date, 1, 4) = ?
+  )`];
+  const bindings: unknown[] = [String(input.year)];
+  if (input.trainingId) { conditions.push("primary_cohort.training_id = ?"); bindings.push(input.trainingId); }
+  if (input.cohortId) {
+    conditions.push("EXISTS (SELECT 1 FROM survey_campaign_cohorts filter_links WHERE filter_links.survey_campaign_id = campaigns.id AND filter_links.cohort_id = ?)");
+    bindings.push(input.cohortId);
+  }
+  if (input.search?.trim()) {
+    const needle = `%${input.search.trim().replace(/[\\%_]/gu, "\\$&")}%`;
+    conditions.push(`(trainings.name LIKE ? ESCAPE '\\' OR EXISTS (
+      SELECT 1 FROM survey_campaign_cohorts search_links JOIN training_cohorts search_cohorts ON search_cohorts.id=search_links.cohort_id
+      WHERE search_links.survey_campaign_id=campaigns.id AND search_cohorts.name LIKE ? ESCAPE '\\'
+    ))`);
+    bindings.push(needle, needle);
+  }
+  if (input.status === "OPEN") conditions.push("((campaigns.mode='MANUAL' AND campaigns.manual_open=1) OR (campaigns.mode='SCHEDULED' AND datetime('now') BETWEEN datetime(campaigns.opens_at) AND datetime(campaigns.closes_at)))");
+  if (input.status === "NOT_OPEN") conditions.push("((campaigns.mode='MANUAL' AND campaigns.manual_open=0 AND campaigns.opened_manually_at IS NULL AND campaigns.closed_at IS NULL) OR (campaigns.mode='SCHEDULED' AND datetime('now') < datetime(campaigns.opens_at)))");
+  if (input.status === "FINISHED") conditions.push("((campaigns.mode='MANUAL' AND campaigns.manual_open=0 AND (campaigns.opened_manually_at IS NOT NULL OR campaigns.closed_at IS NOT NULL)) OR (campaigns.mode='SCHEDULED' AND datetime('now') > datetime(campaigns.closes_at)))");
+  const where = `WHERE ${conditions.join(" AND ")}`;
+  const [count, result] = await Promise.all([
+    database.prepare(`SELECT COUNT(*) AS total FROM survey_campaigns campaigns JOIN training_cohorts primary_cohort ON primary_cohort.id=campaigns.cohort_id JOIN trainings ON trainings.id=primary_cohort.training_id JOIN survey_templates templates ON templates.id=campaigns.survey_template_id ${where}`).bind(...bindings).first<{ total: number }>(),
+    database.prepare(`${campaignSelect} ${where} ORDER BY campaigns.created_at DESC, campaigns.rowid DESC LIMIT ? OFFSET ?`).bind(...bindings, input.limit, (input.page - 1) * input.limit).all<SurveyCampaignRecord>(),
+  ]);
+  return { rows: result.results, total: Number(count?.total ?? 0) };
+}
+
 export async function campaignCounts(database: D1Database, campaignId: string, cohortId?: string) {
   const cohortClause = cohortId ? " AND profiles.cohort_id = ?" : "";
   const bindings = cohortId ? [campaignId, cohortId] : [campaignId];

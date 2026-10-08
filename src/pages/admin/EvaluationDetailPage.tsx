@@ -9,6 +9,7 @@ import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { AdminApiError, adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
 import { formatDateTimeForApi, formatDateTimeForDisplay } from "../../features/dates/date-format";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 type Status = "NOT_OPEN" | "OPEN" | "FINISHED";
 type Campaign = {
@@ -24,6 +25,8 @@ type Results = {
   singleChoice: Array<{ sectionTitle: string; questionId: string; question: string; responseCount: number; options: Array<{ label: string; count: number; percentage: number }> }>;
   comments: Array<{ sectionTitle: string; questionId: string; question: string; entries: Array<{ participantName: string; cohortName: string; text: string }> }>;
   participants: Array<{ id: string; name: string; nik: string; cohortId: string; cohortName: string; status: "SUBMITTED" | "NOT_SUBMITTED"; submittedAt: string | null }>;
+  participantPagination: PaginationMeta;
+  commentPagination: PaginationMeta;
 };
 type ScheduleDraft = { status: "OPEN_NOW" | "SCHEDULED" | "CLOSED"; opensAt: string; closesAt: string };
 
@@ -57,6 +60,9 @@ export function EvaluationDetailPage() {
   const [cohortId, setCohortId] = useState("");
   const [participantSearch, setParticipantSearch] = useState("");
   const [participantStatus, setParticipantStatus] = useState("");
+  const [debouncedParticipantSearch, setDebouncedParticipantSearch] = useState("");
+  const [participantPage, setParticipantPage] = useState(1);
+  const [commentPage, setCommentPage] = useState(1);
   const [schedule, setSchedule] = useState<ScheduleDraft | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -68,22 +74,29 @@ export function EvaluationDetailPage() {
     const sequence = ++loadSequence.current;
     try {
       const path = withActiveYear(`/api/admin/survey-campaigns/${campaignId}/results`, activeYear);
-      const query = cohortId ? `${path}&cohortId=${encodeURIComponent(cohortId)}` : path;
+      const queryParams = new URLSearchParams({ participantPage: String(participantPage), participantLimit: String(ADMIN_PAGE_SIZE) });
+      queryParams.set("commentPage", String(commentPage)); queryParams.set("commentLimit", String(ADMIN_PAGE_SIZE));
+      if (cohortId) queryParams.set("cohortId", cohortId);
+      if (debouncedParticipantSearch) queryParams.set("participantSearch", debouncedParticipantSearch);
+      if (participantStatus) queryParams.set("participantStatus", participantStatus);
+      const query = `${path}&${queryParams}`;
       const payload = await adminQuery<{ campaign: Campaign; results: Results }>(query);
       if (sequence !== loadSequence.current) return;
+      if (participantPage > payload.results.participantPagination.totalPages) { setParticipantPage(payload.results.participantPagination.totalPages); return; }
+      if (commentPage > payload.results.commentPagination.totalPages) { setCommentPage(payload.results.commentPagination.totalPages); return; }
       setCampaign(payload.campaign); setResults(payload.results); setError(null);
     } catch (reason) {
       if (sequence !== loadSequence.current) return;
       setError(reason instanceof AdminApiError ? reason.message : "Hasil Evaluasi tidak dapat dimuat.");
     }
-  }, [activeYear, campaignId, cohortId]);
+  }, [activeYear, campaignId, cohortId, commentPage, debouncedParticipantSearch, participantPage, participantStatus]);
 
   useEffect(() => { void load(); }, [load]);
 
-  const participantRows = useMemo(() => {
-    const needle = participantSearch.trim().toLocaleLowerCase("id");
-    return (results?.participants ?? []).filter((item) => (!needle || `${item.name} ${item.nik}`.toLocaleLowerCase("id").includes(needle)) && (!participantStatus || item.status === participantStatus));
-  }, [participantSearch, participantStatus, results]);
+  const participantRows = results?.participants ?? [];
+  useEffect(() => { const timer = window.setTimeout(() => setDebouncedParticipantSearch(participantSearch.trim()), 250); return () => window.clearTimeout(timer); }, [participantSearch]);
+  useEffect(() => { setParticipantPage(1); }, [cohortId, debouncedParticipantSearch, participantStatus]);
+  useEffect(() => { setCommentPage(1); }, [cohortId]);
   const scheduledOpensAt = schedule?.status === "SCHEDULED" ? formatDateTimeForApi(schedule.opensAt) : null;
   const scheduledClosesAt = schedule?.status === "SCHEDULED" ? formatDateTimeForApi(schedule.closesAt) : null;
   const scheduleIncomplete = schedule?.status === "SCHEDULED" && (!scheduledOpensAt || !scheduledClosesAt);
@@ -174,8 +187,8 @@ export function EvaluationDetailPage() {
     <section className="evaluation-summary-grid"><article className="panel"><span>Total Peserta</span><strong>{results.totalParticipants}</strong></article><article className="panel"><span>Sudah Mengisi</span><strong>{results.respondentCount}</strong></article><article className="panel"><span>Belum Mengisi</span><strong>{results.totalParticipants - results.respondentCount}</strong></article><article className="panel"><span>Persentase Pengisian</span><strong>{percent(results.responsePercentage)}</strong></article><article className="panel evaluation-summary-grid__overall"><span>Nilai Keseluruhan Evaluasi</span><strong>{percent(results.overallValue)}</strong></article></section>
     <section className="panel evaluation-report-table-panel"><div className="panel-heading"><div><p className="section-label">Skala 1–4</p><h2>Rincian Nilai Indikator</h2></div></div><div className="evaluation-result-table evaluation-report-table"><table><colgroup><col className="evaluation-report-table__number" /><col className="evaluation-report-table__section" /><col /><col className="evaluation-report-table__value" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /><col className="evaluation-report-table__score" /></colgroup><thead><tr><th rowSpan={2}>No.</th><th rowSpan={2}>Bagian</th><th rowSpan={2}>Indikator Penilaian</th><th rowSpan={2}>Nilai</th><th className="evaluation-report-table__distribution-heading" colSpan={4}>Distribusi</th></tr><tr className="evaluation-report-table__score-headings"><th>1</th><th>2</th><th>3</th><th>4</th></tr></thead><tbody>{results.indicators.map((item) => <tr key={item.questionId}><td>{item.no}</td><td>{item.sectionCode}. {item.sectionTitle}</td><td>{item.indicator}</td><td>{percent(item.value)}</td>{[1, 2, 3, 4].map((score) => <td className="evaluation-report-table__score-cell" key={score}>{item.distribution.find((entry) => entry.value === score)?.count ?? 0}</td>)}</tr>)}</tbody></table></div></section>
     {results.singleChoice.map((group) => <section className="panel evaluation-distribution" key={group.questionId}><p className="section-label">{group.sectionTitle}</p><h2>{group.question}</h2><div className="evaluation-result-table evaluation-choice-table"><table><colgroup><col /><col className="evaluation-choice-table__count" /><col className="evaluation-choice-table__percentage" /></colgroup><thead><tr><th>Pilihan</th><th>Jumlah</th><th>Persentase</th></tr></thead><tbody>{group.options.map((option) => <tr key={option.label}><td>{option.label}</td><td>{option.count}</td><td>{option.percentage.toFixed(1).replace(".", ",")}%</td></tr>)}</tbody></table></div></section>)}
-    <section className="panel"><div className="panel-heading"><div><p className="section-label">Jawaban Teks</p><h2>Komentar & Saran</h2></div></div><div className="evaluation-comments">{results.comments.map((group) => <article key={group.questionId}><h3>{group.question}</h3><small>{group.sectionTitle}</small>{group.entries.length ? <ul>{group.entries.map((entry, index) => <li key={`${entry.participantName}-${index}`}><p>{entry.text}</p><span>{entry.participantName} · {entry.cohortName}</span></li>)}</ul> : <p className="muted">Belum ada komentar.</p>}</article>)}</div></section>
-    <section className="panel"><div className="panel-heading"><div><p className="section-label">Peserta</p><h2>Status Pengisian</h2></div></div><div className="evaluation-participant-filters"><label>Cari Nama/NIK<SearchInput value={participantSearch} onValueChange={setParticipantSearch} placeholder="Nama atau NIK" /></label><label>Status<SearchableSelect value={participantStatus} placeholder="Semua status" options={[{ value: "SUBMITTED", label: "Sudah Mengisi" }, { value: "NOT_SUBMITTED", label: "Belum Mengisi" }]} onValueChange={setParticipantStatus} /></label></div><div className="evaluation-result-table evaluation-participant-table"><table><colgroup><col className="evaluation-participant-table__name" /><col className="evaluation-participant-table__nik" /><col className="evaluation-participant-table__cohort" /><col className="evaluation-participant-table__status" /><col className="evaluation-participant-table__submitted" /></colgroup><thead><tr><th>Nama</th><th>NIK</th><th>Angkatan</th><th>Status</th><th>Waktu Submit</th></tr></thead><tbody>{participantRows.map((participant) => <tr key={participant.id}><td>{participant.name}</td><td>{participant.nik}</td><td>{participant.cohortName}</td><td><span className={`status-badge ${participant.status === "SUBMITTED" ? "is-active" : ""}`}>{participant.status === "SUBMITTED" ? "Sudah Mengisi" : "Belum Mengisi"}</span></td><td>{participant.submittedAt ? formatDateTimeForDisplay(participant.submittedAt) : "—"}</td></tr>)}</tbody></table></div></section>
+    <section className="panel"><div className="panel-heading"><div><p className="section-label">Jawaban Teks</p><h2>Komentar & Saran</h2></div></div><div className="evaluation-comments">{results.comments.map((group) => <article key={group.questionId}><h3>{group.question}</h3><small>{group.sectionTitle}</small>{group.entries.length ? <ul>{group.entries.map((entry, index) => <li key={`${entry.participantName}-${index}`}><p>{entry.text}</p><span>{entry.participantName} · {entry.cohortName}</span></li>)}</ul> : <p className="muted">Tidak ada komentar pada halaman ini.</p>}</article>)}</div><Pagination pagination={results.commentPagination} itemLabel="komentar" onPageChange={setCommentPage} /></section>
+    <section className="panel"><div className="panel-heading"><div><p className="section-label">Peserta</p><h2>Status Pengisian</h2></div></div><div className="evaluation-participant-filters"><label>Cari Nama/NIK<SearchInput value={participantSearch} onValueChange={setParticipantSearch} placeholder="Nama atau NIK" /></label><label>Status<SearchableSelect value={participantStatus} placeholder="Semua status" options={[{ value: "SUBMITTED", label: "Sudah Mengisi" }, { value: "NOT_SUBMITTED", label: "Belum Mengisi" }]} onValueChange={setParticipantStatus} /></label></div><div className="evaluation-result-table evaluation-participant-table"><table><colgroup><col className="evaluation-participant-table__name" /><col className="evaluation-participant-table__nik" /><col className="evaluation-participant-table__cohort" /><col className="evaluation-participant-table__status" /><col className="evaluation-participant-table__submitted" /></colgroup><thead><tr><th>Nama</th><th>NIK</th><th>Angkatan</th><th>Status</th><th>Waktu Submit</th></tr></thead><tbody>{participantRows.map((participant) => <tr key={participant.id}><td>{participant.name}</td><td>{participant.nik}</td><td>{participant.cohortName}</td><td><span className={`status-badge ${participant.status === "SUBMITTED" ? "is-active" : ""}`}>{participant.status === "SUBMITTED" ? "Sudah Mengisi" : "Belum Mengisi"}</span></td><td>{participant.submittedAt ? formatDateTimeForDisplay(participant.submittedAt) : "—"}</td></tr>)}</tbody></table></div><Pagination pagination={results.participantPagination} itemLabel="peserta" onPageChange={setParticipantPage} /></section>
     {schedule && <ModalPortal onClose={() => setSchedule(null)} blocked={busy}>
       <section className="participant-modal schedule-editor-modal evaluation-schedule-modal" role="dialog" aria-modal="true" aria-labelledby="evaluation-schedule-title">
         <header className="participant-modal__header"><div><p className="section-label">Evaluasi</p><h2 id="evaluation-schedule-title">Edit Jadwal Evaluasi</h2></div><button className="participant-modal__close" type="button" aria-label="Tutup" disabled={busy} onClick={() => setSchedule(null)}><X /></button></header>

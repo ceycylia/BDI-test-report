@@ -8,6 +8,7 @@ import {
   adminQuery,
   AdminApiError,
 } from "../../features/admin-auth/admin-api";
+import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 type SurveyTemplateSummary = {
   id: string;
@@ -53,19 +54,23 @@ export function SurveyTemplateListPage({
   const [deleting, setDeleting] = useState(false);
   const [lifecycleTarget, setLifecycleTarget] = useState<LifecycleTarget | null>(null);
   const [updatingLifecycle, setUpdatingLifecycle] = useState(false);
+  const [page, setPage] = useState(1);
+  const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
 
   const load = useCallback(async () => {
     setLoading(true);
     try {
-      const payload = await adminQuery<{ templates: SurveyTemplateSummary[] }>(
-      "/api/admin/survey-templates"
+      const payload = await adminQuery<{ templates: SurveyTemplateSummary[]; pagination: PaginationMeta }>(
+      `/api/admin/survey-templates?page=${page}&limit=${ADMIN_PAGE_SIZE}`
       );
+      if (page > payload.pagination.totalPages) { setPage(payload.pagination.totalPages); return; }
       setTemplates(payload.templates);
+      setPagination(payload.pagination);
       setError(null);
     } catch (reason) {
       setError(reason instanceof AdminApiError ? reason.message : "Template evaluasi tidak dapat dimuat.");
     } finally { setLoading(false); }
-  }, []);
+  }, [page]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -226,6 +231,7 @@ export function SurveyTemplateListPage({
           </div>
         )}
       </section>
+      <Pagination pagination={pagination} itemLabel="template evaluasi" loading={loading} onPageChange={setPage} />
       <ConfirmDeleteModal
         open={Boolean(deleteTarget)}
         title="Hapus Template Evaluasi?"
