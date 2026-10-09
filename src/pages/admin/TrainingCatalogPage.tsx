@@ -581,7 +581,7 @@ export function TrainingCatalogPage() {
                           <IconActionButton action="edit" label={`Edit Mata Diklat ${material.name}`} onClick={() => setEditingMaterial(material)} />
                           <IconActionButton action="delete" label={`Hapus Mata Diklat ${material.name}`} onClick={() => setDeleteTarget({ kind: "material", material })} />
                           <IconActionButton
-                            action={material.is_active ? "inactive" : "active"}
+                            action={material.is_active ? "active" : "inactive"}
                             label={material.is_active ? "Status: Aktif — klik untuk nonaktifkan" : "Status: Nonaktif — klik untuk aktifkan"}
                             onClick={() => setMaterialStatusTarget(material)}
                           />
@@ -1056,12 +1056,12 @@ export function TrainingCatalogPage() {
       />
       <ConfirmDeleteModal
         open={Boolean(materialStatusTarget)}
-        title={materialStatusTarget?.is_active ? "Nonaktifkan Mata Diklat?" : "Aktifkan Mata Diklat?"}
+        title={materialStatusTarget?.is_active ? "Nonaktifkan mata diklat?" : "Aktifkan mata diklat?"}
         itemName={materialStatusTarget?.name}
         description={materialStatusTarget?.is_active
           ? "Mata diklat ini tidak lagi dihitung sebagai persyaratan penyelesaian. Riwayat tes dan data yang sudah ada tetap tersimpan."
           : "Mata diklat ini kembali dihitung sebagai persyaratan penyelesaian pelatihan."}
-        confirmLabel={materialStatusTarget?.is_active ? "Nonaktifkan" : "Aktifkan"}
+        confirmLabel={materialStatusTarget?.is_active ? "Ya" : "Aktifkan"}
         busyLabel="Menyimpan…"
         confirmClassName="confirm-delete-modal__confirm"
         busy={changingMaterialStatus}

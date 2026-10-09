@@ -4,7 +4,8 @@ import { HttpError } from "../../http/errors";
 import { requireAdmin, requireCsrf, requireSameOrigin } from "../../middleware/admin-auth";
 import { getManualScoreContext, getParticipantResult, listExportAnswers, listParticipantAttemptDetails, listResultFilterOptions, listResultSummaries, resetAttempt, saveManualAttemptScores, updateParticipantName } from "../../repositories/result-repository";
 import { findOrCreateExamParticipant } from "../../repositories/participant-repository";
-import { attemptNumberForStage, nextPostStage, type AttemptStage } from "../../domain/attempts/progression";
+import { attemptNumberForStage, type AttemptStage } from "../../domain/attempts/progression";
+import { manualScoreFields } from "../../domain/attempts/admin-attempt-management";
 import { createXlsx } from "../../export/xlsx";
 import type { AppEnvironment } from "../../types";
 import { paginationMeta, parsePagination } from "../../http/pagination";
@@ -358,7 +359,13 @@ resultRoutes.get("/export", async (context) => {
 });
 
 resultRoutes.get("/participants/:participantId", async (context) => {
-  const participant = await getParticipantResult(context.env.DB, context.req.param("participantId"), activeYear(context.req.query("year")));
+  const participant = await getParticipantResult(
+    context.env.DB,
+    context.req.param("participantId"),
+    activeYear(context.req.query("year")),
+    context.req.query("batchId"),
+    context.req.query("trainingSessionId"),
+  );
   if (!participant) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
   const details = await listParticipantAttemptDetails(context.env.DB, participant.id);
   return context.json({ participant, ...details });
@@ -370,53 +377,8 @@ const manualScoreSchema = z.object({
   scores: z.array(z.object({
     stage: z.enum(["PRE", "POST", "REMEDIAL_1", "REMEDIAL_2"]),
     score: z.number().min(0).max(100),
-  })).min(1).max(2),
+  })).min(1).max(4),
 });
-
-type ManualScoreField = { stage: "PRE" | "POST" | "REMEDIAL_1" | "REMEDIAL_2"; label: string; score: number | null };
-
-function labelForManualScoreStage(stage: ManualScoreField["stage"]) {
-  return {
-    PRE: "Nilai Pre-Test",
-    POST: "Nilai Post-Test",
-    REMEDIAL_1: "Nilai Remedial 1",
-    REMEDIAL_2: "Nilai Remedial 2",
-  }[stage];
-}
-
-function manualScoreFields(
-  attempts: Array<Record<string, string | number | null>>,
-  passingScore: number,
-): ManualScoreField[] {
-  const submitted = attempts.filter((attempt) => attempt.status === "SUBMITTED");
-  const byStage = new Map(submitted.map((attempt) => [String(attempt.stage), attempt]));
-  const field = (stage: ManualScoreField["stage"]): ManualScoreField => ({
-    stage,
-    label: labelForManualScoreStage(stage),
-    score: typeof byStage.get(stage)?.score === "number" ? Number(byStage.get(stage)?.score) : null,
-  });
-  const pre = byStage.get("PRE");
-  const postStages = ["POST", "REMEDIAL_1", "REMEDIAL_2"] as const;
-  const hasPostScore = postStages.some((stage) => byStage.has(stage));
-
-  if (!pre && !hasPostScore) return [field("PRE"), field("POST")];
-  if (!pre) return [field("PRE")];
-
-  const progression = attempts
-    .filter((attempt) => ["POST", "REMEDIAL_1", "REMEDIAL_2"].includes(String(attempt.stage)))
-    .map((attempt) => ({
-      stage: String(attempt.stage) as AttemptStage,
-      status: String(attempt.status),
-      score: typeof attempt.score === "number" ? attempt.score : null,
-    }));
-  const nextStage = nextPostStage(progression, passingScore);
-  if (nextStage === "POST" || nextStage === "REMEDIAL_1" || nextStage === "REMEDIAL_2") {
-    return [field(nextStage)];
-  }
-
-  const latestStage = [...postStages].reverse().find((stage) => byStage.has(stage)) ?? "POST";
-  return [field(latestStage)];
-}
 
 async function manualScorePlan(context: Parameters<typeof getManualScoreContext>[0], referenceId: string, batchId: string, sessionId: string) {
   const target = await getManualScoreContext(context, referenceId, batchId, sessionId);
@@ -424,7 +386,7 @@ async function manualScorePlan(context: Parameters<typeof getManualScoreContext>
   const attempts = target.participant_id
     ? (await listParticipantAttemptDetails(context, target.participant_id)).attempts
     : [];
-  return { target, fields: manualScoreFields(attempts, Number(target.passing_score)) };
+  return { target, fields: manualScoreFields(attempts) };
 }
 
 resultRoutes.get("/participants/:participantId/manual-score-plan", async (context) => {
@@ -450,13 +412,28 @@ resultRoutes.put("/participants/:participantId/name", requireSameOrigin, require
 
 resultRoutes.post("/participants/:participantId/attempts/:attemptId/reset", requireSameOrigin, requireCsrf, async (context) => {
   const participantId = context.req.param("participantId");
+  const body = z.object({
+    batchId: z.string().min(1),
+    trainingSessionId: z.string().min(1),
+    reason: z.string().trim().max(500).nullable().optional(),
+  }).safeParse(await context.req.json().catch(() => null));
+  if (!body.success) throw new HttpError(422, "RESET_CONTEXT_INVALID", "Data mata diklat untuk reset tidak lengkap.");
   const detail = await listParticipantAttemptDetails(context.env.DB, participantId);
   const attempt = detail.attempts.find((item) => item.id === context.req.param("attemptId"));
   if (!attempt) throw new HttpError(404, "ATTEMPT_NOT_FOUND", "Attempt tidak ditemukan.");
   if (attempt.status === "RESET") throw new HttpError(409, "ATTEMPT_ALREADY_RESET", "Attempt ini sudah direset.");
-  const body=z.object({reason:z.string().trim().max(500).nullable().optional()}).safeParse(await context.req.json().catch(()=>({})));
-  if (!body.success) throw new HttpError(422, "RESET_REASON_INVALID", "Alasan reset maksimal 500 karakter.");
-  await resetAttempt(context.env.DB, context.req.param("attemptId"), participantId, context.get("admin").id, body.data.reason ?? null);
+  if (attempt.batch_id !== body.data.batchId || attempt.training_session_id !== body.data.trainingSessionId) {
+    throw new HttpError(409, "RESET_CONTEXT_MISMATCH", "Attempt tidak sesuai dengan mata diklat yang sedang dibuka.");
+  }
+  await resetAttempt(context.env.DB, {
+    attemptId: context.req.param("attemptId"),
+    participantId,
+    batchId: body.data.batchId,
+    sessionId: body.data.trainingSessionId,
+    stage: String(attempt.stage) as AttemptStage,
+    adminId: context.get("admin").id,
+    reason: body.data.reason ?? null,
+  });
   return context.json({ success: true });
 });
 

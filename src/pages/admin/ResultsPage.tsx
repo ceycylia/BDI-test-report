@@ -72,6 +72,14 @@ function isSameResultRow(row: ResultRow, target: ResultRow) {
     && row.training_session_id === target.training_session_id;
 }
 
+function resultDetailUrl(row: ResultRow) {
+  const query = new URLSearchParams({
+    batchId: row.batch_id,
+    trainingSessionId: row.training_session_id,
+  });
+  return `/admin/hasil/${row.id}?${query}`;
+}
+
 export function ResultsPage() {
   const navigate = useNavigate();
   const { activeYear } = useActiveYear();
@@ -135,7 +143,10 @@ export function ResultsPage() {
   };
   const saveManualScore = async () => {
     if (!scoreTarget || !manualScoreFields) return;
-    const scores = manualScoreFields.map((field) => ({ stage: field.stage, score: Number(manualScores[field.stage]) }));
+    const scores = manualScoreFields.map((field) => {
+      const rawScore = manualScores[field.stage]?.trim() ?? "";
+      return { stage: field.stage, score: rawScore === "" ? Number.NaN : Number(rawScore) };
+    });
     if (scores.some((item) => !Number.isFinite(item.score) || item.score < 0 || item.score > 100)) { setError("Nilai harus berada di antara 0 dan 100."); return; }
     setSavingScore(true); setError(null);
     try {
@@ -259,7 +270,7 @@ export function ResultsPage() {
           <td><span className="result-training-name" title={row.training_name}>{row.training_name}</span><small className="result-material-name" title={`${row.material_name} · ${row.cohort_name}`}>{row.material_name} · {row.cohort_name}</small></td>
           <td><span className={`status-badge result-${row.result_status.toLowerCase()}`}>{row.result_status.replaceAll("_", " ")}</span></td>
           <td>{row.pre_score ?? "—"}</td><td>{row.post_score ?? "—"}</td><td>{row.remedial_1_score ?? "—"}</td><td>{row.remedial_2_score ?? "—"}</td><td><strong>{row.final_post_score ?? "—"}</strong></td>
-          <td className="result-actions"><IconActionButton action="edit" label={`Input atau koreksi nilai ${row.name}`} onClick={() => void openScoreModal(row)} /><IconActionButton action="detail" label={`Lihat detail hasil ${row.name}`} onClick={() => navigate(`/admin/hasil/${row.id}`)} /></td>
+          <td className="result-actions"><IconActionButton action="edit" label={`Input atau koreksi nilai ${row.name}`} onClick={() => void openScoreModal(row)} /><IconActionButton action="detail" label={`Lihat detail hasil ${row.name}`} onClick={() => navigate(resultDetailUrl(row))} /></td>
         </tr>)}</tbody>
       </table>
     </div>

@@ -1,4 +1,6 @@
 import { cleanParticipantName, normalizeParticipantName } from "../domain/participants/normalize-name";
+import { resetStagesForAttempt } from "../domain/attempts/admin-attempt-management";
+import type { AttemptStage } from "../domain/attempts/progression";
 
 export type ResultFilters = {
   year?: number;
@@ -101,10 +103,23 @@ export async function listResultFilterOptions(database: D1Database, year: number
     cohorts: cohorts.results,
   };
 }
-export async function getParticipantResult(database: D1Database, participantId: string, year?: number) {
+export async function getParticipantResult(
+  database: D1Database,
+  participantId: string,
+  year?: number,
+  batchId?: string,
+  sessionId?: string,
+) {
+  const contextSql = `${batchId ? " AND batches.id = ?" : ""}${sessionId ? " AND sessions.id = ?" : ""}`;
+  const bindings: unknown[] = [participantId, participantId];
+  if (year) bindings.push(String(year));
+  if (batchId) bindings.push(batchId);
+  if (sessionId) bindings.push(sessionId);
   return database.prepare(
-    `SELECT COALESCE(participants.id, profiles.id) AS id, COALESCE(participants.name, profiles.name) AS name, profiles.normalized_name,
+    `SELECT COALESCE(participants.id, profiles.id) AS id, participants.id AS participant_id,
+      profiles.id AS profile_id, COALESCE(participants.name, profiles.name) AS name, profiles.normalized_name,
       batches.id AS batch_id, batches.batch_name,
+      sessions.id AS training_session_id,
       sessions.training_id AS training_id, trainings.name AS training_name,
       sessions.material_id AS material_id, materials.name AS material_name,
       batches.cohort_id AS cohort_id, cohorts.name AS cohort_name,
@@ -116,9 +131,10 @@ export async function getParticipantResult(database: D1Database, participantId: 
       JOIN trainings ON trainings.id = sessions.training_id
       JOIN training_materials AS materials ON materials.id = sessions.material_id
       JOIN training_cohorts AS cohorts ON cohorts.id = batches.cohort_id
-      WHERE (participants.id = ? OR profiles.id = ?)${year ? " AND SUBSTR(cohorts.start_date, 1, 4) = ?" : ""} LIMIT 1`,
-  ).bind(...(year ? [participantId, participantId, String(year)] : [participantId, participantId])).first<{
-    id: string; name: string; normalized_name: string; batch_id: string; batch_name: string;
+      WHERE (participants.id = ? OR profiles.id = ?)${year ? " AND SUBSTR(cohorts.start_date, 1, 4) = ?" : ""}${contextSql} LIMIT 1`,
+  ).bind(...bindings).first<{
+    id: string; participant_id: string | null; profile_id: string; name: string; normalized_name: string; batch_id: string; batch_name: string;
+    training_session_id: string;
     training_id: string; training_name: string; material_id: string; material_name: string;
     cohort_id: string; cohort_name: string; passing_score: number;
   }>();
@@ -131,6 +147,22 @@ export type ManualScoreContext = {
   name: string;
   normalized_name: string;
   passing_score: number;
+};
+
+export type ParticipantAttemptDetail = {
+  id: string;
+  batch_id: string;
+  training_session_id: string;
+  stage: AttemptStage;
+  attempt_number: number;
+  started_at: string;
+  deadline_at: string;
+  submitted_at: string | null;
+  status: string;
+  score: number | null;
+  total_questions: number | null;
+  correct_count: number | null;
+  wrong_count: number | null;
 };
 
 export async function getManualScoreContext(
@@ -158,10 +190,10 @@ export async function getManualScoreContext(
 
 export async function listParticipantAttemptDetails(database: D1Database, participantId: string) {
   const attempts = await database.prepare(
-    `SELECT id, stage, attempt_number, started_at, deadline_at, submitted_at, status,
+    `SELECT id, batch_id, training_session_id, stage, attempt_number, started_at, deadline_at, submitted_at, status,
       score, total_questions, correct_count, wrong_count
       FROM attempts WHERE participant_id = ? ORDER BY created_at`,
-  ).bind(participantId).all<Record<string, string | number | null>>();
+  ).bind(participantId).all<ParticipantAttemptDetail>();
   const answers = await database.prepare(
     `SELECT snapshots.attempt_id, snapshots.question_id, snapshots.display_position,
       snapshots.question_text, snapshots.option_a, snapshots.option_b, snapshots.option_c, snapshots.option_d,
@@ -181,16 +213,39 @@ export async function updateParticipantName(database: D1Database, participantId:
   ).bind(cleaned, normalizeParticipantName(cleaned), participantId).run();
 }
 
-export async function resetAttempt(database: D1Database, attemptId: string, participantId: string, adminId: string, reason: string | null) {
+export async function resetAttempt(
+  database: D1Database,
+  input: {
+    attemptId: string;
+    participantId: string;
+    batchId: string;
+    sessionId: string;
+    stage: AttemptStage;
+    adminId: string;
+    reason: string | null;
+  },
+) {
+  const stages = resetStagesForAttempt(input.stage);
   await database.batch([
     database.prepare(
       `UPDATE attempts SET status = 'RESET', reset_by_admin_id = ?, reset_at = CURRENT_TIMESTAMP, reset_reason = ?,
-        updated_at = CURRENT_TIMESTAMP WHERE id = ? AND participant_id = ? AND status <> 'RESET'`,
-    ).bind(adminId, reason, attemptId, participantId),
+        updated_at = CURRENT_TIMESTAMP
+       WHERE participant_id = ? AND batch_id = ? AND training_session_id = ?
+         AND stage IN (SELECT value FROM json_each(?)) AND status <> 'RESET'
+         AND (? = 'POST' OR id = ?)`,
+    ).bind(
+      input.adminId, input.reason, input.participantId, input.batchId, input.sessionId,
+      JSON.stringify(stages), input.stage, input.attemptId,
+    ),
     database.prepare(
       `INSERT INTO audit_logs (id, admin_id, action, entity_type, entity_id, metadata_json)
-       VALUES (?, ?, 'RESET_ATTEMPT', 'attempt', ?, json_object('participantId', ?, 'reason', ?))`,
-    ).bind(crypto.randomUUID(), adminId, attemptId, participantId, reason),
+       VALUES (?, ?, 'RESET_ATTEMPT', 'attempt', ?, json_object(
+         'participantId', ?, 'batchId', ?, 'trainingSessionId', ?, 'stage', ?, 'resetStages', json(?), 'reason', ?
+       ))`,
+    ).bind(
+      crypto.randomUUID(), input.adminId, input.attemptId, input.participantId,
+      input.batchId, input.sessionId, input.stage, JSON.stringify(stages), input.reason,
+    ),
   ]);
 }
 
@@ -220,33 +275,45 @@ export async function saveManualAttemptScores(
   const stages = input.scores.map((item) => item.stage);
   const existing = await database.prepare(
     `SELECT id, stage, status FROM attempts
-      WHERE participant_id = ? AND stage IN (SELECT value FROM json_each(?)) AND status <> 'RESET'`,
-  ).bind(input.participantId, JSON.stringify(stages)).all<{ id: string; stage: string; status: string }>();
+      WHERE participant_id = ? AND batch_id = ? AND training_session_id = ?
+        AND stage IN (SELECT value FROM json_each(?)) AND status <> 'RESET'`,
+  ).bind(input.participantId, input.batchId, input.sessionId, JSON.stringify(stages)).all<{ id: string; stage: string; status: string }>();
+  const resetSequences = await database.prepare(
+    `SELECT stage, COALESCE(MAX(reset_sequence), -1) + 1 AS next_sequence
+       FROM attempts
+      WHERE participant_id = ? AND batch_id = ? AND training_session_id = ?
+        AND stage IN (SELECT value FROM json_each(?))
+      GROUP BY stage`,
+  ).bind(input.participantId, input.batchId, input.sessionId, JSON.stringify(stages)).all<{ stage: string; next_sequence: number }>();
   const byStage = new Map(existing.results.map((attempt) => [attempt.stage, attempt]));
+  const nextSequenceByStage = new Map(resetSequences.results.map((row) => [row.stage, Number(row.next_sequence)]));
   const now = new Date().toISOString();
   const deadline = new Date(Date.now() + 60_000).toISOString();
   const statements = input.scores.flatMap((item) => {
     const attempt = byStage.get(item.stage);
+    const newAttemptId = crypto.randomUUID();
+    const attemptId = attempt?.id ?? newAttemptId;
     const scoreStatement = attempt
       ? database.prepare(
         `UPDATE attempts SET status = 'SUBMITTED', submitted_at = ?, score = ?, updated_at = ?
-          WHERE id = ? AND participant_id = ? AND status <> 'RESET'`,
-      ).bind(now, item.score, now, attempt.id, input.participantId)
+          WHERE id = ? AND participant_id = ? AND batch_id = ? AND training_session_id = ? AND status <> 'RESET'`,
+      ).bind(now, item.score, now, attempt.id, input.participantId, input.batchId, input.sessionId)
       : database.prepare(
         `INSERT INTO attempts (
            id, participant_id, batch_id, training_session_id, stage, attempt_number,
-           started_at, deadline_at, submitted_at, status, score
-         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', ?)`,
+           reset_sequence, started_at, deadline_at, submitted_at, status, score
+         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'SUBMITTED', ?)`,
       ).bind(
-        crypto.randomUUID(), input.participantId, input.batchId, input.sessionId,
-        item.stage, item.attemptNumber, now, deadline, now, item.score,
+        newAttemptId, input.participantId, input.batchId, input.sessionId,
+        item.stage, item.attemptNumber, nextSequenceByStage.get(item.stage) ?? 0,
+        now, deadline, now, item.score,
       );
     return [
       scoreStatement,
       database.prepare(
         `INSERT INTO audit_logs (id, admin_id, action, entity_type, entity_id, metadata_json)
          VALUES (?, ?, 'ADJUST_MANUAL_SCORE', 'attempt', ?, json_object('participantId', ?, 'stage', ?, 'score', ?))`,
-      ).bind(crypto.randomUUID(), input.adminId, attempt?.id ?? input.participantId, input.participantId, item.stage, item.score),
+      ).bind(crypto.randomUUID(), input.adminId, attemptId, input.participantId, item.stage, item.score),
     ];
   });
   await database.batch(statements);
