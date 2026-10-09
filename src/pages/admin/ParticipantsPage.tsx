@@ -428,7 +428,7 @@ export function ParticipantsPage() {
             <tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}>
               <td>{(participantPagination.page - 1) * participantPagination.limit + index + 1}</td>
               <td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img loading="lazy" decoding="async" src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{participant.birth_place}, {formatDateForDisplay(participant.birth_date)}</small></span></span></td>
-              <td>{participant.nik_masked}</td>
+              <td><span className="participant-nik" title={participant.nik_masked}>{participant.nik_masked.length > 6 ? `${participant.nik_masked.slice(0, 6)}…` : participant.nik_masked}</span></td>
               <td><span className="participant-training-name" title={participant.training_name}>{participant.training_name}</span></td>
               <td>{participant.cohort_name}</td>
               <td><StatusIcon active={Boolean(participant.is_active)} /></td>

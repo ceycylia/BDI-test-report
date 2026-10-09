@@ -3646,6 +3646,18 @@ textarea:focus-visible {
   white-space: nowrap;
 }
 
+.participant-table td:nth-child(3) {
+  overflow: hidden;
+}
+
+.participant-nik {
+  display: block;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .participant-training-name {
   display: block;
   width: 100%;
