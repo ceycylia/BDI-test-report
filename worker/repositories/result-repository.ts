@@ -19,14 +19,16 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
   if (filters.materialId) { conditions.push("material_id = ?"); bindings.push(filters.materialId); }
   if (filters.cohortId) { conditions.push("cohort_id = ?"); bindings.push(filters.cohortId); }
   if (filters.status) { conditions.push("result_status = ?"); bindings.push(filters.status); }
-  if (filters.search) { conditions.push("normalized_name LIKE ?"); bindings.push(`%${normalizeParticipantName(filters.search)}%`); }
+  if (filters.search) { conditions.push("(normalized_name LIKE ? OR nik LIKE ?)"); const term = `%${normalizeParticipantName(filters.search)}%`; bindings.push(term, `%${filters.search.trim()}%`); }
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
   const pageSize = Math.min(20, Math.max(1, Math.floor(filters.pageSize ?? 20)));
   const page = Math.max(1, Math.floor(filters.page ?? 1));
   const pagination = filters.page === undefined && filters.pageSize === undefined ? "" : ` LIMIT ${pageSize} OFFSET ${(page - 1) * pageSize}`;
   const result = await database.prepare(
     `WITH summary AS (
-      SELECT COALESCE(participants.id, profiles.id) AS id, COALESCE(participants.name, profiles.name) AS name, profiles.normalized_name,
+      SELECT COALESCE(participants.id, profiles.id) AS id, participants.id AS participant_id, profiles.id AS profile_id,
+        COALESCE(participants.name, profiles.name) AS name,
+        COALESCE(participants.normalized_name, profiles.normalized_name) AS normalized_name, profiles.nik,
         batches.id AS batch_id, batches.batch_name,
         sessions.id AS training_session_id,
         sessions.training_id AS training_id, trainings.name AS training_name,
@@ -36,9 +38,13 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
         SUBSTR(cohorts.start_date, 1, 4) AS training_year,
         sessions.passing_score,
         MAX(CASE WHEN attempts.stage = 'PRE' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS pre_score,
+        MAX(CASE WHEN attempts.stage = 'PRE' AND attempts.status = 'SUBMITTED' THEN attempts.submitted_at END) AS pre_submitted_at,
         MAX(CASE WHEN attempts.stage = 'POST' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS post_score,
+        MAX(CASE WHEN attempts.stage = 'POST' AND attempts.status = 'SUBMITTED' THEN attempts.submitted_at END) AS post_submitted_at,
         MAX(CASE WHEN attempts.stage = 'REMEDIAL_1' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS remedial_1_score,
+        MAX(CASE WHEN attempts.stage = 'REMEDIAL_1' AND attempts.status = 'SUBMITTED' THEN attempts.submitted_at END) AS remedial_1_submitted_at,
         MAX(CASE WHEN attempts.stage = 'REMEDIAL_2' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS remedial_2_score,
+        MAX(CASE WHEN attempts.stage = 'REMEDIAL_2' AND attempts.status = 'SUBMITTED' THEN attempts.submitted_at END) AS remedial_2_submitted_at,
         MAX(CASE WHEN attempts.stage <> 'PRE' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS final_post_score,
         MAX(CASE WHEN attempts.status = 'IN_PROGRESS' THEN attempts.stage END) AS active_stage
       FROM participant_profiles AS profiles
@@ -251,7 +257,7 @@ export async function listExportAnswers(database: D1Database, participantIds: st
   const result = await database.prepare(
     `SELECT participants.id AS participant_id, attempts.id AS attempt_id,
       sessions.id AS training_session_id, sessions.material_id,
-      participants.name, batches.batch_name, sessions.name AS training_name,
+      participants.name, batches.batch_name, cohorts.name AS cohort_name, sessions.name AS training_name,
       attempts.stage, attempts.score, attempts.submitted_at, snapshots.question_id, snapshots.display_position, snapshots.question_text,
       answers.selected_original_option_key, answers.correct_original_option_key, answers.is_correct,
       snapshots.option_a, snapshots.option_b, snapshots.option_c, snapshots.option_d
@@ -259,6 +265,7 @@ export async function listExportAnswers(database: D1Database, participantIds: st
       JOIN attempts ON attempts.id = snapshots.attempt_id
       JOIN participants ON participants.id = attempts.participant_id
       JOIN batches ON batches.id = attempts.batch_id
+      JOIN training_cohorts AS cohorts ON cohorts.id = batches.cohort_id
       JOIN training_sessions AS sessions ON sessions.id = attempts.training_session_id
       LEFT JOIN attempt_answers AS answers ON answers.attempt_id = attempts.id AND answers.question_id = snapshots.question_id
       WHERE participants.id IN (SELECT value FROM json_each(?)) AND attempts.status = 'SUBMITTED'

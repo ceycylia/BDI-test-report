@@ -35,31 +35,92 @@ resultRoutes.get("/options", async (context) => {
   return context.json(await listResultFilterOptions(context.env.DB, activeYear(context.req.query("year"))));
 });
 
-function optionValue(row: Record<string, string | number | null>, key: unknown) {
-  return typeof key === "string" ? row[`option_${key.toLowerCase()}`] ?? "" : "";
-}
+export type ExportRow = Record<string, string | number | null>;
 
-type ExportRow = Record<string, string | number | null>;
+function optionValue(row: ExportRow, key: unknown) {
+  return typeof key === "string" ? row[`option_${key.toLocaleLowerCase("id-ID")}`] ?? "" : "";
+}
 
 function selectedAnswer(row: ExportRow) {
   const key = row.selected_original_option_key;
   return typeof key === "string" ? String(optionValue(row, key) || key) : "";
 }
 
-function numericScore(value: string | number | null) {
+function numericScore(value: string | number | null | undefined) {
   const score = typeof value === "number" ? value : typeof value === "string" && value !== "" ? Number(value) : null;
-  return score !== null && Number.isFinite(score) ? score : null;
+  return score !== null && Number.isFinite(score) ? Math.round(score * 100) / 100 : null;
 }
 
-function averageScore(values: Array<string | number | null>) {
+function averageScore(values: Array<string | number | null | undefined>) {
   const scores = values.map(numericScore).filter((score): score is number => score !== null);
-  if (!scores.length) return "-";
+  if (!scores.length) return null;
   return Math.round((scores.reduce((total, score) => total + score, 0) / scores.length) * 100) / 100;
 }
 
-function summaryStatus(rows: ExportRow[]) {
-  const statuses = [...new Set(rows.map((row) => String(row.result_status ?? "")).filter(Boolean))];
-  return statuses.length === 1 ? statuses[0]!.replaceAll("_", " ") : "-";
+function bestRemedial(row: ExportRow) {
+  const scores = [row.remedial_1_score, row.remedial_2_score]
+    .map(numericScore)
+    .filter((score): score is number => score !== null);
+  return scores.length ? Math.max(...scores) : null;
+}
+
+function humanStatus(value: string | number | null | undefined) {
+  const status = String(value ?? "").trim();
+  if (!status) return "-";
+  return status
+    .toLocaleLowerCase("id-ID")
+    .replaceAll("_", " ")
+    .replace(/(^|\s)\S/g, (letter) => letter.toLocaleUpperCase("id-ID"));
+}
+
+function participantOverallStatus(rows: ExportRow[]) {
+  if (rows.some((row) => row.active_stage !== null && row.active_stage !== "")) return "Sedang Mengerjakan";
+  if (rows.some((row) => numericScore(row.pre_score) === null || numericScore(row.final_post_score) === null)) return "Belum Selesai";
+  if (rows.some((row) => {
+    const finalScore = numericScore(row.final_post_score);
+    const passingScore = numericScore(row.passing_score);
+    return finalScore !== null && passingScore !== null && finalScore < passingScore;
+  })) return "Belum Lulus";
+  return "Lulus";
+}
+
+function stableParticipantKey(row: ExportRow) {
+  return `${String(row.profile_id ?? row.id ?? "")}:${String(row.cohort_id ?? "")}`;
+}
+
+function sortSummaryRows(left: ExportRow, right: ExportRow) {
+  return String(left.cohort_name ?? "").localeCompare(String(right.cohort_name ?? ""), "id-ID")
+    || String(left.name ?? "").localeCompare(String(right.name ?? ""), "id-ID")
+    || Number(left.material_sort_order ?? 0) - Number(right.material_sort_order ?? 0)
+    || String(left.material_name ?? "").localeCompare(String(right.material_name ?? ""), "id-ID");
+}
+
+function reportSheet(
+  name: string,
+  title: string,
+  headers: string[],
+  dataRows: Array<Array<string | number | null>>,
+  columnWidths: number[],
+  centerColumns: number[] = [],
+) {
+  const rowStyles: Record<number, "title" | "section" | "header" | "data" | "alternate-data"> = { 0: "title", 2: "header" };
+  const rowHeights: Record<number, number> = { 0: 24, 2: 22.5 };
+  dataRows.forEach((_, index) => {
+    rowStyles[index + 3] = index % 2 === 0 ? "data" : "alternate-data";
+    rowHeights[index + 3] = 22.5;
+  });
+  const lastColumn = String.fromCharCode(64 + Math.min(headers.length, 26));
+  return {
+    name,
+    rows: [[title], [null], headers, ...dataRows],
+    variant: "test-results" as const,
+    rowStyles,
+    rowHeights,
+    centerColumns,
+    columnWidths,
+    freezeRows: 3,
+    autoFilterRange: `A3:${lastColumn}${Math.max(3, dataRows.length + 3)}`,
+  };
 }
 
 function safeSheetName(name: string, used: Set<string>) {
@@ -75,6 +136,184 @@ function safeSheetName(name: string, used: Set<string>) {
   return candidate;
 }
 
+function excelColumnName(index: number) {
+  let result = "";
+  for (let value = index + 1; value > 0; value = Math.floor((value - 1) / 26)) {
+    result = String.fromCharCode(65 + ((value - 1) % 26)) + result;
+  }
+  return result;
+}
+
+function formatExportTimestamp(value: string | number | null | undefined) {
+  const date = typeof value === "string" || typeof value === "number" ? new Date(value) : null;
+  if (!date || Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("id-ID", {
+    timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", year: "numeric",
+    hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
+  }).format(date).replace(",", "");
+}
+
+function buildMaterialAnswerSheet(sheetName: string, attempts: ExportRow[]) {
+  const questions = [...new Map(
+    attempts
+      .slice()
+      .sort((left, right) => Number(left.display_position) - Number(right.display_position)
+        || String(left.question_id).localeCompare(String(right.question_id)))
+      .map((row) => [String(row.question_id), { id: String(row.question_id), text: String(row.question_text ?? "") }]),
+  ).values()];
+  const attemptsById = new Map<string, ExportRow[]>();
+  for (const row of attempts) {
+    const attemptId = String(row.attempt_id);
+    attemptsById.set(attemptId, [...(attemptsById.get(attemptId) ?? []), row]);
+  }
+  const rows: Array<Array<string | number | null>> = [[
+    "Timestamp", "Score", "NAMA", "Tahap", "Angkatan",
+    ...questions.map((question, index) => `${index + 1}. ${question.text.replace(/^\s*\d+\.\s*/u, "")}`),
+  ]];
+  [...attemptsById.values()]
+    .sort((left, right) => String(left[0]?.submitted_at ?? "").localeCompare(String(right[0]?.submitted_at ?? ""))
+      || String(left[0]?.name ?? "").localeCompare(String(right[0]?.name ?? ""), "id-ID"))
+    .forEach((attempt) => {
+      const answers = new Map(attempt.map((row) => [String(row.question_id), selectedAnswer(row)]));
+      rows.push([
+        formatExportTimestamp(attempt[0]?.submitted_at), numericScore(attempt[0]?.score), attempt[0]?.name ?? "",
+        humanStatus(attempt[0]?.stage), attempt[0]?.cohort_name ?? attempt[0]?.batch_name ?? "",
+        ...questions.map((question) => answers.get(question.id) ?? ""),
+      ]);
+    });
+  const rowStyles: Record<number, "header" | "data"> = { 0: "header" };
+  const rowHeights: Record<number, number> = { 0: 30 };
+  rows.slice(1).forEach((_, index) => {
+    rowStyles[index + 1] = "data";
+    rowHeights[index + 1] = 22.5;
+  });
+  return {
+    name: sheetName,
+    rows,
+    variant: "test-results-reference" as const,
+    rowStyles,
+    rowHeights,
+    centerColumns: [0, 1, 3],
+    columnWidths: [19, 12, 28, 18, 20, ...Array.from({ length: questions.length }, () => 38)],
+    freezeRows: 1,
+    autoFilterRange: `A1:${excelColumnName(rows[0]!.length - 1)}${Math.max(1, rows.length)}`,
+  };
+}
+
+export function buildMaterialAnswerSheets(summaries: ExportRow[], answers: ExportRow[]) {
+  const participantIds = new Set(
+    summaries.map((row) => String(row.participant_id ?? "")).filter(Boolean),
+  );
+  const filteredAnswers = answers.filter((row) => participantIds.has(String(row.participant_id ?? "")));
+  const materials = [...new Map(
+    summaries.map((row) => [String(row.material_id), row]),
+  ).values()].sort((left, right) => Number(left.material_sort_order ?? 0) - Number(right.material_sort_order ?? 0)
+    || String(left.material_name ?? "").localeCompare(String(right.material_name ?? ""), "id-ID"));
+  const usedSheetNames = new Set(["rangkuman nilai", "nilai per materi", "data lengkap"]);
+  return materials.map((material) => buildMaterialAnswerSheet(
+    safeSheetName(String(material.material_name ?? "Mata Diklat"), usedSheetNames),
+    filteredAnswers.filter((answer) => String(answer.material_id) === String(material.material_id)),
+  ));
+}
+
+function buildSummarySheet(trainingName: string, summaries: ExportRow[]) {
+  const participants = new Map<string, ExportRow[]>();
+  for (const row of summaries) {
+    const key = stableParticipantKey(row);
+    participants.set(key, [...(participants.get(key) ?? []), row]);
+  }
+  const rows = [...participants.values()]
+    .map((participantRows) => participantRows.slice().sort(sortSummaryRows))
+    .sort((left, right) => sortSummaryRows(left[0]!, right[0]!))
+    .map((participantRows, index) => {
+      const participant = participantRows[0]!;
+      return [
+        index + 1,
+        participant.name ?? "",
+        participant.nik ?? "",
+        participant.cohort_name ?? "",
+        averageScore(participantRows.map((row) => row.pre_score)),
+        averageScore(participantRows.map((row) => row.post_score)),
+        averageScore(participantRows.map((row) => row.final_post_score)),
+        participantOverallStatus(participantRows),
+      ];
+    });
+  return reportSheet(
+    "Rangkuman Nilai",
+    `Rangkuman Nilai - ${trainingName}`,
+    ["No", "Nama Peserta", "NIK", "Angkatan", "Rata-rata Pre Test", "Rata-rata Post Test", "Rata-rata Nilai Final", "Status"],
+    rows,
+    [7, 30, 20, 20, 19, 20, 22, 20],
+    [0, 4, 5, 6, 7],
+  );
+}
+
+function buildMaterialScoreSheet(trainingName: string, summaries: ExportRow[]) {
+  const rows = summaries
+    .slice()
+    .sort(sortSummaryRows)
+    .map((row, index) => [
+      index + 1,
+      row.name ?? "",
+      row.nik ?? "",
+      row.cohort_name ?? "",
+      row.material_name ?? "",
+      numericScore(row.pre_score),
+      numericScore(row.post_score),
+      bestRemedial(row),
+      numericScore(row.final_post_score),
+      humanStatus(row.result_status),
+    ]);
+  return reportSheet(
+    "Nilai Per Materi",
+    `Nilai Per Materi - ${trainingName}`,
+    ["No", "Nama Peserta", "NIK", "Angkatan", "Materi", "Pre Test", "Post Test", "Remedial", "Nilai Final", "Status"],
+    rows,
+    [7, 28, 20, 20, 34, 14, 14, 14, 14, 20],
+    [0, 5, 6, 7, 8, 9],
+  );
+}
+
+function buildCompleteDataSheet(trainingName: string, summaries: ExportRow[]) {
+  const rows = summaries
+    .slice()
+    .sort(sortSummaryRows)
+    .map((row, index) => [
+      index + 1,
+      row.profile_id ?? "",
+      row.participant_id ?? "",
+      row.name ?? "",
+      row.nik ?? "",
+      row.cohort_name ?? "",
+      row.training_year ?? "",
+      row.training_name ?? "",
+      row.material_name ?? "",
+      numericScore(row.pre_score),
+      numericScore(row.post_score),
+      numericScore(row.remedial_1_score),
+      numericScore(row.remedial_2_score),
+      numericScore(row.final_post_score),
+      numericScore(row.passing_score),
+      humanStatus(row.result_status),
+      row.pre_submitted_at ?? "",
+      row.post_submitted_at ?? "",
+      row.remedial_1_submitted_at ?? "",
+      row.remedial_2_submitted_at ?? "",
+    ]);
+  return reportSheet(
+    "Data Lengkap",
+    `Data Lengkap Hasil Tes - ${trainingName}`,
+    [
+      "No", "Profile ID", "Participant ID", "Nama Peserta", "NIK", "Angkatan", "Tahun", "Pelatihan", "Materi",
+      "Pre Test", "Post Test", "Remedial 1", "Remedial 2", "Nilai Final", "Passing Score", "Status",
+      "Tanggal Pre", "Tanggal Post", "Tanggal Remedial 1", "Tanggal Remedial 2",
+    ],
+    rows,
+    [7, 30, 30, 28, 20, 20, 10, 30, 34, 13, 13, 13, 13, 13, 15, 20, 22, 22, 22, 22],
+    [0, 6, 9, 10, 11, 12, 13, 14, 15],
+  );
+}
+
 function safeFileName(name: string) {
   const normalized = name
     .normalize("NFD")
@@ -85,116 +324,31 @@ function safeFileName(name: string) {
   return normalized || "pelatihan";
 }
 
-function buildMaterialSheet(
-  sheetName: string,
-  attempts: ExportRow[],
-) {
-  const questions = [...new Map(
-    attempts
-      .slice()
-      .sort((left, right) => Number(left.display_position) - Number(right.display_position) || String(left.question_id).localeCompare(String(right.question_id)))
-      .map((row) => [String(row.question_id), { id: String(row.question_id), text: String(row.question_text ?? "") }]),
-  ).values()];
-  const attemptsById = new Map<string, ExportRow[]>();
-  for (const row of attempts) {
-    const attemptId = String(row.attempt_id);
-    attemptsById.set(attemptId, [...(attemptsById.get(attemptId) ?? []), row]);
-  }
-  const formatTimestamp = (value: string | number | null | undefined) => {
-    const date = typeof value === "string" || typeof value === "number" ? new Date(value) : null;
-    if (!date || Number.isNaN(date.getTime())) return "";
-    return new Intl.DateTimeFormat("id-ID", {
-      timeZone: "Asia/Jakarta", day: "2-digit", month: "2-digit", year: "numeric",
-      hour: "2-digit", minute: "2-digit", second: "2-digit", hourCycle: "h23",
-    }).format(date).replace(",", "");
-  };
-  const formatScore = (value: string | number | null | undefined) => {
-    const score = typeof value === "number" ? value : typeof value === "string" && value !== "" ? Number(value) : null;
-    if (score === null || !Number.isFinite(score)) return "";
-    return `${Math.round(score * 100) / 100} / 100`;
-  };
-  const rows: Array<Array<string | number | null>> = [[
-    "Timestamp", "Score", "NAMA",
-    ...questions.map((question, index) => `${index + 1}. ${question.text.replace(/^\s*\d+\.\s*/u, "")}`),
-  ]];
-  [...attemptsById.values()]
-    .sort((left, right) => String(left[0]?.submitted_at ?? "").localeCompare(String(right[0]?.submitted_at ?? "")) || String(left[0]?.name ?? "").localeCompare(String(right[0]?.name ?? "")))
-    .forEach((attempt) => {
-      const answers = new Map(attempt.map((row) => [String(row.question_id), selectedAnswer(row)]));
-      rows.push([
-        formatTimestamp(attempt[0]?.submitted_at), formatScore(attempt[0]?.score), attempt[0]?.name ?? "",
-        ...questions.map((question) => answers.get(question.id) ?? ""),
-      ]);
-    });
-  const rowStyles: Record<number, "title" | "section" | "header" | "data" | "alternate-data"> = { 0: "header" };
-  const rowHeights: Record<number, number> = { 0: 22.5 };
-  rows.slice(1).forEach((_, index) => { rowStyles[index + 1] = "data"; rowHeights[index + 1] = 22.5; });
-  return {
-    name: sheetName,
-    rows,
-    variant: "test-results-reference" as const,
-    rowStyles,
-    rowHeights,
-    columnWidths: [18.85, 18.85, 18.85, ...Array.from({ length: Math.max(0, questions.length) }, () => 37.57)],
-    autoFilter: false,
-    freezeRows: 0,
-  };
-}
-
-function buildSummarySheet(trainingName: string, summaries: ExportRow[]) {
-  const participants = new Map<string, ExportRow[]>();
-  for (const row of summaries) {
-    const key = `${row.id}:${row.cohort_id}`;
-    participants.set(key, [...(participants.get(key) ?? []), row]);
-  }
-  const dataRows = [...participants.values()]
-    .sort((left, right) => String(left[0]?.batch_name ?? "").localeCompare(String(right[0]?.batch_name ?? "")) || String(left[0]?.name ?? "").localeCompare(String(right[0]?.name ?? "")))
-    .map((rows) => {
-      const participant = rows[0]!;
-      return [
-        participant.name ?? "", participant.cohort_name ?? "",
-        averageScore(rows.map((row) => row.pre_score ?? null)),
-        averageScore(rows.map((row) => row.post_score ?? null)),
-        averageScore(rows.map((row) => row.remedial_2_score ?? row.remedial_1_score ?? null)),
-        summaryStatus(rows),
-      ];
-    });
-  const rowStyles: Record<number, "title" | "section" | "header" | "data" | "alternate-data"> = { 0: "title", 2: "header" };
-  const rowHeights: Record<number, number> = { 0: 24, 2: 22.5 };
-  dataRows.forEach((_, index) => { rowStyles[index + 3] = "data"; rowHeights[index + 3] = 22.5; });
-  return {
-    name: "Rangkuman",
-    rows: [[trainingName], [null], ["Nama", "Angkatan", "Rata-rata Pretest", "Rata-rata Post-test", "Rata-rata Remedial", "Status"], ...dataRows],
-    variant: "test-results" as const,
-    rowStyles,
-    rowHeights,
-    centerColumns: [2, 3, 4],
-    columnWidths: [28, 18, 20, 20, 20, 22],
-    freezeRows: 3,
-    autoFilterRange: `A3:F${Math.max(3, dataRows.length + 3)}`,
-  };
-}
-
 resultRoutes.get("/export", async (context) => {
   const trainingId = context.req.query("trainingId")?.trim();
   if (!trainingId) throw new HttpError(422, "TRAINING_REQUIRED", "Pilih pelatihan terlebih dahulu.");
+
   const summaries = await listResultSummaries(context.env.DB, {
     year: activeYear(context.req.query("year")),
     trainingId,
+    materialId: context.req.query("materialId"),
+    cohortId: context.req.query("cohortId"),
+    status: context.req.query("status"),
+    search: context.req.query("search"),
   });
-  if (!summaries.length) throw new HttpError(404, "TRAINING_RESULTS_NOT_FOUND", "Belum ada hasil tes untuk pelatihan yang dipilih.");
-  const participantIds = summaries.map((row) => String(row.id));
-  const answers = await listExportAnswers(context.env.DB, participantIds);
-  if (!answers.length) throw new HttpError(404, "TRAINING_RESULTS_NOT_FOUND", "Belum ada hasil tes untuk pelatihan yang dipilih.");
+  if (!summaries.length) throw new HttpError(404, "TRAINING_RESULTS_NOT_FOUND", "Belum ada hasil tes yang cocok dengan filter yang dipilih.");
+
   const trainingName = String(summaries[0]?.training_name ?? "Pelatihan");
-  const materials = [...new Map(summaries.map((row) => [String(row.training_session_id), row])).values()]
-    .sort((left, right) => Number(left.material_sort_order ?? 0) - Number(right.material_sort_order ?? 0) || String(left.material_name ?? "").localeCompare(String(right.material_name ?? "")));
-  const usedSheetNames = new Set<string>();
-  const materialSheets = materials.map((material) => buildMaterialSheet(
-    safeSheetName(String(material.material_name ?? "Mata Diklat"), usedSheetNames),
-    answers.filter((answer) => String(answer.training_session_id) === String(material.training_session_id)),
-  ));
-  const workbook = createXlsx([...materialSheets, buildSummarySheet(trainingName, summaries)]);
+  const participantIds = [...new Set(
+    summaries.map((row) => String(row.participant_id ?? "")).filter(Boolean),
+  )];
+  const answers = await listExportAnswers(context.env.DB, participantIds);
+  const workbook = createXlsx([
+    buildSummarySheet(trainingName, summaries),
+    buildMaterialScoreSheet(trainingName, summaries),
+    buildCompleteDataSheet(trainingName, summaries),
+    ...buildMaterialAnswerSheets(summaries, answers),
+  ]);
   const filename = `hasil-tes-${safeFileName(trainingName)}.xlsx`;
   return new Response(workbook.slice().buffer as ArrayBuffer, { headers: {
     "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
