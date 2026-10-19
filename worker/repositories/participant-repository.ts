@@ -47,8 +47,8 @@ export async function createParticipant(
   return { id: input.id, batch_id: input.batchId, name: input.name, normalized_name: input.normalizedName };
 }
 
-export async function findRegisteredProfile(database:D1Database,input:{trainingId:string;cohortId:string;normalizedName:string;nik:string}){
-  return database.prepare(`SELECT id,name,normalized_name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND normalized_name=? AND nik=? AND is_active=1 LIMIT 1`).bind(input.trainingId,input.cohortId,input.normalizedName,input.nik).first<{id:string;name:string;normalized_name:string}>();
+export async function findRegisteredProfile(database:D1Database,input:{trainingId:string;cohortId:string;nik:string}){
+  return database.prepare(`SELECT id,name,normalized_name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND nik=? AND is_active=1 LIMIT 1`).bind(input.trainingId,input.cohortId,input.nik).first<{id:string;name:string;normalized_name:string}>();
 }
 
 export async function findOrCreateExamParticipant(database:D1Database,input:{profileId:string;batchId:string;name:string;normalizedName:string}){

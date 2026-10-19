@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { AppRouter } from "./app/router";
 import { AuthProvider } from "./features/admin-auth/AuthProvider";
 import { ActiveYearProvider } from "./features/active-year/ActiveYearProvider";
+import { DownloadManagerProvider } from "./features/downloads/DownloadManager";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
 import "@fontsource/inter/600.css";
@@ -22,7 +23,9 @@ createRoot(root).render(
     <BrowserRouter>
       <AuthProvider>
         <ActiveYearProvider>
-          <AppRouter />
+          <DownloadManagerProvider>
+            <AppRouter />
+          </DownloadManagerProvider>
         </ActiveYearProvider>
       </AuthProvider>
     </BrowserRouter>

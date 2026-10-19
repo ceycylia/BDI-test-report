@@ -12,11 +12,11 @@ describe("registrasi peserta", () => {
     expect(maskNik("1271051234567802")).toBe("127105********02");
   });
 
-  it("mensyaratkan nama ternormalisasi dan NIK yang sama", () => {
+  it("mengidentifikasi peserta berdasarkan NIK meskipun nama yang diketik berbeda", () => {
     const registered = { normalizedName: "siti aminah", nik: "0123456789012345" };
     expect(participantIdentityMatches(registered, { normalizedName: "siti aminah", nik: "0123 456789012345" })).toBe(true);
     expect(participantIdentityMatches(registered, { normalizedName: "siti aminah", nik: "0123456789012346" })).toBe(false);
-    expect(participantIdentityMatches(registered, { normalizedName: "siti amina", nik: "0123456789012345" })).toBe(false);
+    expect(participantIdentityMatches(registered, { normalizedName: "nama salah", nik: "0123456789012345" })).toBe(true);
   });
 
   it("mendeteksi duplikat dari database dan di dalam file import", () => {

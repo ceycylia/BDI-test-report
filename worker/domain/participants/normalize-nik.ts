@@ -12,5 +12,5 @@ export function participantIdentityMatches(
   registered: { normalizedName: string; nik: string },
   input: { normalizedName: string; nik: string },
 ): boolean {
-  return registered.normalizedName === input.normalizedName && normalizeNik(registered.nik) === normalizeNik(input.nik);
+  return normalizeNik(registered.nik) === normalizeNik(input.nik);
 }

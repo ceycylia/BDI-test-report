@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Award, BookOpenText, CalendarDays, Download, Eye, FileSpreadsheet, GraduationCap, Image, Layers3, Plus, Trash2, Upload, UserPlus, Users, X } from "lucide-react";
-import { adminDownload, adminMutation, adminQuery, adminUpload, AdminApiError } from "../../features/admin-auth/admin-api";
+import { adminMutation, adminQuery, adminUpload, AdminApiError } from "../../features/admin-auth/admin-api";
 import { addDays, formatCohortDate, generateCohorts, type GeneratedCohort } from "../../features/cohorts/bulk-cohort";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { DateInput } from "../../components/ui/DateInput";
@@ -13,6 +13,7 @@ import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../componen
 import { formatDateForDisplay } from "../../features/dates/date-format";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
 import { optimizeImage } from "../../features/media/optimize-image";
+import { useDownloadManager } from "../../features/downloads/DownloadManager";
 
 type Training = { id: string; name: string; is_active: number; material_count: number; total_jp: number };
 type Material = { id: string; training_id: string; training_name: string; name: string; jp: number; sort_order: number; bank_id: string | null; bank_name: string | null };
@@ -20,7 +21,16 @@ type Cohort = { id: string; training_id: string; training_name: string; name: st
 type Participant = { id: string; training_id: string; cohort_id: string; name: string; nik_masked: string; birth_place: string; birth_date: string; address: string | null; photo_key: string | null; is_active: number; training_name: string; cohort_name: string };
 type Certificate = { participant_id: string; name: string; nik_masked: string; training_id: string; training_name: string; cohort_id: string; cohort_name: string; graduation_status: string; certificate_id: string | null; certificate_number: string | null; certificate_status: string | null; completion_letter_id: string | null; completion_letter_number: string | null };
 type Catalog = { trainings: Training[]; materials: Material[]; cohorts: Cohort[] };
-type ImportRow = { row: number; name: string; nik: string; birthPlace: string; birthDate: string; address: string; errors: string[] };
+type ImportRow = { row: number; name: string; nik: string; birthPlace: string; birthDate: string; address: string; action: "CREATE" | "UPDATE"; errors: string[] };
+type PhotoImportRow = {
+  archivePath: string;
+  fileName: string;
+  parsedName: string;
+  participantId: string | null;
+  participantName: string | null;
+  status: "READY" | "REPLACE" | "NOT_FOUND" | "AMBIGUOUS" | "DUPLICATE_FILE" | "INVALID";
+  message: string;
+};
 type CertificateSettings = { certificate_prefix: string; signer_name: string; signer_title: string; signer_nip: string; issue_place: string; issue_date: string; signature_key?: string | null };
 const emptyCertificateSettings: CertificateSettings = { certificate_prefix: "", signer_name: "", signer_title: "", signer_nip: "", issue_place: "", issue_date: "", signature_key: null };
 type BulkDocumentNumberEntry = { participantId: string; certificateNumber?: string; completionLetterNumber?: string };
@@ -77,6 +87,7 @@ export function ParticipantsPage() {
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [participantPage, setParticipantPage] = useState(1);
+  const [participantNameSort, setParticipantNameSort] = useState<"asc" | "desc">("asc");
   const [participantPagination, setParticipantPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
   const [participantsLoading, setParticipantsLoading] = useState(false);
   const [cohortRows, setCohortRows] = useState<Cohort[]>([]);
@@ -98,6 +109,15 @@ export function ParticipantsPage() {
   const [selectedParticipant, setSelectedParticipant] = useState<string | null>(null);
   const [participantCreateOpen, setParticipantCreateOpen] = useState(false);
   const [participantImportOpen, setParticipantImportOpen] = useState(false);
+  const [photoImportOpen, setPhotoImportOpen] = useState(false);
+  const [photoTrainingId, setPhotoTrainingId] = useState("");
+  const [photoCohortId, setPhotoCohortId] = useState("");
+  const [photoArchive, setPhotoArchive] = useState<File | null>(null);
+  const [photoPreview, setPhotoPreview] = useState<PhotoImportRow[]>([]);
+  const [photoPreviewReady, setPhotoPreviewReady] = useState(false);
+  const [photoPreviewing, setPhotoPreviewing] = useState(false);
+  const [photoImporting, setPhotoImporting] = useState(false);
+  const photoArchiveRef = useRef<HTMLInputElement>(null);
   const [certificateTrainingId, setCertificateTrainingId] = useState("");
   const [certificateCohort, setCertificateCohort] = useState("");
   const [certificateStatus, setCertificateStatus] = useState("");
@@ -137,6 +157,7 @@ export function ParticipantsPage() {
     if (listCohortId) query.set("cohortId", listCohortId);
     if (listStatus) query.set("status", listStatus);
     if (debouncedSearch.trim()) query.set("search", debouncedSearch.trim());
+    query.set("sortName", participantNameSort);
     try {
       const result = await adminQuery<{ participants: Participant[]; pagination: PaginationMeta }>(`/api/admin/participants/participants?${query.toString()}`);
       if (requestId !== participantRequestRef.current) return;
@@ -149,7 +170,7 @@ export function ParticipantsPage() {
     } finally {
       if (requestId === participantRequestRef.current) setParticipantsLoading(false);
     }
-  }, [activeYear, debouncedSearch, listCohortId, listStatus, listTrainingId, participantPage]);
+  }, [activeYear, debouncedSearch, listCohortId, listStatus, listTrainingId, participantNameSort, participantPage]);
 
   const loadCohorts = useCallback(async (requestedPage = cohortPage) => {
     setCohortsLoading(true);
@@ -339,11 +360,63 @@ export function ParticipantsPage() {
     if (preview.some((row) => row.errors.length)) return setError("Perbaiki baris yang belum valid sebelum import.");
     setImporting(true);
     try {
-      const result = await adminMutation<{ imported: number }>("/api/admin/participants/participants/import", { method: "POST", body: JSON.stringify({ trainingId, cohortId, rows: preview }) });
+      const result = await adminMutation<{ imported: number; created: number; updated: number }>("/api/admin/participants/participants/import", { method: "POST", body: JSON.stringify({ trainingId, cohortId, rows: preview }) });
       if (importFileRef.current) importFileRef.current.value = "";
-      closeParticipantImport(); report(`${result.imported} peserta berhasil diimport.`);
+      closeParticipantImport(); report(`${result.created} peserta ditambahkan dan ${result.updated} peserta diperbarui.`);
     } catch (processError) { fail(processError); }
     finally { setImporting(false); }
+  }
+
+  const photoCohorts = catalog.cohorts.filter((cohort) => !photoTrainingId || cohort.training_id === photoTrainingId);
+  function resetPhotoPreview() {
+    setPhotoPreview([]);
+    setPhotoPreviewReady(false);
+  }
+  function closePhotoImport() {
+    setPhotoImportOpen(false);
+    setPhotoTrainingId("");
+    setPhotoCohortId("");
+    setPhotoArchive(null);
+    resetPhotoPreview();
+    if (photoArchiveRef.current) photoArchiveRef.current.value = "";
+  }
+  async function previewPhotoImport() {
+    if (!photoTrainingId || !photoCohortId || !photoArchive) return setError("Pilih pelatihan, angkatan, dan file ZIP terlebih dahulu.");
+    const form = new FormData();
+    form.set("file", photoArchive);
+    form.set("trainingId", photoTrainingId);
+    form.set("cohortId", photoCohortId);
+    setPhotoPreviewing(true);
+    try {
+      const result = await adminUpload<{ rows: PhotoImportRow[] }>("/api/admin/participants/participants/photos/import-preview", form);
+      setPhotoPreview(result.rows);
+      setPhotoPreviewReady(true);
+      setError(null);
+    } catch (processError) {
+      resetPhotoPreview();
+      fail(processError);
+    } finally {
+      setPhotoPreviewing(false);
+    }
+  }
+  async function importPhotos() {
+    if (!photoTrainingId || !photoCohortId || !photoArchive || !photoPreviewReady) return setError("Lakukan preview foto terlebih dahulu.");
+    const importable = photoPreview.filter((row) => row.status === "READY" || row.status === "REPLACE").length;
+    if (!importable) return setError("Tidak ada foto yang cocok untuk diunggah.");
+    const form = new FormData();
+    form.set("file", photoArchive);
+    form.set("trainingId", photoTrainingId);
+    form.set("cohortId", photoCohortId);
+    setPhotoImporting(true);
+    try {
+      const result = await adminUpload<{ uploaded: number; replaced: number; skipped: number; failed: number }>("/api/admin/participants/participants/photos/import", form);
+      closePhotoImport();
+      report(`${result.uploaded} foto ditambahkan, ${result.replaced} foto diganti, ${result.skipped} dilewati${result.failed ? `, dan ${result.failed} gagal` : ""}.`);
+    } catch (processError) {
+      fail(processError);
+    } finally {
+      setPhotoImporting(false);
+    }
   }
   async function generateCert(participant: Certificate, side: "FRONT" | "BACK") {
     try { await adminMutation(`/api/admin/participants/certificates/${participant.participant_id}/generate`, { method: "POST", body: JSON.stringify({ side }) }); report(`PDF sertifikat ${side === "FRONT" ? "depan" : "belakang"} berhasil dibuat.`); } catch (processError) { fail(processError); }
@@ -408,7 +481,7 @@ export function ParticipantsPage() {
   return <>
     <header className="admin-page-header participant-page-header">
       <div><p className="section-label">Peserta</p><h1>Pengelolaan peserta & sertifikat</h1><ActiveYearIndicator /></div>
-      {tab === "data" && <div className="page-header-actions"><button type="button" className="button" onClick={() => setParticipantCreateOpen(true)}><Plus /> Tambah Peserta</button><button type="button" className="button button--secondary" onClick={() => setParticipantImportOpen(true)}><FileSpreadsheet /> Upload Peserta</button></div>}
+      {tab === "data" && <div className="page-header-actions"><button type="button" className="button" onClick={() => setParticipantCreateOpen(true)}><Plus /> Tambah Peserta</button><button type="button" className="button button--secondary" onClick={() => setParticipantImportOpen(true)}><FileSpreadsheet /> Upload Peserta</button><button type="button" className="button participant-photo-upload-button" onClick={() => setPhotoImportOpen(true)}><Image /> Upload Foto</button></div>}
     </header>
     <nav className="participant-tabs" aria-label="Menu peserta">{tabs.map((item) => { const Icon = item.icon; return <button type="button" key={item.id} className={tab === item.id ? "is-active" : ""} onClick={() => setTab(item.id)}><Icon />{item.label}</button>; })}</nav>
     {noticeTarget === "global" && message && <p className="form-message is-success">{message}</p>}{noticeTarget === "global" && error && <p className="form-message is-error">{error}</p>}
@@ -424,10 +497,10 @@ export function ParticipantsPage() {
         </div>
         <div className="data-table-wrap">
           <table className="clean-table participant-table">
-            <thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead>
+            <thead><tr><th>No</th><th><span className="certificate-name-heading">Nama Lengkap<button type="button" className="certificate-name-sort" aria-label={`Urutkan nama ${participantNameSort === "asc" ? "Z ke A" : "A ke Z"}`} title={`Urutan nama ${participantNameSort === "asc" ? "A–Z" : "Z–A"}`} onClick={() => { setParticipantPage(1); setParticipantNameSort((current) => current === "asc" ? "desc" : "asc"); }}>{participantNameSort === "asc" ? "A–Z" : "Z–A"}</button></span></th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead>
             <tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}>
               <td>{(participantPagination.page - 1) * participantPagination.limit + index + 1}</td>
-              <td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img loading="lazy" decoding="async" src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{participant.birth_place}, {formatDateForDisplay(participant.birth_date)}</small></span></span></td>
+              <td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img loading="lazy" decoding="async" src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{[participant.birth_place, participant.birth_date ? formatDateForDisplay(participant.birth_date) : ""].filter(Boolean).join(", ") || "Data belum lengkap"}</small></span></span></td>
               <td><span className="participant-nik" title={participant.nik_masked}>{participant.nik_masked.length > 6 ? `${participant.nik_masked.slice(0, 6)}…` : participant.nik_masked}</span></td>
               <td><span className="participant-training-name" title={participant.training_name}>{participant.training_name}</span></td>
               <td>{participant.cohort_name}</td>
@@ -442,7 +515,7 @@ export function ParticipantsPage() {
       {selectedParticipant && <ParticipantEditor id={selectedParticipant} activeYear={activeYear} catalog={catalog} onCancel={() => setSelectedParticipant(null)} onSaved={() => { setSelectedParticipant(null); report("Data peserta diperbarui."); }} onError={fail} />}
       {participantCreateOpen && <ModalPortal onClose={() => setParticipantCreateOpen(false)}><section className="participant-modal" role="dialog" aria-modal="true" aria-labelledby="add-participant-title">
         <header className="participant-modal__header"><div><p className="section-label">Peserta baru</p><h2 id="add-participant-title">Tambah Peserta</h2><p>Isi data peserta untuk pelatihan dan angkatan yang dipilih.</p></div><button type="button" className="participant-modal__close" aria-label="Tutup tambah peserta" onClick={() => setParticipantCreateOpen(false)}><X /></button></header>
-        <form className="participant-modal__form form-stack" onSubmit={(event) => void createParticipant(event)}><div className="participant-modal__grid"><label>Nama Lengkap<input name="name" required autoFocus /></label><TrainingCohortFields catalog={catalog} /><label>NIK<input name="nik" required inputMode="numeric" /></label><label>Tempat Lahir<input name="birthPlace" required /></label><label>Tanggal Lahir<DateInput name="birthDate" required /></label><label>Status<select value="active" disabled><option value="active">Aktif</option></select></label><label className="participant-modal__address">Alamat<textarea name="address" required rows={3} placeholder="Alamat lengkap peserta" /></label><label className="participant-modal__photo">Foto Peserta<span className="file-field"><Image /><input name="photo" type="file" accept="image/jpeg,image/png" /></span></label></div><footer className="participant-modal__actions"><button type="button" className="button button--secondary" onClick={() => setParticipantCreateOpen(false)}>Batal</button><button className="button"><UserPlus /> Simpan Peserta</button></footer></form>
+        <form className="participant-modal__form form-stack" onSubmit={(event) => void createParticipant(event)}><div className="participant-modal__grid"><label>Nama Lengkap<input name="name" required autoFocus /></label><TrainingCohortFields catalog={catalog} /><label>NIK<input name="nik" required inputMode="numeric" /></label><label>Tempat Lahir <small>(opsional)</small><input name="birthPlace" /></label><label>Tanggal Lahir <small>(opsional)</small><DateInput name="birthDate" /></label><label>Status<select value="active" disabled><option value="active">Aktif</option></select></label><label className="participant-modal__address">Alamat <small>(opsional)</small><textarea name="address" rows={3} placeholder="Dapat dilengkapi kemudian" /></label><label className="participant-modal__photo">Foto Peserta <small>(opsional)</small><span className="file-field"><Image /><input name="photo" type="file" accept="image/jpeg,image/png" /></span></label></div><footer className="participant-modal__actions"><button type="button" className="button button--secondary" onClick={() => setParticipantCreateOpen(false)}>Batal</button><button className="button"><UserPlus /> Simpan Peserta</button></footer></form>
       </section></ModalPortal>}
       {participantImportOpen && <ModalPortal onClose={closeParticipantImport} blocked={previewing || importing}><section className="participant-modal certificate-modal" role="dialog" aria-modal="true" aria-labelledby="import-participant-title">
         <header className="participant-modal__header"><div><p className="section-label">Import Excel</p><h2 id="import-participant-title">Upload Peserta</h2><p>Unggah file Excel lalu periksa data pada preview sebelum diimpor.</p></div><button type="button" className="participant-modal__close" aria-label="Tutup upload peserta" onClick={closeParticipantImport}><X /></button></header>
@@ -461,8 +534,20 @@ export function ParticipantsPage() {
           </div>
         </div>
         <div className="import-preview-action"><button type="button" className="button" disabled={!trainingId || !cohortId || !importFile || previewing} onClick={() => void previewImport()}><Eye /> {previewing ? "Membaca Data..." : "Preview Data"}</button></div>
-        {previewReady && <section className="import-preview-section"><div className="import-preview-heading"><div><p className="section-label">Hasil Preview</p><h3>{preview.length} data peserta ditemukan</h3></div><span className={preview.some((row) => row.errors.length) ? "status-badge is-danger" : "status-badge is-active"}>{preview.filter((row) => row.errors.length).length ? `${preview.filter((row) => row.errors.length).length} data perlu diperbaiki` : "Seluruh data valid"}</span></div><div className="data-table-wrap"><table className="clean-table import-preview-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Tempat Lahir</th><th>Tanggal Lahir</th><th>Alamat</th><th>Status Validasi</th></tr></thead><tbody>{preview.map((row, index) => <tr key={row.row} className={row.errors.length ? "is-invalid" : ""}><td>{index + 1}</td><td>{row.name || "—"}</td><td>{row.nik || "—"}</td><td>{row.birthPlace || "—"}</td><td>{formatDateForDisplay(row.birthDate)}</td><td>{row.address || "—"}</td><td>{row.errors.length ? <span className="validation-errors">{row.errors.map((rowError) => <span key={rowError}>{rowError}</span>)}</span> : <span className="status-badge is-active">Valid</span>}</td></tr>)}</tbody></table></div><div className="import-submit-row"><p>Foto peserta dapat diunggah terpisah setelah proses import selesai.</p><button type="button" className="button" disabled={!preview.length || preview.some((row) => row.errors.length) || importing} onClick={() => void importRows()}><Upload /> {importing ? "Mengimpor..." : `Import Peserta (${preview.length})`}</button></div></section>}
+        {previewReady && <section className="import-preview-section"><div className="import-preview-heading"><div><p className="section-label">Hasil Preview</p><h3>{preview.length} data peserta ditemukan</h3></div><span className={preview.some((row) => row.errors.length) ? "status-badge is-danger" : "status-badge is-active"}>{preview.filter((row) => row.errors.length).length ? `${preview.filter((row) => row.errors.length).length} data perlu diperbaiki` : "Seluruh data valid"}</span></div><div className="data-table-wrap"><table className="clean-table import-preview-table"><thead><tr><th>No</th><th>Nama Lengkap</th><th>NIK</th><th>Tempat Lahir</th><th>Tanggal Lahir</th><th>Alamat</th><th>Aksi Import</th><th>Status Validasi</th></tr></thead><tbody>{preview.map((row, index) => <tr key={row.row} className={row.errors.length ? "is-invalid" : ""}><td>{index + 1}</td><td>{row.name || "—"}</td><td>{row.nik || "—"}</td><td>{row.birthPlace || "—"}</td><td>{row.birthDate ? formatDateForDisplay(row.birthDate) : "—"}</td><td>{row.address || "—"}</td><td><span className={row.action === "UPDATE" ? "status-badge is-warning" : "status-badge is-active"}>{row.action === "UPDATE" ? "Perbarui data" : "Peserta baru"}</span></td><td>{row.errors.length ? <span className="validation-errors">{row.errors.map((rowError) => <span key={rowError}>{rowError}</span>)}</span> : <span className="status-badge is-active">Valid</span>}</td></tr>)}</tbody></table></div><div className="import-submit-row"><p>NIK menjadi identitas tetap. Data terbaru yang terisi akan memperbarui data lama; sel kosong tidak menghapus data yang sudah ada.</p><button type="button" className="button" disabled={!preview.length || preview.some((row) => row.errors.length) || importing} onClick={() => void importRows()}><Upload /> {importing ? "Mengimpor..." : `Import Peserta (${preview.length})`}</button></div></section>}
         </div></section></ModalPortal>}
+      {photoImportOpen && <ModalPortal onClose={closePhotoImport} blocked={photoPreviewing || photoImporting}><section className="participant-modal certificate-modal" role="dialog" aria-modal="true" aria-labelledby="photo-import-title">
+        <header className="participant-modal__header"><div><p className="section-label">Import Foto Massal</p><h2 id="photo-import-title">Upload Foto Peserta</h2><p>Unggah ZIP berisi JPG, JPEG, atau PNG. Nomor urut di awal nama file akan diabaikan.</p></div><button type="button" className="participant-modal__close" aria-label="Tutup upload foto" onClick={closePhotoImport}><X /></button></header>
+        <div className="participant-modal__form form-stack">
+          <div className="import-step-grid">
+            <label><span>1. Pilih Pelatihan</span><SearchableSelect value={photoTrainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setPhotoTrainingId(value); setPhotoCohortId(""); resetPhotoPreview(); }} /></label>
+            <label><span>2. Pilih Angkatan</span><select value={photoCohortId} disabled={!photoTrainingId} onChange={(event) => { setPhotoCohortId(event.target.value); resetPhotoPreview(); }}><option value="">Pilih angkatan</option>{photoCohorts.map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label>
+            <div className="import-file-control"><span className="import-field-label">3. Pilih File ZIP</span><div className={photoArchive ? "modern-file-picker has-file" : "modern-file-picker"}><span className="modern-file-picker__icon"><Image /></span><span className="modern-file-picker__copy"><strong>{photoArchive?.name ?? "Pilih ZIP foto"}</strong><small>{photoArchive ? `${(photoArchive.size / 1024 / 1024).toFixed(2)} MB` : ".zip, maksimal 50 MB; setiap foto maksimal 5 MB"}</small></span><button type="button" className="button button--secondary button--small" onClick={() => photoArchiveRef.current?.click()}>{photoArchive ? "Ganti File" : "Pilih File"}</button><input ref={photoArchiveRef} className="visually-hidden-file" type="file" accept=".zip,application/zip" onChange={(event) => { setPhotoArchive(event.target.files?.[0] ?? null); resetPhotoPreview(); setError(null); }} /></div></div>
+          </div>
+          <div className="import-preview-action"><button type="button" className="button participant-photo-upload-button" disabled={!photoTrainingId || !photoCohortId || !photoArchive || photoPreviewing} onClick={() => void previewPhotoImport()}><Eye />{photoPreviewing ? "Mencocokkan Foto…" : "Preview Foto"}</button></div>
+          {photoPreviewReady && <section className="import-preview-section"><div className="import-preview-heading"><div><p className="section-label">Hasil Pencocokan</p><h3>{photoPreview.length} file diperiksa</h3></div><span className="status-badge is-active">{photoPreview.filter((row) => row.status === "READY" || row.status === "REPLACE").length} foto siap</span></div><div className="data-table-wrap"><table className="clean-table photo-import-preview-table"><thead><tr><th>File</th><th>Nama dari File</th><th>Peserta</th><th>Status</th></tr></thead><tbody>{photoPreview.map((row) => <tr key={row.archivePath} className={["READY", "REPLACE"].includes(row.status) ? "" : "is-invalid"}><td>{row.fileName}</td><td>{row.parsedName || "—"}</td><td>{row.participantName || "—"}</td><td><strong>{row.status === "READY" ? "Siap diunggah" : row.status === "REPLACE" ? "Foto lama diganti" : row.status === "NOT_FOUND" ? "Nama tidak ditemukan" : row.status === "AMBIGUOUS" ? "Nama ganda" : row.status === "DUPLICATE_FILE" ? "Foto duplikat" : "File tidak valid"}</strong><small>{row.message}</small></td></tr>)}</tbody></table></div><div className="import-submit-row"><p>Foto hanya dipasang setelah konfirmasi. Nama file dicocokkan dalam pelatihan dan angkatan terpilih.</p><button type="button" className="button participant-photo-upload-button" disabled={!photoPreview.some((row) => row.status === "READY" || row.status === "REPLACE") || photoImporting} onClick={() => void importPhotos()}><Upload />{photoImporting ? "Mengunggah…" : "Upload Foto yang Cocok"}</button></div></section>}
+        </div>
+      </section></ModalPortal>}
     </>}
 
     {tab === "master" && <div className="master-catalog-layout">
@@ -559,6 +644,7 @@ export function ParticipantsPage() {
 
 function CertificateWorkspace({ catalog }: { catalog: Catalog }) {
   const { activeYear } = useActiveYear();
+  const { jobs: downloadJobs, startDownload } = useDownloadManager();
   const [trainingId, setTrainingId] = useState("");
   const [cohortId, setCohortId] = useState("");
   const [settings, setSettings] = useState<CertificateSettings>(emptyCertificateSettings);
@@ -569,7 +655,6 @@ function CertificateWorkspace({ catalog }: { catalog: Catalog }) {
   const [preview, setPreview] = useState<Certificate | null>(null);
   const [letterPreview, setLetterPreview] = useState<Certificate | null>(null);
   const [previewSide, setPreviewSide] = useState<"FRONT" | "BACK">("FRONT");
-  const [downloading, setDownloading] = useState<"certificates" | "letters" | null>(null);
   const [certificateStart, setCertificateStart] = useState("");
   const [letterStart, setLetterStart] = useState("");
   const [certificateNumberFormat, setCertificateNumberFormat] = useState("");
@@ -580,6 +665,7 @@ function CertificateWorkspace({ catalog }: { catalog: Catalog }) {
   const [success, setSuccess] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<Certificate[]>([]);
+  const [nameSort, setNameSort] = useState<"asc" | "desc">("asc");
   const [page, setPage] = useState(1);
   const [pagination, setPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
   const [loading, setLoading] = useState(false);
@@ -596,11 +682,12 @@ function CertificateWorkspace({ catalog }: { catalog: Catalog }) {
       const query = new URLSearchParams({ year: String(activeYear), page: String(requestedPage), limit: String(ADMIN_PAGE_SIZE) });
       if (trainingId) query.set("trainingId", trainingId);
       if (cohortId) query.set("cohortId", cohortId);
+      query.set("sortName", nameSort);
       const result = await adminQuery<{ certificates: Certificate[]; pagination: PaginationMeta }>(`/api/admin/participants/certificates?${query}`);
       if (requestedPage > result.pagination.totalPages) { setPage(result.pagination.totalPages); return; }
       setRows(result.certificates); setPagination(result.pagination);
     } finally { setLoading(false); }
-  }, [activeYear, cohortId, page, trainingId]);
+  }, [activeYear, cohortId, nameSort, page, trainingId]);
 
   useEffect(() => { void loadRows().catch((reason: unknown) => setError(reason instanceof Error ? reason.message : "Dokumen peserta tidak dapat dimuat.")); }, [loadRows]);
   useEffect(() => { setPage(1); }, [activeYear, cohortId, trainingId]);
@@ -705,6 +792,7 @@ function CertificateWorkspace({ catalog }: { catalog: Catalog }) {
     const query = new URLSearchParams({ year: String(activeYear) });
     if (trainingId) query.set("trainingId", trainingId);
     if (cohortId) query.set("cohortId", cohortId);
+    query.set("sortName", nameSort);
     const result = await adminQuery<{ certificates: Certificate[] }>(`/api/admin/participants/certificates/numbering-targets?${query}`);
     return result.certificates.filter((certificate) => certificate.graduation_status === "LULUS");
   }
@@ -780,26 +868,31 @@ function CertificateWorkspace({ catalog }: { catalog: Catalog }) {
   }
   async function downloadAll(kind: "certificates" | "letters") {
     if (!trainingId || !cohortId) { setError("Pilih pelatihan dan angkatan terlebih dahulu."); return; }
-    setDownloading(kind); setError(null);
-    try {
-      const endpoint = kind === "certificates" ? "/api/admin/participants/certificates/download-all" : "/api/admin/participants/completion-letters/download-all";
-      const archive = await adminDownload(endpoint, { method: "POST", body: JSON.stringify({ trainingId, cohortId }) });
-      const url = URL.createObjectURL(archive); const link = document.createElement("a");
-      link.href = url; link.download = kind === "certificates" ? "sertifikat-bdi.zip" : "surat-keterangan-bdi.zip"; link.click(); URL.revokeObjectURL(url);
-      await loadRows();
-    } catch (reason) { setError(reason instanceof AdminApiError ? reason.message : "Arsip dokumen tidak dapat dibuat."); }
-    finally { setDownloading(null); }
+    setError(null);
+    const isCertificate = kind === "certificates";
+    await startDownload({
+      key: `participant-documents-${kind}`,
+      label: isCertificate ? "Semua Sertifikat" : "Semua Surat Keterangan",
+      fileName: isCertificate ? "sertifikat-bdi.zip" : "surat-keterangan-bdi.zip",
+      path: isCertificate
+        ? "/api/admin/participants/certificates/download-all"
+        : "/api/admin/participants/completion-letters/download-all",
+      init: { method: "POST", body: JSON.stringify({ trainingId, cohortId }) },
+    });
   }
+
+  const downloadingCertificates = downloadJobs["participant-documents-certificates"]?.status === "preparing";
+  const downloadingLetters = downloadJobs["participant-documents-letters"]?.status === "preparing";
 
   return <section className="panel certificate-workspace">
     <header className="certificate-workspace__header"><div><p className="section-label">Dokumen Kelulusan</p><h2>Sertifikat & Surat Keterangan</h2><p>Sertifikat menggunakan A4 Landscape; Surat Keterangan menggunakan A4 Portrait.</p></div><button type="button" className="button button--secondary" onClick={() => setSettingsOpen(true)}>Pengaturan Sertifikat</button></header>
     <div className="certificate-workspace__filters"><label>Pelatihan<SearchableSelect value={trainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setCohortId(""); }} /></label><label>Angkatan<select value={cohortId} disabled={!trainingId} onChange={(event) => setCohortId(event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label></div>
-    <section className="certificate-number-bulk"><div className="certificate-number-bulk__rows"><div className="certificate-number-bulk__row"><label>Format Nomor Sertifikat<input value={certificateNumberFormat} onChange={(event) => setCertificateNumberFormat(event.target.value)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", issueDate)} /></label><label>Nomor Awal Sertifikat<input value={certificateStart} onChange={(event) => setCertificateStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 1237" /></label><button type="button" className="button" disabled={!trainingId || bulkSaving} onClick={() => void requestBulkNumbering("certificate")}>{bulkSaving && numberingTarget === "certificate" ? "Menerapkan…" : "Terapkan"}</button></div><div className="certificate-number-bulk__row"><label>Format Nomor Surat<input value={letterNumberFormat} onChange={(event) => setLetterNumberFormat(event.target.value)} placeholder={fullDocumentNumber("letter", "[isi nomor]", issueDate)} /></label><label>Nomor Awal Surat<input value={letterStart} onChange={(event) => setLetterStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 0456" /></label><button type="button" className="button" disabled={!trainingId || bulkSaving} onClick={() => void requestBulkNumbering("letter")}>{bulkSaving && numberingTarget === "letter" ? "Menerapkan…" : "Terapkan"}</button></div></div></section>
+    <section className="certificate-number-bulk"><div className="certificate-number-bulk__rows"><div className="certificate-number-bulk__row"><label>Format Nomor Sertifikat<input value={certificateNumberFormat} onChange={(event) => setCertificateNumberFormat(event.target.value)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", issueDate)} /></label><label>Nomor Awal Sertifikat<input value={certificateStart} onChange={(event) => setCertificateStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 1237" /></label><button type="button" className="button" disabled={!trainingId || bulkSaving} onClick={() => void requestBulkNumbering("certificate")}>{bulkSaving && numberingTarget === "certificate" ? "Menerapkan…" : "Terapkan"}</button></div><div className="certificate-number-bulk__row"><label>Format Nomor Surat<input value={letterNumberFormat} onChange={(event) => setLetterNumberFormat(event.target.value)} placeholder={fullDocumentNumber("letter", "[isi nomor]", issueDate)} /></label><label>Nomor Awal Surat<input value={letterStart} onChange={(event) => setLetterStart(event.target.value.replace(/\D/gu, ""))} inputMode="numeric" placeholder="Contoh: 0456" /></label><button type="button" className="button" disabled={!trainingId || bulkSaving} onClick={() => void requestBulkNumbering("letter")}>{bulkSaving && numberingTarget === "letter" ? "Menerapkan…" : "Terapkan"}</button></div></div><p className="certificate-number-bulk__sort-note">Penomoran mengikuti urutan Nama Peserta {nameSort === "asc" ? "A–Z" : "Z–A"} dari baris paling atas.</p></section>
     {success && <p className="form-message is-success" role="status">{success}</p>}
     {error && <p className="form-message is-error" role="alert">{error}</p>}
-    <div className="data-table-wrap"><table className="clean-table certificate-workspace__table certificate-document-table"><thead><tr><th>Nama Peserta</th><th>Status</th><th>Nomor Sertifikat</th><th>Nomor Surat</th><th>Aksi</th></tr></thead><tbody>{rows.map((certificate) => <tr key={certificate.participant_id}><td><strong>{certificate.name}</strong><small>{certificate.training_name} · {certificate.cohort_name}</small></td><td><span className={certificate.graduation_status === "LULUS" ? "status-badge is-active" : "status-badge is-danger"}>{certificate.graduation_status === "LULUS" ? "Lulus" : "Belum lulus"}</span></td><td>{certificate.graduation_status === "LULUS" ? <><input aria-label={`Nomor sertifikat ${certificate.name}`} value={numbers[certificate.participant_id] ?? certificate.certificate_number ?? ""} onChange={(event) => updateNumber(certificate, event.target.value)} onBlur={() => void persistNumber(certificate)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", issueDate)} />{savingKey === `certificate-${certificate.participant_id}` && <small className="certificate-autosave">Menyimpan…</small>}</> : "—"}</td><td>{certificate.graduation_status === "LULUS" ? <><input aria-label={`Nomor surat ${certificate.name}`} value={letterNumbers[certificate.participant_id] ?? certificate.completion_letter_number ?? ""} onChange={(event) => updateLetterNumber(certificate, event.target.value)} onBlur={() => void persistLetterNumber(certificate)} placeholder={fullDocumentNumber("letter", "[isi nomor]", issueDate)} />{savingKey === `letter-${certificate.participant_id}` && <small className="certificate-autosave">Menyimpan…</small>}</> : "—"}</td><td>{certificate.graduation_status === "LULUS" ? <div className="certificate-document-actions"><button type="button" className="button button--secondary button--small" onClick={() => void openPreview(certificate)}>Preview Sertifikat</button><button type="button" className="button button--secondary button--small" onClick={() => void openLetterPreview(certificate)}>Preview Surat</button></div> : "—"}</td></tr>)}</tbody></table>{trainingId && cohortId && !rows.length && <p className="empty-state">Belum ada peserta pada angkatan ini.</p>}</div>
+    <div className="data-table-wrap"><table className="clean-table certificate-workspace__table certificate-document-table"><thead><tr><th><span className="certificate-name-heading">Nama Peserta<button type="button" className="certificate-name-sort" aria-label={`Urutkan nama ${nameSort === "asc" ? "Z ke A" : "A ke Z"}`} title={`Urutan nama ${nameSort === "asc" ? "A–Z" : "Z–A"}`} onClick={() => { setPage(1); setNameSort((current) => current === "asc" ? "desc" : "asc"); }}>{nameSort === "asc" ? "A–Z" : "Z–A"}</button></span></th><th>Status</th><th>Nomor Sertifikat</th><th>Nomor Surat</th><th>Aksi</th></tr></thead><tbody>{rows.map((certificate) => <tr key={certificate.participant_id}><td><strong>{certificate.name}</strong><small>{certificate.training_name} · {certificate.cohort_name}</small></td><td><span className={certificate.graduation_status === "LULUS" ? "status-badge is-active" : "status-badge is-danger"}>{certificate.graduation_status === "LULUS" ? "Lulus" : "Belum lulus"}</span></td><td>{certificate.graduation_status === "LULUS" ? <><input aria-label={`Nomor sertifikat ${certificate.name}`} value={numbers[certificate.participant_id] ?? certificate.certificate_number ?? ""} onChange={(event) => updateNumber(certificate, event.target.value)} onBlur={() => void persistNumber(certificate)} placeholder={fullDocumentNumber("certificate", "[isi nomor]", issueDate)} />{savingKey === `certificate-${certificate.participant_id}` && <small className="certificate-autosave">Menyimpan…</small>}</> : "—"}</td><td>{certificate.graduation_status === "LULUS" ? <><input aria-label={`Nomor surat ${certificate.name}`} value={letterNumbers[certificate.participant_id] ?? certificate.completion_letter_number ?? ""} onChange={(event) => updateLetterNumber(certificate, event.target.value)} onBlur={() => void persistLetterNumber(certificate)} placeholder={fullDocumentNumber("letter", "[isi nomor]", issueDate)} />{savingKey === `letter-${certificate.participant_id}` && <small className="certificate-autosave">Menyimpan…</small>}</> : "—"}</td><td>{certificate.graduation_status === "LULUS" ? <div className="certificate-document-actions"><button type="button" className="button button--secondary button--small" onClick={() => void openPreview(certificate)}>Preview Sertifikat</button><button type="button" className="button button--secondary button--small" onClick={() => void openLetterPreview(certificate)}>Preview Surat</button></div> : "—"}</td></tr>)}</tbody></table>{trainingId && cohortId && !rows.length && <p className="empty-state">Belum ada peserta pada angkatan ini.</p>}</div>
     <Pagination pagination={pagination} itemLabel="peserta" loading={loading} onPageChange={setPage} />
-    <footer className="certificate-workspace__footer certificate-workspace__footer--documents"><p>Pilih pelatihan dan angkatan untuk mengunduh dokumen peserta lulus yang memiliki nomor resmi.</p><div className="certificate-batch-actions"><button type="button" className="button button--secondary" disabled={!trainingId || !cohortId || Boolean(downloading)} onClick={() => void downloadAll("certificates")}><Download />{downloading === "certificates" ? "Menyiapkan…" : "Download Semua Sertifikat"}</button><button type="button" className="button button--secondary" disabled={!trainingId || !cohortId || Boolean(downloading)} onClick={() => void downloadAll("letters")}><Download />{downloading === "letters" ? "Menyiapkan…" : "Download Semua Surat Keterangan"}</button></div></footer>
+    <footer className="certificate-workspace__footer certificate-workspace__footer--documents"><p>Pilih pelatihan dan angkatan untuk mengunduh dokumen peserta lulus yang memiliki nomor resmi.</p><div className="certificate-batch-actions"><button type="button" className="button button--secondary" disabled={!trainingId || !cohortId || downloadingCertificates} onClick={() => void downloadAll("certificates")}><Download />{downloadingCertificates ? "Menyiapkan…" : "Download Semua Sertifikat"}</button><button type="button" className="button button--secondary" disabled={!trainingId || !cohortId || downloadingLetters} onClick={() => void downloadAll("letters")}><Download />{downloadingLetters ? "Menyiapkan…" : "Download Semua Surat Keterangan"}</button></div></footer>
     {settingsOpen && <CertificateSettingsModal settings={settings} onChange={setSettings} onSaved={() => setSuccess("Pengaturan sertifikat global berhasil disimpan.")} onClose={() => setSettingsOpen(false)} />}
     {preview && <CertificatePreviewModal certificate={preview} side={previewSide} onSideChange={setPreviewSide} onClose={() => setPreview(null)} />}
     {letterPreview && <CompletionLetterPreviewModal certificate={letterPreview} onClose={() => setLetterPreview(null)} />}
@@ -808,7 +901,7 @@ function CertificateWorkspace({ catalog }: { catalog: Catalog }) {
 }
 
 function NumberOverwriteModal({ busy, onCancel, onOverwrite, onFillEmpty }: { busy: boolean; onCancel: () => void; onOverwrite: () => void; onFillEmpty: () => void }) {
-  return <ModalPortal onClose={onCancel} blocked={busy}><section className="participant-modal number-overwrite-modal" role="dialog" aria-modal="true" aria-labelledby="number-overwrite-title"><header className="participant-modal__header"><div><p className="section-label">Konfirmasi Penomoran</p><h2 id="number-overwrite-title">Sebagian nomor sudah terisi</h2><p>Timpa nomor existing?</p></div><button type="button" className="participant-modal__close" aria-label="Tutup konfirmasi" disabled={busy} onClick={onCancel}><X /></button></header><div className="number-overwrite-modal__body"><p>Pilih apakah seluruh nomor peserta lulus akan dibuat ulang atau hanya mengisi field yang masih kosong.</p></div><footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={busy} onClick={onCancel}>Batal</button><button type="button" className="button" disabled={busy} onClick={onFillEmpty}>Isi yang masih kosong saja</button><button type="button" className="button button--secondary" disabled={busy} onClick={onOverwrite}>Timpa</button></footer></section></ModalPortal>;
+  return <ModalPortal onClose={onCancel} blocked={busy}><section className="participant-modal number-overwrite-modal" role="dialog" aria-modal="true" aria-labelledby="number-overwrite-title"><header className="participant-modal__header"><div><p className="section-label">Konfirmasi Penomoran</p><h2 id="number-overwrite-title">Sebagian nomor sudah terisi</h2><p>Timpa nomor yang sudah ada?</p></div><button type="button" className="participant-modal__close" aria-label="Tutup konfirmasi" disabled={busy} onClick={onCancel}><X /></button></header><div className="number-overwrite-modal__body"><p>Nomor lama dapat diganti. Pilih “Timpa & urutkan ulang” untuk membuat ulang seluruh nomor sesuai urutan nama pada tabel dari baris paling atas.</p></div><footer className="participant-modal__actions"><button type="button" className="button button--secondary" disabled={busy} onClick={onCancel}>Batal</button><button type="button" className="button" disabled={busy} onClick={onFillEmpty}>Isi yang masih kosong saja</button><button type="button" className="button button--secondary" disabled={busy} onClick={onOverwrite}>Timpa & urutkan ulang</button></footer></section></ModalPortal>;
 }
 
 function CertificateSettingsModal({ settings, onChange, onSaved, onClose }: { settings: CertificateSettings; onChange: (settings: CertificateSettings) => void; onSaved: () => void; onClose: () => void }) {
@@ -913,7 +1006,7 @@ function ParticipantEditor({ id, activeYear, catalog, onCancel, onSaved, onError
   }
   const availableCohorts = catalog.cohorts.filter((cohort) => cohort.training_id === trainingId);
   const modal = <ModalPortal onClose={onCancel}>
-    {!person ? <section className="participant-modal participant-modal--loading" role="dialog" aria-modal="true" aria-label="Memuat data peserta"><button type="button" className="participant-modal__close" aria-label="Tutup edit peserta" onClick={onCancel}><X /></button><p className="muted">Memuat data peserta…</p></section> : <section className="participant-modal" role="dialog" aria-modal="true" aria-labelledby="participant-modal-title"><header className="participant-modal__header"><div><p className="section-label">Edit Peserta</p><h2 id="participant-modal-title">{person.name}</h2></div><button type="button" className="participant-modal__close" aria-label="Tutup edit peserta" onClick={onCancel}><X /></button></header><form className="participant-modal__form" onSubmit={(event) => void submit(event)}><div className="participant-modal__grid"><label>Nama Lengkap<input name="name" defaultValue={person.name} required /></label><label>NIK Lengkap<input name="nik" defaultValue={person.nik} required inputMode="numeric" /></label><label>Tempat Lahir<input name="birthPlace" defaultValue={person.birth_place} required /></label><label>Tanggal Lahir<DateInput name="birthDate" defaultValue={person.birth_date} required /></label><label>Pelatihan<SearchableSelect required value={trainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setCohortId(""); }} /></label><label>Angkatan<select required value={cohortId} onChange={(event) => setCohortId(event.target.value)} disabled={!trainingId}><option value="">Pilih angkatan</option>{availableCohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label className="participant-modal__address">Alamat<textarea name="address" defaultValue={person.address ?? ""} required rows={3} placeholder="Alamat lengkap peserta" /></label><label className="participant-modal__photo">Foto Peserta<span className="participant-photo-picker"><span className="participant-photo-picker__preview">{person.photo_key ? <img src={`/api/admin/participants/participants/${id}/photo`} alt="Foto peserta saat ini" /> : <Image />}</span><span className="participant-photo-picker__copy"><strong>{photoName || "Foto 3 × 4"}</strong><small>JPG atau PNG, maksimal 5 MB. Tampilan akan menyesuaikan rasio 3:4.</small><button type="button" className="button button--secondary button--small" onClick={() => photoInputRef.current?.click()}>{photoName ? "Ganti Foto" : "Pilih Foto"}</button></span><input ref={photoInputRef} className="visually-hidden-file" name="photo" type="file" accept="image/jpeg,image/png" onChange={(event) => setPhotoName(event.target.files?.[0]?.name ?? "")} /></span></label><label className="toggle-row participant-modal__status"><input name="isActive" type="checkbox" defaultChecked={person.is_active === 1} /><span>Status Aktif</span></label></div><footer className="participant-modal__actions"><button type="button" className="button button--secondary" onClick={onCancel}>Batal</button><button className="button"><UserPlus /> Simpan Perubahan</button></footer></form></section>}
+    {!person ? <section className="participant-modal participant-modal--loading" role="dialog" aria-modal="true" aria-label="Memuat data peserta"><button type="button" className="participant-modal__close" aria-label="Tutup edit peserta" onClick={onCancel}><X /></button><p className="muted">Memuat data peserta…</p></section> : <section className="participant-modal" role="dialog" aria-modal="true" aria-labelledby="participant-modal-title"><header className="participant-modal__header"><div><p className="section-label">Edit Peserta</p><h2 id="participant-modal-title">{person.name}</h2></div><button type="button" className="participant-modal__close" aria-label="Tutup edit peserta" onClick={onCancel}><X /></button></header><form className="participant-modal__form" onSubmit={(event) => void submit(event)}><div className="participant-modal__grid"><label>Nama Lengkap<input name="name" defaultValue={person.name} required /></label><label>NIK Lengkap<input name="nik" defaultValue={person.nik} required inputMode="numeric" /></label><label>Tempat Lahir <small>(opsional)</small><input name="birthPlace" defaultValue={person.birth_place} /></label><label>Tanggal Lahir <small>(opsional)</small><DateInput name="birthDate" defaultValue={person.birth_date} /></label><label>Pelatihan<SearchableSelect required value={trainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setCohortId(""); }} /></label><label>Angkatan<select required value={cohortId} onChange={(event) => setCohortId(event.target.value)} disabled={!trainingId}><option value="">Pilih angkatan</option>{availableCohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label><label className="participant-modal__address">Alamat <small>(opsional)</small><textarea name="address" defaultValue={person.address ?? ""} rows={3} placeholder="Dapat dilengkapi kemudian" /></label><label className="participant-modal__photo">Foto Peserta <small>(opsional)</small><span className="participant-photo-picker"><span className="participant-photo-picker__preview">{person.photo_key ? <img src={`/api/admin/participants/participants/${id}/photo`} alt="Foto peserta saat ini" /> : <Image />}</span><span className="participant-photo-picker__copy"><strong>{photoName || "Foto 3 × 4"}</strong><small>JPG atau PNG, maksimal 5 MB. Tampilan akan menyesuaikan rasio 3:4.</small><button type="button" className="button button--secondary button--small" onClick={() => photoInputRef.current?.click()}>{photoName ? "Ganti Foto" : "Pilih Foto"}</button></span><input ref={photoInputRef} className="visually-hidden-file" name="photo" type="file" accept="image/jpeg,image/png" onChange={(event) => setPhotoName(event.target.files?.[0]?.name ?? "")} /></span></label><label className="toggle-row participant-modal__status"><input name="isActive" type="checkbox" defaultChecked={person.is_active === 1} /><span>Status Aktif</span></label></div><footer className="participant-modal__actions"><button type="button" className="button button--secondary" onClick={onCancel}>Batal</button><button className="button"><UserPlus /> Simpan Perubahan</button></footer></form></section>}
   </ModalPortal>;
   return modal;
 }

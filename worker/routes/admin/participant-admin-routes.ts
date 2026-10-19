@@ -1,7 +1,7 @@
 import { Hono, type Context } from "hono";
 import { z } from "zod";
 import * as XLSX from "xlsx";
-import { zipSync } from "fflate";
+import { unzipSync, zipSync } from "fflate";
 import {
   PDFDocument,
   clip,
@@ -141,9 +141,9 @@ const participantInput = z.object({
   cohortId: z.string().min(1),
   name: z.string().trim().min(2).max(150),
   nik: z.string().trim().min(3).max(40),
-  birthPlace: z.string().trim().min(2).max(120),
-  birthDate: z.string().date(),
-  address: z.string().trim().min(1).max(500),
+  birthPlace: z.string().trim().max(120).default(""),
+  birthDate: z.union([z.literal(""), z.string().date()]).default(""),
+  address: z.string().trim().max(500).default(""),
   isActive: z.boolean().default(true),
 });
 const allowedParticipantImages = new Map([
@@ -151,6 +151,25 @@ const allowedParticipantImages = new Map([
   ["image/png", "png"],
   ["image/webp", "webp"],
 ]);
+
+type ParticipantPhotoImportStatus =
+  | "READY"
+  | "REPLACE"
+  | "NOT_FOUND"
+  | "AMBIGUOUS"
+  | "DUPLICATE_FILE"
+  | "INVALID";
+
+type ParticipantPhotoImportRow = {
+  archivePath: string;
+  fileName: string;
+  parsedName: string;
+  participantId: string | null;
+  participantName: string | null;
+  oldPhotoKey: string | null;
+  status: ParticipantPhotoImportStatus;
+  message: string;
+};
 
 function detectPdfImageFormat(bytes: Uint8Array) {
   const isPng = bytes.length >= 8
@@ -170,6 +189,111 @@ function detectPdfImageFormat(bytes: Uint8Array) {
     && bytes[2] === 0xff;
   if (isJpeg) return { extension: "jpg", contentType: "image/jpeg" } as const;
   return null;
+}
+
+function photoNameFromArchivePath(archivePath: string) {
+  const fileName = archivePath.split(/[\\/]/u).pop() ?? archivePath;
+  return fileName
+    .replace(/\.[^.]+$/u, "")
+    .replace(/^\s*\d+\s*(?:[.)_-]\s*)?/u, "")
+    .trim();
+}
+
+function ignoredArchiveEntry(path: string) {
+  const parts = path.split(/[\\/]/u);
+  const fileName = parts.at(-1) ?? "";
+  return !fileName || /[\\/]$/u.test(path) || parts.includes("__MACOSX") || fileName.startsWith(".");
+}
+
+async function readParticipantPhotoArchive(
+  database: D1Database,
+  file: File,
+  trainingId: string,
+  cohortId: string,
+) {
+  if (!/\.zip$/iu.test(file.name) || file.size > 50_000_000)
+    throw new HttpError(422, "FILE_INVALID", "Pilih file ZIP maksimal 50 MB.");
+
+  const archiveEntries: Array<{ name: string; originalSize: number }> = [];
+  let totalOriginalSize = 0;
+  let filesInArchive = 0;
+  let extracted: Record<string, Uint8Array>;
+  try {
+    extracted = unzipSync(new Uint8Array(await file.arrayBuffer()), {
+      filter: (entry) => {
+        if (ignoredArchiveEntry(entry.name)) return false;
+        filesInArchive += 1;
+        totalOriginalSize += entry.originalSize;
+        if (filesInArchive > 1_000 || totalOriginalSize > 100_000_000)
+          throw new HttpError(422, "ARCHIVE_TOO_LARGE", "ZIP maksimal berisi 1.000 file dengan total ukuran hasil ekstrak 100 MB.");
+        archiveEntries.push({ name: entry.name, originalSize: entry.originalSize });
+        return entry.originalSize <= 5_000_000 && /\.(jpe?g|png)$/iu.test(entry.name);
+      },
+    });
+  } catch (reason) {
+    if (reason instanceof HttpError) throw reason;
+    throw new HttpError(422, "FILE_INVALID", "File ZIP tidak dapat dibaca atau rusak.");
+  }
+  if (!archiveEntries.length)
+    throw new HttpError(422, "ARCHIVE_EMPTY", "ZIP tidak berisi file foto peserta.");
+
+  const profiles = await database.prepare(
+    `SELECT id,name,normalized_name,photo_key
+     FROM participant_profiles
+     WHERE training_id=? AND cohort_id=? AND is_active=1`,
+  ).bind(trainingId, cohortId).all<{
+    id: string;
+    name: string;
+    normalized_name: string;
+    photo_key: string | null;
+  }>();
+  const profilesByName = new Map<string, typeof profiles.results>();
+  profiles.results.forEach((profile) => {
+    const key = normalizeParticipantName(profile.normalized_name || profile.name);
+    profilesByName.set(key, [...(profilesByName.get(key) ?? []), profile]);
+  });
+
+  const rows: ParticipantPhotoImportRow[] = archiveEntries.map((entry) => {
+    const fileName = entry.name.split(/[\\/]/u).pop() ?? entry.name;
+    const parsedName = photoNameFromArchivePath(entry.name);
+    const bytes = extracted[entry.name];
+    if (!/\.(jpe?g|png)$/iu.test(fileName))
+      return { archivePath: entry.name, fileName, parsedName, participantId: null, participantName: null, oldPhotoKey: null, status: "INVALID", message: "Format bukan JPG, JPEG, atau PNG." };
+    if (entry.originalSize > 5_000_000)
+      return { archivePath: entry.name, fileName, parsedName, participantId: null, participantName: null, oldPhotoKey: null, status: "INVALID", message: "Ukuran foto melebihi 5 MB." };
+    if (!bytes || !detectPdfImageFormat(bytes))
+      return { archivePath: entry.name, fileName, parsedName, participantId: null, participantName: null, oldPhotoKey: null, status: "INVALID", message: "Isi file bukan gambar JPG atau PNG yang valid." };
+    if (!parsedName)
+      return { archivePath: entry.name, fileName, parsedName, participantId: null, participantName: null, oldPhotoKey: null, status: "INVALID", message: "Nama peserta tidak ditemukan pada nama file." };
+    const matches = profilesByName.get(normalizeParticipantName(parsedName)) ?? [];
+    if (!matches.length)
+      return { archivePath: entry.name, fileName, parsedName, participantId: null, participantName: null, oldPhotoKey: null, status: "NOT_FOUND", message: "Nama tidak ditemukan pada pelatihan dan angkatan terpilih." };
+    if (matches.length > 1)
+      return { archivePath: entry.name, fileName, parsedName, participantId: null, participantName: null, oldPhotoKey: null, status: "AMBIGUOUS", message: "Terdapat lebih dari satu peserta dengan nama yang sama." };
+    const participant = matches[0]!;
+    return {
+      archivePath: entry.name,
+      fileName,
+      parsedName,
+      participantId: participant.id,
+      participantName: participant.name,
+      oldPhotoKey: participant.photo_key,
+      status: participant.photo_key ? "REPLACE" : "READY",
+      message: participant.photo_key ? "Foto lama akan diganti." : "Siap diunggah.",
+    };
+  });
+
+  const participantCounts = new Map<string, number>();
+  rows.forEach((row) => {
+    if (row.participantId) participantCounts.set(row.participantId, (participantCounts.get(row.participantId) ?? 0) + 1);
+  });
+  rows.forEach((row) => {
+    if (row.participantId && (participantCounts.get(row.participantId) ?? 0) > 1) {
+      row.status = "DUPLICATE_FILE";
+      row.message = "Lebih dari satu foto cocok dengan peserta ini.";
+    }
+  });
+  return { rows, extracted };
 }
 
 type ParticipantListFilters = {
@@ -977,6 +1101,12 @@ participantAdminRoutes.delete(
 
 participantAdminRoutes.get("/participants", async (c) => {
   const pagination = parsePagination({ page: c.req.query("page"), limit: c.req.query("limit"), pageSize: c.req.query("pageSize") });
+  const nameSort = c.req.query("sortName");
+  const orderBy = nameSort === "asc"
+    ? "profiles.name COLLATE NOCASE ASC, profiles.created_at DESC, profiles.rowid DESC"
+    : nameSort === "desc"
+      ? "profiles.name COLLATE NOCASE DESC, profiles.created_at DESC, profiles.rowid DESC"
+      : "profiles.created_at DESC, profiles.rowid DESC";
   const { where, bindings } = participantListWhere({
     year: c.req.query("year"),
     trainingId: c.req.query("trainingId"),
@@ -998,7 +1128,7 @@ participantAdminRoutes.get("/participants", async (c) => {
        JOIN trainings ON trainings.id=profiles.training_id
        JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
        ${where}
-       ORDER BY profiles.created_at DESC, profiles.rowid DESC
+       ORDER BY ${orderBy}
        LIMIT ? OFFSET ?`,
     ).bind(...bindings, pagination.limit, pagination.offset).all<Record<string, unknown>>(),
   ]);
@@ -1309,9 +1439,9 @@ participantAdminRoutes.get("/participants-template", async () => {
           "NIK",
           "Wajib. Tepat 16 digit angka dan disimpan sebagai Teks. Tidak perlu menambahkan tanda apostrof.",
         ],
-        ["Tempat Lahir", "Wajib."],
-        ["Tanggal Lahir", "Wajib. Gunakan format DD/MM/YYYY."],
-        ["Alamat", "Wajib. Isi alamat peserta sesuai data resmi."],
+        ["Tempat Lahir", "Opsional pada upload awal. Nilai terbaru yang terisi akan memperbarui data lama."],
+        ["Tanggal Lahir", "Opsional pada upload awal. Jika diisi, gunakan format DD/MM/YYYY."],
+        ["Alamat", "Opsional pada upload awal. Nilai terbaru yang terisi akan memperbarui data lama."],
         [
           "Pelatihan & Angkatan",
           "Tidak perlu ditulis di Excel. Pilih di aplikasi sebelum preview.",
@@ -1395,12 +1525,12 @@ participantAdminRoutes.post(
     await requireMatchingCohort(c.env.DB, trainingId, cohortId);
     const existingRows = (
       await c.env.DB.prepare(
-        `SELECT nik FROM participant_profiles WHERE cohort_id=?`
+        `SELECT id,nik FROM participant_profiles WHERE training_id=? AND cohort_id=?`
       )
-        .bind(cohortId)
-        .all<{ nik: string }>()
+        .bind(trainingId, cohortId)
+        .all<{ id: string; nik: string }>()
     ).results;
-    const existing = new Set(existingRows.map((row) => normalizeNik(row.nik)));
+    const existing = new Map(existingRows.map((row) => [normalizeNik(row.nik), row.id]));
     const fileNiks = new Set<string>();
     let workbook: XLSX.WorkBook;
     try {
@@ -1431,20 +1561,27 @@ participantAdminRoutes.post(
       const parsedNik = parseImportedNik(record.NIK);
       const nik = parsedNik.nik;
       const birthPlace = String(record["Tempat Lahir"] ?? "").trim();
-      const birthDate = excelDate(record["Tanggal Lahir"]);
+      const rawBirthDate = record["Tanggal Lahir"];
+      const birthDate = excelDate(rawBirthDate);
       const address = String(record.Alamat ?? "").trim();
       const errors: string[] = [];
       if (!name) errors.push("Nama kosong");
       if (!nik) errors.push("NIK wajib");
       else if (parsedNik.error) errors.push(parsedNik.error);
       else if (!/^\d{16}$/u.test(nik)) errors.push("NIK harus 16 digit angka");
-      if (!birthPlace) errors.push("Tempat lahir kosong");
-      if (!birthDate) errors.push("Tanggal lahir tidak valid");
-      if (!address) errors.push("Alamat kosong");
-      if (nik && existing.has(nik)) errors.push("Peserta sudah terdaftar");
-      else if (nik && fileNiks.has(nik)) errors.push("NIK duplikat dalam file");
+      if (String(rawBirthDate ?? "").trim() && !birthDate) errors.push("Tanggal lahir tidak valid");
+      if (nik && fileNiks.has(nik)) errors.push("NIK duplikat dalam file");
       if (nik) fileNiks.add(nik);
-      return { row: index + 2, name, nik, birthPlace, birthDate, address, errors };
+      return {
+        row: index + 2,
+        name,
+        nik,
+        birthPlace,
+        birthDate,
+        address,
+        action: nik && existing.has(nik) ? "UPDATE" : "CREATE",
+        errors,
+      };
     });
     return c.json({ rows });
   }
@@ -1464,9 +1601,9 @@ participantAdminRoutes.post(
             z.object({
               name: z.string().trim().min(1),
               nik: z.string().regex(/^\d{16}$/u, "NIK harus 16 digit angka"),
-              birthPlace: z.string().trim().min(1),
-              birthDate: z.string().date(),
-              address: z.string().trim().min(1).max(500),
+              birthPlace: z.string().trim().max(120).default(""),
+              birthDate: z.union([z.literal(""), z.string().date()]).default(""),
+              address: z.string().trim().max(500).default(""),
             })
           )
           .min(1)
@@ -1477,40 +1614,159 @@ participantAdminRoutes.post(
     const data = parsed.data;
     await requireMatchingCohort(c.env.DB, data.trainingId, data.cohortId);
     const existing = await c.env.DB.prepare(
-      `SELECT nik FROM participant_profiles WHERE cohort_id=?`
+      `SELECT id,nik FROM participant_profiles WHERE training_id=? AND cohort_id=?`
     )
-      .bind(data.cohortId)
-      .all<{ nik: string }>();
-    const seen = new Set(existing.results.map((row) => normalizeNik(row.nik)));
+      .bind(data.trainingId, data.cohortId)
+      .all<{ id: string; nik: string }>();
+    const existingByNik = new Map(existing.results.map((row) => [normalizeNik(row.nik), row.id]));
+    const fileNiks = new Set<string>();
     const statements: D1PreparedStatement[] = [];
+    let created = 0;
+    let updated = 0;
     for (const row of data.rows) {
       const nik = normalizeNik(row.nik);
-      if (seen.has(nik))
+      if (fileNiks.has(nik))
         throw new HttpError(
           409,
           "PARTICIPANT_DUPLICATE",
-          `NIK ${maskNik(nik)} sudah terdaftar atau duplikat di dalam file.`
+          `NIK ${maskNik(nik)} duplikat di dalam file.`
         );
-      seen.add(nik);
-      statements.push(
-        c.env.DB.prepare(
-          `INSERT INTO participant_profiles(id,training_id,cohort_id,name,normalized_name,nik,birth_place,birth_date,address) VALUES(?,?,?,?,?,?,?,?,?)`
-        ).bind(
-          crypto.randomUUID(),
-          data.trainingId,
-          data.cohortId,
-          cleanParticipantName(row.name),
-          normalizeParticipantName(row.name),
-          nik,
-          row.birthPlace,
-          row.birthDate,
-          row.address
-        )
-      );
+      fileNiks.add(nik);
+      const cleanName = cleanParticipantName(row.name);
+      const normalizedName = normalizeParticipantName(row.name);
+      const existingId = existingByNik.get(nik);
+      if (existingId) {
+        statements.push(
+          c.env.DB.prepare(
+            `UPDATE participant_profiles SET
+               name=?,normalized_name=?,
+               birth_place=CASE WHEN ?<>'' THEN ? ELSE birth_place END,
+               birth_date=CASE WHEN ?<>'' THEN ? ELSE birth_date END,
+               address=CASE WHEN ?<>'' THEN ? ELSE address END,
+               updated_at=CURRENT_TIMESTAMP
+             WHERE id=?`
+          ).bind(
+            cleanName,
+            normalizedName,
+            row.birthPlace,
+            row.birthPlace,
+            row.birthDate,
+            row.birthDate,
+            row.address,
+            row.address,
+            existingId,
+          ),
+          c.env.DB.prepare(
+            `UPDATE participants SET name=?,normalized_name=?,updated_at=CURRENT_TIMESTAMP WHERE profile_id=?`
+          ).bind(cleanName, normalizedName, existingId),
+        );
+        updated += 1;
+      } else {
+        statements.push(
+          c.env.DB.prepare(
+            `INSERT INTO participant_profiles(id,training_id,cohort_id,name,normalized_name,nik,birth_place,birth_date,address) VALUES(?,?,?,?,?,?,?,?,?)`
+          ).bind(
+            crypto.randomUUID(),
+            data.trainingId,
+            data.cohortId,
+            cleanName,
+            normalizedName,
+            nik,
+            row.birthPlace,
+            row.birthDate,
+            row.address
+          )
+        );
+        created += 1;
+      }
     }
     await c.env.DB.batch(statements);
-    return c.json({ imported: statements.length });
+    return c.json({ imported: created + updated, created, updated });
   }
+);
+
+participantAdminRoutes.post(
+  "/participants/photos/import-preview",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const form = await c.req.formData();
+    const file = form.get("file");
+    if (!(file instanceof File))
+      throw new HttpError(422, "FILE_REQUIRED", "Pilih file ZIP foto peserta.");
+    const trainingId = String(form.get("trainingId") ?? "");
+    const cohortId = String(form.get("cohortId") ?? "");
+    await requireMatchingCohort(c.env.DB, trainingId, cohortId);
+    const { rows } = await readParticipantPhotoArchive(c.env.DB, file, trainingId, cohortId);
+    return c.json({
+      rows: rows.map(({ oldPhotoKey: _oldPhotoKey, ...row }) => row),
+      summary: {
+        ready: rows.filter((row) => row.status === "READY").length,
+        replace: rows.filter((row) => row.status === "REPLACE").length,
+        skipped: rows.filter((row) => !["READY", "REPLACE"].includes(row.status)).length,
+      },
+    });
+  },
+);
+
+participantAdminRoutes.post(
+  "/participants/photos/import",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const form = await c.req.formData();
+    const file = form.get("file");
+    if (!(file instanceof File))
+      throw new HttpError(422, "FILE_REQUIRED", "Pilih file ZIP foto peserta.");
+    const trainingId = String(form.get("trainingId") ?? "");
+    const cohortId = String(form.get("cohortId") ?? "");
+    await requireMatchingCohort(c.env.DB, trainingId, cohortId);
+    const { rows, extracted } = await readParticipantPhotoArchive(c.env.DB, file, trainingId, cohortId);
+    const importableRows = rows.filter((row) => row.participantId && (row.status === "READY" || row.status === "REPLACE"));
+    let uploaded = 0;
+    let replaced = 0;
+    let failed = 0;
+    for (const row of importableRows) {
+      const bytes = extracted[row.archivePath];
+      const format = bytes ? detectPdfImageFormat(bytes) : null;
+      if (!bytes || !format || !row.participantId) {
+        failed += 1;
+        continue;
+      }
+      const key = `participants/${row.participantId}/${crypto.randomUUID()}.${format.extension}`;
+      try {
+        await c.env.QUESTION_IMAGES.put(key, bytes, {
+          httpMetadata: { contentType: format.contentType },
+        });
+      } catch {
+        failed += 1;
+        continue;
+      }
+      try {
+        const result = await c.env.DB.prepare(
+          `UPDATE participant_profiles SET photo_key=?,updated_at=CURRENT_TIMESTAMP
+           WHERE id=? AND training_id=? AND cohort_id=?`,
+        ).bind(key, row.participantId, trainingId, cohortId).run();
+        if (!result.meta.changes) throw new Error("Participant photo target was not found.");
+      } catch {
+        await c.env.QUESTION_IMAGES.delete(key).catch(() => undefined);
+        failed += 1;
+        continue;
+      }
+      if (row.oldPhotoKey) {
+        await c.env.QUESTION_IMAGES.delete(row.oldPhotoKey).catch(() => undefined);
+        replaced += 1;
+      } else {
+        uploaded += 1;
+      }
+    }
+    return c.json({
+      uploaded,
+      replaced,
+      skipped: rows.length - importableRows.length,
+      failed,
+    });
+  },
 );
 
 participantAdminRoutes.get("/certificates", async (c) => {
@@ -1525,6 +1781,12 @@ participantAdminRoutes.get("/certificates", async (c) => {
   if (status === "LULUS" || status === "BELUM_LULUS") { conditions.push("graduation_status = ?"); bindings.push(status); }
   if (status === "READY") conditions.push("graduation_status = 'LULUS' AND certificate_id IS NULL");
   const where = conditions.length ? `WHERE ${conditions.join(" AND ")}` : "";
+  const nameSort = c.req.query("sortName");
+  const orderBy = nameSort === "asc"
+    ? "name COLLATE NOCASE ASC, created_at DESC, source_rowid DESC"
+    : nameSort === "desc"
+      ? "name COLLATE NOCASE DESC, created_at DESC, source_rowid DESC"
+      : "created_at DESC, source_rowid DESC";
   const cte = `${documentEligibilityCte}, certificate_rows AS (
     SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,
       trainings.name training_name,cohorts.name cohort_name,SUBSTR(cohorts.start_date,1,4) training_year,
@@ -1541,7 +1803,7 @@ participantAdminRoutes.get("/certificates", async (c) => {
   )`;
   const [count, rows] = await Promise.all([
     c.env.DB.prepare(`${cte} SELECT COUNT(*) AS total FROM certificate_rows ${where}`).bind(...bindings).first<{ total: number }>(),
-    c.env.DB.prepare(`${cte} SELECT * FROM certificate_rows ${where} ORDER BY created_at DESC, source_rowid DESC LIMIT ? OFFSET ?`).bind(...bindings, pagination.limit, pagination.offset).all<Record<string, unknown>>(),
+    c.env.DB.prepare(`${cte} SELECT * FROM certificate_rows ${where} ORDER BY ${orderBy} LIMIT ? OFFSET ?`).bind(...bindings, pagination.limit, pagination.offset).all<Record<string, unknown>>(),
   ]);
   const total = Number(count?.total ?? 0);
   return c.json({
@@ -1560,6 +1822,10 @@ participantAdminRoutes.get("/certificates/numbering-targets", async (c) => {
   if (year && /^\d{4}$/u.test(year)) { conditions.push("SUBSTR(cohorts.start_date,1,4)=?"); bindings.push(year); }
   if (c.req.query("trainingId")) { conditions.push("profiles.training_id=?"); bindings.push(c.req.query("trainingId")!); }
   if (c.req.query("cohortId")) { conditions.push("profiles.cohort_id=?"); bindings.push(c.req.query("cohortId")!); }
+  const nameSort = c.req.query("sortName");
+  const orderBy = nameSort === "desc"
+    ? "profiles.name COLLATE NOCASE DESC, profiles.created_at DESC, profiles.rowid DESC"
+    : "profiles.name COLLATE NOCASE ASC, profiles.created_at DESC, profiles.rowid DESC";
   const rows = await c.env.DB.prepare(
     `${documentEligibilityCte}
      SELECT profiles.id participant_id,profiles.name,profiles.training_id,profiles.cohort_id,
@@ -1571,7 +1837,7 @@ participantAdminRoutes.get("/certificates/numbering-targets", async (c) => {
      LEFT JOIN certificates ON certificates.participant_profile_id=profiles.id
      LEFT JOIN completion_letters ON completion_letters.participant_profile_id=profiles.id
      WHERE ${conditions.join(" AND ")} AND ${documentEligibilitySql}
-     ORDER BY profiles.created_at DESC, profiles.rowid DESC`,
+     ORDER BY ${orderBy}`,
   ).bind(...bindings).all<{
     participant_id: string; name: string; training_id: string; cohort_id: string;
     certificate_number: string | null; completion_letter_number: string | null;
@@ -1912,6 +2178,7 @@ function drawWrapped(
     const p = point(page, x, y + row * lineHeight, d);
     page.drawText(line, { x: p.x, y: p.y, font, size, color: rgb(0, 0, 0) });
   }
+  return line ? row + 1 : row;
 }
 function wrappedLines(font: any, text: string, width: number, size: number, maxLines: number) {
   const words = safeText(text).split(/\s+/).filter(Boolean);
@@ -1997,6 +2264,7 @@ function drawJustified(
       cursor += font.widthOfTextAtSize(word, size) + gap;
     });
   });
+  return lines.length;
 }
 async function embedImage(
   c: Context<AppEnvironment>,
@@ -2475,42 +2743,64 @@ async function renderCompletionLetter(
   });
   drawTextAt(page, regular, "Alamat", 26, 144, bodySize, d);
   drawTextAt(page, regular, ":", 76, 144, bodySize, d);
-  drawWrapped(page, regular, String(d.address || "-"), 80, 144, 103, 5.7, bodySize, d);
+  const addressLineHeight = 5.7;
+  const addressLineCount = drawWrapped(
+    page,
+    regular,
+    String(d.address || "-"),
+    80,
+    144,
+    103,
+    addressLineHeight,
+    bodySize,
+    d
+  );
+  const paragraphLineHeight = 6.5;
+  const oneAndHalfSpacing = paragraphLineHeight * 1.5;
+  const narrativeY = 144
+    + (Math.max(1, addressLineCount) - 1) * addressLineHeight
+    + oneAndHalfSpacing;
 
-  drawJustified(
+  const narrativeLineCount = drawJustified(
     page,
     regular,
     `telah menyelesaikan ${trainingLabel(d.training_name)} yang dilaksanakan pada tanggal ${formatLongDate(String(d.start_date))} s.d. ${formatLongDate(String(d.end_date))} selama ${d.total_jp} JPL.`,
     25,
-    151,
+    narrativeY,
     160,
-    6.5,
+    paragraphLineHeight,
     bodySize,
     d
   );
-  drawJustified(
+  const demikianY = narrativeY + Math.max(3, narrativeLineCount) * paragraphLineHeight;
+  const demikianLineCount = drawJustified(
     page,
     regular,
     "Demikian surat keterangan ini dibuat untuk dipergunakan sebagaimana mestinya.",
     25,
-    164.5,
+    demikianY,
     160,
-    6.5,
+    paragraphLineHeight,
     bodySize,
     d,
     true
   );
 
   const issueText = `${String(d.issue_place || "Medan")}, ${d.issue_date ? formatLongDate(String(d.issue_date)) : "Tanggal penerbitan belum diisi"}`;
-  drawCentered(page, regular, issueText, 145, 178.5, bodySize, d);
-  drawCentered(page, regular, String(d.signer_title || ""), 145, 185.5, bodySize, d);
+  const issueY = demikianY
+    + (Math.max(1, demikianLineCount) - 1) * paragraphLineHeight
+    + oneAndHalfSpacing;
+  const signerTitleY = issueY + 7;
+  drawCentered(page, regular, issueText, 145, issueY, bodySize, d);
+  drawCentered(page, regular, String(d.signer_title || ""), 145, signerTitleY, bodySize, d);
   const signature = await embedImage(c, pdf, d.signature_key, "Tanda tangan");
-  if (signature) drawImageContained(page, signature, { x: 122, y: 190, width: 46, height: 18 }, d);
+  if (signature) drawImageContained(page, signature, { x: 122, y: signerTitleY + 4.5, width: 46, height: 18 }, d);
   const signerName = upperName(d.signer_name);
-  drawCentered(page, bold, signerName, 145, 214.5, bodySize, d);
+  const signerNameY = signerTitleY + 29;
+  drawCentered(page, bold, signerName, 145, signerNameY, bodySize, d);
   const signerNameWidth = bold.widthOfTextAtSize(safeText(signerName), bodySize) / mm(1);
-  if (signerName) drawRule(page, 145 - signerNameWidth / 2, 215.7, 145 + signerNameWidth / 2, 215.7, d);
-  drawCentered(page, bold, d.signer_nip ? `NIP. ${d.signer_nip}` : "", 145, 221.5, bodySize, d);
+  if (signerName) drawRule(page, 145 - signerNameWidth / 2, signerNameY + 1.2, 145 + signerNameWidth / 2, signerNameY + 1.2, d);
+  drawCentered(page, bold, d.signer_nip ? `NIP. ${d.signer_nip}` : "", 145, signerNameY + 7, bodySize, d);
 
   return {
     bytes: await pdf.save(),

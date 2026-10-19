@@ -1,6 +1,5 @@
 import { Hono } from "hono";
 import { z } from "zod";
-import { normalizeParticipantName } from "../../domain/participants/normalize-name";
 import { normalizeNik } from "../../domain/participants/normalize-nik";
 import { isTestOpen } from "../../domain/scheduling/test-availability";
 import { isEvaluationOpen } from "../../domain/surveys/evaluation";
@@ -89,8 +88,26 @@ trainingEntryRoutes.get("/:slug", async (context) => {
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Link pelatihan tidak ditemukan.");
   const batches = await listPublicBatches(context.env.DB, session.id);
   return context.json({
-    training: { id: session.id, name: session.material_name ?? session.name, slug: session.slug, questionCount: session.question_count, durationMinutes: session.duration_minutes, startDate: session.training_start_date, endDate: session.training_end_date, status: session.status, ...schedules(session) },
-    batches: batches.map((batch) => ({ id: batch.id, number: batch.batch_number, name: batch.batch_name })),
+    training: {
+      id: session.id,
+      name: session.material_name ?? session.name,
+      slug: session.slug,
+      questionCount: session.question_count,
+      durationMinutes: session.duration_minutes,
+      startDate: session.training_start_date,
+      endDate: session.training_end_date,
+      status: session.status,
+      postMode: session.post_mode,
+      postStartAt: session.post_start_at,
+      postEndAt: session.post_end_at,
+      ...schedules(session),
+    },
+    batches: batches.map((batch) => ({
+      id: batch.id,
+      number: batch.batch_number,
+      name: batch.batch_name,
+      cohortId: batch.cohort_id,
+    })),
   });
 });
 
@@ -104,16 +121,24 @@ trainingEntryRoutes.post("/:slug/identify", async (context) => {
   if (!batch) throw new HttpError(422, "BATCH_INVALID", "Angkatan tidak ditemukan pada pelatihan ini.");
 
   const availability = schedules(session);
-  const normalizedName = normalizeParticipantName(parsed.data.name);
   if(!session.training_id||!batch.cohort_id) throw new HttpError(409,"REGISTRATION_NOT_CONFIGURED","Data master pelatihan atau angkatan belum terhubung.");
-  const profile=await findRegisteredProfile(context.env.DB,{trainingId:session.training_id,cohortId:batch.cohort_id,normalizedName,nik:normalizeNik(parsed.data.nik)});
-  if(!profile) throw new HttpError(404,"PARTICIPANT_NOT_FOUND","Data peserta tidak ditemukan. Pastikan Nama Lengkap dan NIK sesuai dengan data yang didaftarkan panitia.");
+  const profile=await findRegisteredProfile(context.env.DB,{trainingId:session.training_id,cohortId:batch.cohort_id,nik:normalizeNik(parsed.data.nik)});
+  if(!profile) throw new HttpError(404,"PARTICIPANT_NOT_FOUND","Data peserta tidak ditemukan. Pastikan NIK dan angkatan sesuai dengan data yang didaftarkan panitia.");
   const participant=await findOrCreateExamParticipant(context.env.DB,{profileId:profile.id,batchId:batch.id,name:profile.name,normalizedName:profile.normalized_name});
   const attempts = await listParticipantAttempts(context.env.DB, participant.id);
   return context.json({
     participant: { id: participant.id, name: participant.name },
-    batch: { id: batch.id, name: batch.batch_name },
-    training: { id: session.id, name: session.material_name ?? session.name, questionCount: session.question_count, durationMinutes: session.duration_minutes, passingScore: session.passing_score },
+    batch: { id: batch.id, name: batch.batch_name, cohortId: batch.cohort_id },
+    training: {
+      id: session.id,
+      name: session.material_name ?? session.name,
+      questionCount: session.question_count,
+      durationMinutes: session.duration_minutes,
+      passingScore: session.passing_score,
+      postMode: session.post_mode,
+      postStartAt: session.post_start_at,
+      postEndAt: session.post_end_at,
+    },
     availability: { ...availability, attempts },
   });
 });
