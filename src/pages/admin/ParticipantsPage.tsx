@@ -36,7 +36,6 @@ const emptyCertificateSettings: CertificateSettings = { certificate_prefix: "", 
 type BulkDocumentNumberEntry = { participantId: string; certificateNumber?: string; completionLetterNumber?: string };
 type BulkNumberMode = "overwrite" | "empty";
 type DocumentNumberKind = "certificate" | "letter";
-type ParticipantFilters = { year: number; trainingId?: string; cohortId?: string; status?: boolean; search?: string };
 const romanMonths = ["I", "II", "III", "IV", "V", "VI", "VII", "VIII", "IX", "X", "XI", "XII"];
 
 function documentNumberPeriod(issueDate: string) {
@@ -62,7 +61,7 @@ type DeleteTarget =
   | { kind: "training"; training: Training }
   | { kind: "material"; material: Material }
   | { kind: "cohort"; cohort: Cohort }
-  | { kind: "participants"; filters: ParticipantFilters; count: number; filterDescription: string };
+  | { kind: "participants"; participantIds: string[]; participantNames: string[] };
 
 const tabs = [
   { id: "data", label: "Data Peserta", icon: Users },
@@ -88,6 +87,8 @@ export function ParticipantsPage() {
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [participantPage, setParticipantPage] = useState(1);
   const [participantNameSort, setParticipantNameSort] = useState<"asc" | "desc">("asc");
+  const [participantSelectionMode, setParticipantSelectionMode] = useState(false);
+  const [participantSelection, setParticipantSelection] = useState<Record<string, string>>({});
   const [participantPagination, setParticipantPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
   const [participantsLoading, setParticipantsLoading] = useState(false);
   const [cohortRows, setCohortRows] = useState<Cohort[]>([]);
@@ -95,6 +96,7 @@ export function ParticipantsPage() {
   const [cohortPagination, setCohortPagination] = useState<PaginationMeta>({ page: 1, limit: ADMIN_PAGE_SIZE, total: 0, totalPages: 1 });
   const [cohortsLoading, setCohortsLoading] = useState(false);
   const participantRequestRef = useRef(0);
+  const participantSelectAllRef = useRef<HTMLInputElement>(null);
   const [message, setMessage] = useState<string | null>(null);
   useAutoDismiss(message, setMessage);
   const [error, setError] = useState<string | null>(null);
@@ -200,6 +202,7 @@ export function ParticipantsPage() {
   useEffect(() => {
     setTrainingId(""); setCohortId(""); setListTrainingId(""); setListCohortId(""); setCertificateTrainingId(""); setCertificateCohort("");
     setListStatus(""); setSearch(""); setDebouncedSearch(""); setParticipantPage(1);
+    setParticipantSelectionMode(false); setParticipantSelection({});
     void loadSupportingData().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Data tidak dapat dimuat."));
   }, [activeYear, loadSupportingData]);
   useEffect(() => {
@@ -217,6 +220,14 @@ export function ParticipantsPage() {
   useEffect(() => {
     void loadParticipants().catch((loadError) => setError(loadError instanceof Error ? loadError.message : "Data peserta tidak dapat dimuat."));
   }, [loadParticipants]);
+  const selectedParticipantCount = Object.keys(participantSelection).length;
+  const selectedParticipantsOnPage = participants.filter((participant) => participantSelection[participant.id]).length;
+  const allParticipantsOnPageSelected = participants.length > 0 && selectedParticipantsOnPage === participants.length;
+  useEffect(() => {
+    if (participantSelectAllRef.current) {
+      participantSelectAllRef.current.indeterminate = selectedParticipantsOnPage > 0 && !allParticipantsOnPageSelected;
+    }
+  }, [allParticipantsOnPageSelected, selectedParticipantsOnPage]);
   useEffect(() => { void loadCohorts().catch((reason: unknown) => fail(reason, "cohort")); }, [loadCohorts]);
   useEffect(() => {
     void adminQuery<{ settings: CertificateSettings }>("/api/admin/participants/certificate-settings").then((result) => setCertificateSettings(result.settings)).catch(fail);
@@ -439,37 +450,51 @@ export function ParticipantsPage() {
     if (!certificateTrainingId || !certificateCohort) return setError("Pilih pelatihan dan angkatan untuk generate sertifikat.");
     try { const result = await adminMutation<{ generated: number }>("/api/admin/participants/certificates/generate-all", { method: "POST", body: JSON.stringify({ trainingId: certificateTrainingId, cohortId: certificateCohort, side: "BOTH" }) }); report(`${result.generated} sertifikat peserta lulus berhasil dibuat.`); } catch (processError) { fail(processError); }
   }
-  function requestDeleteFilteredParticipants() {
-    if (!participantPagination.total) return setError("Tidak ada peserta pada hasil filter yang dapat dihapus.");
-    const filterDescription = [
-      listTrainingId ? "pelatihan terpilih" : null,
-      listCohortId ? "angkatan terpilih" : null,
-      listStatus ? `status ${listStatus === "true" ? "aktif" : "nonaktif"}` : null,
-      debouncedSearch ? `pencarian “${debouncedSearch}”` : null,
-    ].filter(Boolean).join(", ");
-    setDeleteTarget({
-      kind: "participants",
-      filters: {
-        year: activeYear,
-        trainingId: listTrainingId || undefined,
-        cohortId: listCohortId || undefined,
-        status: listStatus ? listStatus === "true" : undefined,
-        search: debouncedSearch.trim() || undefined,
-      },
-      count: participantPagination.total,
-      filterDescription,
+  function clearParticipantSelection() {
+    setParticipantSelectionMode(false);
+    setParticipantSelection({});
+    setDeleteTarget((current) => current?.kind === "participants" ? null : current);
+  }
+  function toggleParticipantSelection(participant: Participant) {
+    setParticipantSelection((current) => {
+      const next = { ...current };
+      if (next[participant.id]) delete next[participant.id];
+      else next[participant.id] = participant.name;
+      return next;
     });
   }
-  async function deleteFilteredParticipants(filters: ParticipantFilters) {
+  function toggleCurrentParticipantPage() {
+    setParticipantSelection((current) => {
+      const next = { ...current };
+      if (allParticipantsOnPageSelected) {
+        for (const participant of participants) delete next[participant.id];
+      } else {
+        for (const participant of participants) next[participant.id] = participant.name;
+      }
+      return next;
+    });
+  }
+  function requestDeleteSelectedParticipants() {
+    const participantIds = Object.keys(participantSelection);
+    if (!participantIds.length) return;
+    setDeleteTarget({
+      kind: "participants",
+      participantIds,
+      participantNames: participantIds.map((id) => participantSelection[id]).filter((name): name is string => Boolean(name)),
+    });
+  }
+  async function deleteSelectedParticipants(participantIds: string[]) {
     setDeletingParticipants(true);
     try {
-      const result = await adminMutation<{ deleted: number }>("/api/admin/participants/participants/bulk", {
+      await adminMutation<{ deleted: number }>("/api/admin/participants/participants/bulk", {
         method: "DELETE",
-        body: JSON.stringify({ filters }),
+        body: JSON.stringify({ participantIds }),
       });
       setSelectedParticipant(null);
       setDeleteTarget(null);
-      report(`${result.deleted} data peserta beserta riwayatnya berhasil dihapus.`);
+      setParticipantSelection({});
+      setParticipantSelectionMode(false);
+      report("Peserta yang dipilih berhasil dihapus.");
     } catch (processError) {
       setDeleteTarget(null);
       fail(processError);
@@ -488,17 +513,18 @@ export function ParticipantsPage() {
 
     {tab === "data" && <>
       <section className="panel participant-data-panel">
-        <div className="panel-heading"><div><p className="section-label">Terdaftar</p><h2>Data Peserta</h2></div><div className="participant-table-actions"><span className="status-badge is-active">{participantPagination.total} peserta</span><button type="button" className="button danger-button button--small" disabled={!participantPagination.total || deletingParticipants} onClick={requestDeleteFilteredParticipants}><Trash2 />{deletingParticipants ? "Menghapus..." : "Hapus Hasil Filter"}</button></div></div>
+        <div className="panel-heading"><div><p className="section-label">Terdaftar</p><h2>Data Peserta</h2></div><div className="participant-table-actions"><span className="status-badge is-active">{participantPagination.total} peserta</span>{participantSelectionMode ? <><button type="button" className="button button--secondary button--small" disabled={deletingParticipants} onClick={clearParticipantSelection}>Batal</button><button type="button" className="button danger-button button--small" disabled={!selectedParticipantCount || deletingParticipants} onClick={requestDeleteSelectedParticipants}><Trash2 />{deletingParticipants ? "Menghapus..." : `Hapus Terpilih (${selectedParticipantCount})`}</button></> : <button type="button" className="button button--secondary button--small" disabled={!participantPagination.total || deletingParticipants} onClick={() => { setParticipantSelection({}); setParticipantSelectionMode(true); }}>Pilih Peserta</button>}</div></div>
         <div className="participant-list-filters">
-          <label className="filter-search"><span>Cari nama</span><SearchInput value={search} onValueChange={setSearch} placeholder="Cari nama peserta" /></label>
-          <label>Pelatihan<SearchableSelect value={listTrainingId} placeholder="Semua pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setParticipantPage(1); setListTrainingId(value); setListCohortId(""); }} /></label>
-          <label>Angkatan<select value={listCohortId} onChange={(event) => { setParticipantPage(1); setListCohortId(event.target.value); }}><option value="">Semua Angkatan</option>{catalog.cohorts.filter((cohort) => !listTrainingId || cohort.training_id === listTrainingId).map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label>
-          <label>Status<select value={listStatus} onChange={(event) => { setParticipantPage(1); setListStatus(event.target.value); }}><option value="">Semua Status</option><option value="true">Aktif</option><option value="false">Nonaktif</option></select></label>
+          <label className="filter-search"><span>Cari nama</span><SearchInput value={search} onValueChange={(value) => { clearParticipantSelection(); setSearch(value); }} placeholder="Cari nama peserta" /></label>
+          <label>Pelatihan<SearchableSelect value={listTrainingId} placeholder="Semua pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { clearParticipantSelection(); setParticipantPage(1); setListTrainingId(value); setListCohortId(""); }} /></label>
+          <label>Angkatan<select value={listCohortId} onChange={(event) => { clearParticipantSelection(); setParticipantPage(1); setListCohortId(event.target.value); }}><option value="">Semua Angkatan</option>{catalog.cohorts.filter((cohort) => !listTrainingId || cohort.training_id === listTrainingId).map((cohort) => <option value={cohort.id} key={cohort.id}>{cohort.name}</option>)}</select></label>
+          <label>Status<select value={listStatus} onChange={(event) => { clearParticipantSelection(); setParticipantPage(1); setListStatus(event.target.value); }}><option value="">Semua Status</option><option value="true">Aktif</option><option value="false">Nonaktif</option></select></label>
         </div>
         <div className="data-table-wrap">
-          <table className="clean-table participant-table">
-            <thead><tr><th>No</th><th><span className="certificate-name-heading">Nama Lengkap<button type="button" className="certificate-name-sort" aria-label={`Urutkan nama ${participantNameSort === "asc" ? "Z ke A" : "A ke Z"}`} title={`Urutan nama ${participantNameSort === "asc" ? "A–Z" : "Z–A"}`} onClick={() => { setParticipantPage(1); setParticipantNameSort((current) => current === "asc" ? "desc" : "asc"); }}>{participantNameSort === "asc" ? "A–Z" : "Z–A"}</button></span></th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead>
-            <tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id ? "is-selected" : ""}>
+          <table className={`clean-table participant-table${participantSelectionMode ? " is-selecting" : ""}`}>
+            <thead><tr>{participantSelectionMode && <th className="participant-selection-cell"><input ref={participantSelectAllRef} className="participant-selection-checkbox" type="checkbox" checked={allParticipantsOnPageSelected} disabled={!participants.length} aria-label="Pilih semua peserta pada halaman ini" onChange={toggleCurrentParticipantPage} /></th>}<th>No</th><th><span className="certificate-name-heading">Nama Lengkap<button type="button" className="certificate-name-sort" aria-label={`Urutkan nama ${participantNameSort === "asc" ? "Z ke A" : "A ke Z"}`} title={`Urutan nama ${participantNameSort === "asc" ? "A–Z" : "Z–A"}`} onClick={() => { setParticipantPage(1); setParticipantNameSort((current) => current === "asc" ? "desc" : "asc"); }}>{participantNameSort === "asc" ? "A–Z" : "Z–A"}</button></span></th><th>NIK</th><th>Pelatihan</th><th>Angkatan</th><th>Status</th><th>Aksi</th></tr></thead>
+            <tbody>{participants.map((participant, index) => <tr key={participant.id} className={selectedParticipant === participant.id || participantSelection[participant.id] ? "is-selected" : ""}>
+              {participantSelectionMode && <td className="participant-selection-cell"><input className="participant-selection-checkbox" type="checkbox" checked={Boolean(participantSelection[participant.id])} aria-label={`Pilih peserta ${participant.name}`} onChange={() => toggleParticipantSelection(participant)} /></td>}
               <td>{(participantPagination.page - 1) * participantPagination.limit + index + 1}</td>
               <td><span className="participant-identity"><span className="participant-avatar">{participant.photo_key ? <img loading="lazy" decoding="async" src={`/api/admin/participants/participants/${participant.id}/photo`} alt="" /> : <Image />}</span><span><strong>{participant.name}</strong><small>{[participant.birth_place, participant.birth_date ? formatDateForDisplay(participant.birth_date) : ""].filter(Boolean).join(", ") || "Data belum lengkap"}</small></span></span></td>
               <td><span className="participant-nik" title={participant.nik_masked}>{participant.nik_masked.length > 6 ? `${participant.nik_masked.slice(0, 6)}…` : participant.nik_masked}</span></td>
@@ -627,16 +653,17 @@ export function ParticipantsPage() {
 
       <ConfirmDeleteModal
         open={Boolean(deleteTarget)}
-        title={deleteTarget?.kind === "training" ? "Hapus Pelatihan?" : deleteTarget?.kind === "material" ? "Hapus Materi?" : deleteTarget?.kind === "cohort" ? "Hapus Angkatan?" : "Hapus Peserta?"}
-        itemName={deleteTarget?.kind === "training" ? deleteTarget.training.name : deleteTarget?.kind === "material" ? deleteTarget.material.name : deleteTarget?.kind === "cohort" ? deleteTarget.cohort.name : deleteTarget?.kind === "participants" ? `${deleteTarget.count} peserta` : undefined}
-        description={deleteTarget?.kind === "training" ? "Data peserta, angkatan, materi, hasil tes, dan sertifikat yang pernah menggunakan pelatihan ini tetap disimpan." : deleteTarget?.kind === "material" ? "Materi akan dihapus dari daftar pelatihan." : deleteTarget?.kind === "cohort" ? `Pelatihan: ${deleteTarget.cohort.training_name}. Angkatan yang sudah digunakan oleh peserta atau pelaksanaan tes tidak dapat dihapus.` : deleteTarget?.kind === "participants" ? `Seluruh riwayat tes dan sertifikat peserta${deleteTarget.filterDescription ? ` berdasarkan ${deleteTarget.filterDescription}` : " yang sedang ditampilkan"} juga akan dihapus. Tindakan ini tidak dapat dibatalkan.` : undefined}
+        title={deleteTarget?.kind === "training" ? "Hapus Pelatihan?" : deleteTarget?.kind === "material" ? "Hapus Materi?" : deleteTarget?.kind === "cohort" ? "Hapus Angkatan?" : "Hapus peserta yang dipilih?"}
+        itemName={deleteTarget?.kind === "training" ? deleteTarget.training.name : deleteTarget?.kind === "material" ? deleteTarget.material.name : deleteTarget?.kind === "cohort" ? deleteTarget.cohort.name : deleteTarget?.kind === "participants" ? `${deleteTarget.participantIds.length} peserta dipilih` : undefined}
+        description={deleteTarget?.kind === "training" ? "Data peserta, angkatan, materi, hasil tes, dan sertifikat yang pernah menggunakan pelatihan ini tetap disimpan." : deleteTarget?.kind === "material" ? "Materi akan dihapus dari daftar pelatihan." : deleteTarget?.kind === "cohort" ? `Pelatihan: ${deleteTarget.cohort.training_name}. Angkatan yang sudah digunakan oleh peserta atau pelaksanaan tes tidak dapat dihapus.` : deleteTarget?.kind === "participants" ? <><p>Data peserta yang dipilih beserta data transaksional terkait akan dihapus dan tindakan ini tidak dapat dibatalkan.</p><div className="participant-delete-selection-summary"><strong>Peserta yang dipilih:</strong><ul>{deleteTarget.participantNames.slice(0, 5).map((name, index) => <li key={`${name}-${index}`}>{name}</li>)}</ul>{deleteTarget.participantNames.length > 5 && <p>dan {deleteTarget.participantNames.length - 5} peserta lainnya.</p>}</div></> : undefined}
+        confirmLabel={deleteTarget?.kind === "participants" ? "Hapus Peserta" : undefined}
         busy={deleteTarget?.kind === "participants" ? deletingParticipants : deletingRecord}
         onCancel={() => setDeleteTarget(null)}
         onConfirm={() => {
           if (deleteTarget?.kind === "training") void deleteTraining(deleteTarget.training);
           else if (deleteTarget?.kind === "material") void deleteMaterial(deleteTarget.material);
           else if (deleteTarget?.kind === "cohort") void deleteCohort(deleteTarget.cohort);
-          else if (deleteTarget?.kind === "participants") void deleteFilteredParticipants(deleteTarget.filters);
+          else if (deleteTarget?.kind === "participants") void deleteSelectedParticipants(deleteTarget.participantIds);
         }}
       />
   </>;
