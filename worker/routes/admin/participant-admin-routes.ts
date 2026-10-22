@@ -34,6 +34,10 @@ import {
   certificateLayout,
   mm,
 } from "../../domain/certificates/print-layout";
+import {
+  combinePdfDocuments,
+  participantCertificateFileName,
+} from "../../domain/certificates/download";
 import type { AppEnvironment } from "../../types";
 import { paginationMeta, parsePagination } from "../../http/pagination";
 
@@ -2809,16 +2813,6 @@ async function renderCompletionLetter(
   };
 }
 
-async function combinePdfDocuments(documents: Uint8Array[]) {
-  const combined = await PDFDocument.create();
-  for (const bytes of documents) {
-    const source = await PDFDocument.load(bytes);
-    const pages = await combined.copyPages(source, source.getPageIndices());
-    pages.forEach((page) => combined.addPage(page));
-  }
-  return combined.save();
-}
-
 function safeDocumentName(value: string) {
   return value.toLocaleUpperCase("id-ID").replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-|-$/g, "") || "PESERTA";
 }
@@ -3151,17 +3145,15 @@ participantAdminRoutes.post(
       .bind(parsed.data.trainingId, parsed.data.cohortId)
       .all<{ id: string; name: string }>();
     const files: Record<string, Uint8Array> = {};
+    const usedFileNames = new Set<string>();
     for (const row of rows.results) {
       try {
         const [front, back] = await Promise.all([
           renderCertificate(c, row.id, "FRONT"),
           renderCertificate(c, row.id, "BACK"),
         ]);
-        const safeName =
-          row.name.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-|-$/g, "") ||
-          row.id;
-        files[`${safeName}/Sertifikat-Depan.pdf`] = front.bytes;
-        files[`${safeName}/Sertifikat-Belakang.pdf`] = back.bytes;
+        files[participantCertificateFileName(row.name, usedFileNames)] =
+          await combinePdfDocuments([front.bytes, back.bytes]);
         for (const [side, result] of [
           ["FRONT", front],
           ["BACK", back],
