@@ -1,9 +1,35 @@
 import { describe, expect, it } from "vitest";
 import { strFromU8, unzipSync } from "fflate";
 import { createXlsx } from "../worker/export/xlsx";
-import { buildMaterialAnswerSheets, type ExportRow } from "../worker/routes/admin/result-routes";
+import { buildMaterialAnswerSheets, buildSummarySheet, type ExportRow } from "../worker/routes/admin/result-routes";
 
 describe("export hasil tes per materi", () => {
+  it("merangkum nilai Pre dan nilai kelulusan Post sesuai jumlah materi", () => {
+    const summaries: ExportRow[] = [
+      {
+        profile_id: "profile-1", cohort_id: "cohort-1", name: "Daniel", nik: "1271041901070002",
+        material_id: "material-1", material_sort_order: 1, pre_score: 60, post_score: 80,
+        remedial_1_score: null, remedial_2_score: null, passing_score: 75,
+      },
+      {
+        profile_id: "profile-1", cohort_id: "cohort-1", name: "Daniel", nik: "1271041901070002",
+        material_id: "material-2", material_sort_order: 2, pre_score: 70, post_score: 60,
+        remedial_1_score: 85, remedial_2_score: null, passing_score: 75,
+      },
+      {
+        profile_id: "profile-1", cohort_id: "cohort-1", name: "Daniel", nik: "1271041901070002",
+        material_id: "material-3", material_sort_order: 3, pre_score: 80, post_score: 50,
+        remedial_1_score: 60, remedial_2_score: 95, passing_score: 75,
+      },
+    ];
+
+    const sheet = buildSummarySheet("Pelatihan Contoh", summaries);
+
+    expect(sheet.name).toBe("Rangkuman Hasil");
+    expect(sheet.rows[2]).toEqual(["No", "NIK", "Nama Peserta", "Nilai Pre Test", "Nilai Post Test", "Keterangan"]);
+    expect(sheet.rows[3]).toEqual([1, "1271041901070002", "Daniel", 70, 86.67, "Meningkat"]);
+  });
+
   it("membuat sheet per materi dan hanya membawa peserta hasil filter", () => {
     const summaries: ExportRow[] = [
       { participant_id: "participant-filtered", material_id: "material-1", material_name: "Materi: Keselamatan/Dasar?", material_sort_order: 1 },

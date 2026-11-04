@@ -54,10 +54,27 @@ function numericScore(value: string | number | null | undefined) {
   return score !== null && Number.isFinite(score) ? Math.round(score * 100) / 100 : null;
 }
 
-function averageScore(values: Array<string | number | null | undefined>) {
+function averageCompleteMaterialScores(values: Array<string | number | null | undefined>) {
   const scores = values.map(numericScore).filter((score): score is number => score !== null);
-  if (!scores.length) return null;
+  if (!values.length || scores.length !== values.length) return null;
   return Math.round((scores.reduce((total, score) => total + score, 0) / scores.length) * 100) / 100;
+}
+
+function passingPostScore(row: ExportRow) {
+  const passingScore = numericScore(row.passing_score);
+  if (passingScore === null) return null;
+  for (const value of [row.post_score, row.remedial_1_score, row.remedial_2_score]) {
+    const score = numericScore(value);
+    if (score !== null && score >= passingScore) return score;
+  }
+  return null;
+}
+
+function scoreComparison(preScore: number | null, postScore: number | null) {
+  if (preScore === null || postScore === null) return "";
+  if (postScore > preScore) return "Meningkat";
+  if (postScore < preScore) return "Menurun";
+  return "Tetap";
 }
 
 function bestRemedial(row: ExportRow) {
@@ -74,17 +91,6 @@ function humanStatus(value: string | number | null | undefined) {
     .toLocaleLowerCase("id-ID")
     .replaceAll("_", " ")
     .replace(/(^|\s)\S/g, (letter) => letter.toLocaleUpperCase("id-ID"));
-}
-
-function participantOverallStatus(rows: ExportRow[]) {
-  if (rows.some((row) => row.active_stage !== null && row.active_stage !== "")) return "Sedang Mengerjakan";
-  if (rows.some((row) => numericScore(row.pre_score) === null || numericScore(row.final_post_score) === null)) return "Belum Selesai";
-  if (rows.some((row) => {
-    const finalScore = numericScore(row.final_post_score);
-    const passingScore = numericScore(row.passing_score);
-    return finalScore !== null && passingScore !== null && finalScore < passingScore;
-  })) return "Belum Lulus";
-  return "Lulus";
 }
 
 function stableParticipantKey(row: ExportRow) {
@@ -212,14 +218,14 @@ export function buildMaterialAnswerSheets(summaries: ExportRow[], answers: Expor
     summaries.map((row) => [String(row.material_id), row]),
   ).values()].sort((left, right) => Number(left.material_sort_order ?? 0) - Number(right.material_sort_order ?? 0)
     || String(left.material_name ?? "").localeCompare(String(right.material_name ?? ""), "id-ID"));
-  const usedSheetNames = new Set(["rangkuman nilai", "nilai per materi", "data lengkap"]);
+  const usedSheetNames = new Set(["rangkuman hasil", "nilai per materi", "data lengkap"]);
   return materials.map((material) => buildMaterialAnswerSheet(
     safeSheetName(String(material.material_name ?? "Mata Diklat"), usedSheetNames),
     filteredAnswers.filter((answer) => String(answer.material_id) === String(material.material_id)),
   ));
 }
 
-function buildSummarySheet(trainingName: string, summaries: ExportRow[]) {
+export function buildSummarySheet(trainingName: string, summaries: ExportRow[]) {
   const participants = new Map<string, ExportRow[]>();
   for (const row of summaries) {
     const key = stableParticipantKey(row);
@@ -230,24 +236,24 @@ function buildSummarySheet(trainingName: string, summaries: ExportRow[]) {
     .sort((left, right) => sortSummaryRows(left[0]!, right[0]!))
     .map((participantRows, index) => {
       const participant = participantRows[0]!;
+      const preScore = averageCompleteMaterialScores(participantRows.map((row) => row.pre_score));
+      const postScore = averageCompleteMaterialScores(participantRows.map(passingPostScore));
       return [
         index + 1,
-        participant.name ?? "",
         participant.nik ?? "",
-        participant.cohort_name ?? "",
-        averageScore(participantRows.map((row) => row.pre_score)),
-        averageScore(participantRows.map((row) => row.post_score)),
-        averageScore(participantRows.map((row) => row.final_post_score)),
-        participantOverallStatus(participantRows),
+        participant.name ?? "",
+        preScore,
+        postScore,
+        scoreComparison(preScore, postScore),
       ];
     });
   return reportSheet(
-    "Rangkuman Nilai",
-    `Rangkuman Nilai - ${trainingName}`,
-    ["No", "Nama Peserta", "NIK", "Angkatan", "Rata-rata Pre Test", "Rata-rata Post Test", "Rata-rata Nilai Final", "Status"],
+    "Rangkuman Hasil",
+    `Rangkuman Hasil Pre Test dan Post Test - ${trainingName}`,
+    ["No", "NIK", "Nama Peserta", "Nilai Pre Test", "Nilai Post Test", "Keterangan"],
     rows,
-    [7, 30, 20, 20, 19, 20, 22, 20],
-    [0, 4, 5, 6, 7],
+    [7, 22, 32, 18, 18, 18],
+    [0, 3, 4, 5],
   );
 }
 
