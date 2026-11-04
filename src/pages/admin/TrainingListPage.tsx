@@ -7,6 +7,7 @@ import { adminQuery } from "../../features/admin-auth/admin-api";
 import { formatDateForDisplay } from "../../features/dates/date-format";
 import type { TrainingSummary } from "../../features/training/types";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
+import { fundingSourceLabel, useActiveFundingSource } from "../../features/funding-source/ActiveFundingSourceProvider";
 import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 const scheduleLabels: Record<TrainingSummary["scheduleStatus"], string> = {
@@ -17,6 +18,7 @@ const scheduleLabels: Record<TrainingSummary["scheduleStatus"], string> = {
 
 export function TrainingListPage() {
   const { activeYear } = useActiveYear();
+  const { activeFundingSource } = useActiveFundingSource();
   const [sessions, setSessions] = useState<TrainingSummary[]>([]);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
@@ -78,8 +80,8 @@ export function TrainingListPage() {
   ).values()], [catalog.materials, trainingId]);
 
   const cohortOptions = useMemo(() => [...new Map(
-    catalog.cohorts.filter((cohort) => cohort.training_id === trainingId).map((cohort) => [cohort.id, { value: cohort.id, label: cohort.name }] as const),
-  ).values()], [catalog.cohorts, trainingId]);
+    catalog.cohorts.filter((cohort) => cohort.training_id === trainingId).map((cohort) => [cohort.id, { value: cohort.id, label: `${cohort.name} · ${fundingSourceLabel(activeFundingSource)}` }] as const),
+  ).values()], [activeFundingSource, catalog.cohorts, trainingId]);
 
   useEffect(() => { setPage(1); }, [activeYear, cohortId, debouncedSearch, materialId, scheduleStatus, trainingId]);
 

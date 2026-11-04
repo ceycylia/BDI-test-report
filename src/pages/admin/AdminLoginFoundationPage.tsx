@@ -67,9 +67,10 @@ export function AdminLoginFoundationPage() {
           <AppMark compact />
         </div>
 
-        <h1 id="login-title">
-          Masuk ke pengelolaan tes
-        </h1>
+        <div className="admin-login-heading">
+          <h1 id="login-title">Sistem Penyelenggaraan Diklat</h1>
+          <p>Masuk</p>
+        </div>
 
         <form
           className="admin-login-form"

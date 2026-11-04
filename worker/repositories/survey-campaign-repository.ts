@@ -95,15 +95,15 @@ export async function listSurveyCampaigns(database: D1Database, year: number) {
 
 export async function paginateSurveyCampaigns(
   database: D1Database,
-  input: { year: number; page: number; limit: number; search?: string; trainingId?: string; cohortId?: string; status?: string },
+  input: { year: number; fundingSource: "RUPIAH_MURNI" | "PNBP"; page: number; limit: number; search?: string; trainingId?: string; cohortId?: string; status?: string },
 ) {
   const conditions = [`EXISTS (
     SELECT 1 FROM survey_campaign_cohorts year_links
     JOIN training_cohorts year_cohorts ON year_cohorts.id = year_links.cohort_id
     WHERE year_links.survey_campaign_id = campaigns.id
-      AND SUBSTR(year_cohorts.start_date, 1, 4) = ?
+      AND SUBSTR(year_cohorts.start_date, 1, 4) = ? AND year_cohorts.funding_source = ?
   )`];
-  const bindings: unknown[] = [String(input.year)];
+  const bindings: unknown[] = [String(input.year), input.fundingSource];
   if (input.trainingId) { conditions.push("primary_cohort.training_id = ?"); bindings.push(input.trainingId); }
   if (input.cohortId) {
     conditions.push("EXISTS (SELECT 1 FROM survey_campaign_cohorts filter_links WHERE filter_links.survey_campaign_id = campaigns.id AND filter_links.cohort_id = ?)");

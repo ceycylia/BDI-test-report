@@ -2784,6 +2784,16 @@ textarea:focus-visible {
   text-align: center;
 }
 
+.admin-login-heading {
+  text-align: center;
+}
+
+.admin-login-heading p {
+  margin: 0;
+  color: var(--color-muted);
+  font-size: .88rem;
+}
+
 .admin-login-form {
   gap: 1rem;
 }
@@ -8320,3 +8330,38 @@ select:not([multiple]):disabled {
     min-height: 50px;
   }
 }
+.funding-source-select{display:flex;align-items:center;gap:8px;margin-left:auto;color:#5d738d;font-size:12px;font-weight:600}.funding-source-select select{min-width:142px;border:1px solid #c6daeb;border-radius:9px;background:#fff;color:#173451;padding:8px 30px 8px 10px;font:inherit}.active-funding-indicator{display:inline-flex;align-items:center;border:1px solid #b9d9f2;border-radius:999px;background:#f1f8fe;color:#1471ad;padding:5px 10px;font-size:12px;font-weight:600}@media(max-width:760px){.funding-source-select span{display:none}.funding-source-select select{min-width:116px}.admin-topbar__context{display:none}}
+
+/* Participant registration and test dashboard */
+.participant-links-modal{width:min(880px,calc(100vw - 32px));max-height:calc(100dvh - 32px);overflow:auto}
+.participant-links-form{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto;gap:12px;align-items:end}
+.participant-links-form label,.participant-links-result{min-width:0}
+.participant-links-form label{display:grid;gap:6px}
+.participant-links-form select,.participant-links-result input{width:100%;min-width:0}
+.participant-links-result{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:12px;border:1px solid #c6daeb;border-radius:10px;background:#f4f9fd}
+.participant-links-result input{flex:1 1 360px}
+.participant-links-list{margin-top:16px}
+.participant-links-list h3{margin:0 0 8px}
+.participant-links-short-url{display:block;max-width:230px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.participant-links-actions{display:flex;gap:6px}
+.participant-registration-card,.participant-portal-card{width:min(760px,100%);margin-inline:auto}
+.participant-registration-form,.participant-portal-form{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
+.participant-registration-form label,.participant-portal-form label{min-width:0}
+.participant-registration-form label:has(textarea),.participant-portal-form label:first-child,.participant-registration-form .participant-primary-button,.participant-portal-form .participant-primary-button{grid-column:1/-1}
+.participant-registration-form textarea,.participant-portal-form select{width:100%;min-width:0}
+.public-dashboard-link{display:inline-flex;margin:0 0 20px;text-decoration:none}
+.participant-dashboard-results{margin-top:24px;border-top:1px solid #d8e5f0;padding-top:18px}
+.participant-dashboard-results h2{margin:0 0 5px}
+.participant-dashboard-results>p{margin:0 0 18px;color:#5d738d}
+.participant-dashboard-material{padding:15px 0;border-top:1px solid #d8e5f0}
+.participant-dashboard-material h3{margin:0 0 12px;font-size:1rem}
+.participant-dashboard-stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}
+.participant-dashboard-stage{display:flex;flex-direction:column;align-items:flex-start;gap:5px;min-height:72px;border:1px solid;border-radius:10px;padding:12px;text-align:left;cursor:pointer;font:inherit}
+.participant-dashboard-stage strong{font-size:.93rem}.participant-dashboard-stage span{font-size:.8rem}
+.participant-dashboard-stage.is-ready{background:#e8f8ed;border-color:#8bd2a0;color:#116839}
+.participant-dashboard-stage.is-upcoming{background:#f3f5f7;border-color:#d5dce3;color:#6c7c8c;cursor:default}
+.participant-dashboard-stage.is-done{background:#fff7d9;border-color:#e9ce72;color:#745712;cursor:default}
+.participant-dashboard-stage.is-remedial{background:#ffebeb;border-color:#ed9a9a;color:#a12f2f}
+.participant-dashboard-stage:focus-visible{outline:3px solid #1471ad;outline-offset:2px}
+@media(max-width:600px){.participant-links-form,.participant-registration-form,.participant-portal-form{grid-template-columns:minmax(0,1fr)}.participant-links-modal{width:calc(100vw - 20px)}.participant-registration-card,.participant-portal-card{width:100%;min-width:0}.participant-dashboard-stages{grid-template-columns:repeat(2,minmax(0,1fr))}}
+@media(max-width:360px){.participant-dashboard-stages{grid-template-columns:minmax(0,1fr)}}

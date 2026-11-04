@@ -3,6 +3,7 @@ import { resetStagesForAttempt } from "../domain/attempts/admin-attempt-manageme
 import type { AttemptStage } from "../domain/attempts/progression";
 
 export type ResultFilters = {
+  fundingSource?: "RUPIAH_MURNI" | "PNBP";
   year?: number;
   trainingId?: string;
   materialId?: string;
@@ -16,6 +17,7 @@ export type ResultFilters = {
 export async function listResultSummaries(database: D1Database, filters: ResultFilters) {
   const conditions: string[] = [];
   const bindings: string[] = [];
+  if (filters.fundingSource) { conditions.push("funding_source = ?"); bindings.push(filters.fundingSource); }
   if (filters.year) { conditions.push("training_year = ?"); bindings.push(String(filters.year)); }
   if (filters.trainingId) { conditions.push("training_id = ?"); bindings.push(filters.trainingId); }
   if (filters.materialId) { conditions.push("material_id = ?"); bindings.push(filters.materialId); }
@@ -37,7 +39,7 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
         sessions.material_id AS material_id, materials.name AS material_name,
         materials.sort_order AS material_sort_order,
         batches.cohort_id AS cohort_id, cohorts.name AS cohort_name,
-        SUBSTR(cohorts.start_date, 1, 4) AS training_year,
+        SUBSTR(cohorts.start_date, 1, 4) AS training_year, cohorts.funding_source,
         sessions.passing_score,
         MAX(CASE WHEN attempts.stage = 'PRE' AND attempts.status = 'SUBMITTED' THEN attempts.score END) AS pre_score,
         MAX(CASE WHEN attempts.stage = 'PRE' AND attempts.status = 'SUBMITTED' THEN attempts.submitted_at END) AS pre_submitted_at,
@@ -69,7 +71,7 @@ export async function listResultSummaries(database: D1Database, filters: ResultF
   ).bind(...bindings).all<Record<string, string | number | null>>();
   return result.results;
 }
-export async function listResultFilterOptions(database: D1Database, year: number) {
+export async function listResultFilterOptions(database: D1Database, year: number, fundingSource: "RUPIAH_MURNI" | "PNBP") {
   const yearText = String(year);
   const [trainings, materials, cohorts] = await Promise.all([
     database.prepare(
@@ -77,25 +79,27 @@ export async function listResultFilterOptions(database: D1Database, year: number
          FROM trainings
          JOIN training_sessions AS sessions ON sessions.training_id = trainings.id
         WHERE trainings.is_deleted = 0 AND SUBSTR(sessions.training_start_date, 1, 4) = ?
+          AND EXISTS (SELECT 1 FROM batches source_batches JOIN training_cohorts source_cohorts ON source_cohorts.id=source_batches.cohort_id WHERE source_batches.training_session_id=sessions.id AND source_cohorts.funding_source=?)
         ORDER BY trainings.name COLLATE NOCASE, trainings.id`,
-    ).bind(yearText).all<{ id: string; name: string }>(),
+    ).bind(yearText, fundingSource).all<{ id: string; name: string }>(),
     database.prepare(
       `SELECT DISTINCT materials.id, materials.training_id, materials.name
          FROM training_materials AS materials
          JOIN trainings ON trainings.id = materials.training_id
          JOIN training_sessions AS sessions ON sessions.material_id = materials.id
         WHERE trainings.is_deleted = 0 AND SUBSTR(sessions.training_start_date, 1, 4) = ?
+          AND EXISTS (SELECT 1 FROM batches source_batches JOIN training_cohorts source_cohorts ON source_cohorts.id=source_batches.cohort_id WHERE source_batches.training_session_id=sessions.id AND source_cohorts.funding_source=?)
         ORDER BY materials.name COLLATE NOCASE, materials.id`,
-    ).bind(yearText).all<{ id: string; training_id: string; name: string }>(),
+    ).bind(yearText, fundingSource).all<{ id: string; training_id: string; name: string }>(),
     database.prepare(
       `SELECT DISTINCT cohorts.id, cohorts.training_id, cohorts.name
          FROM training_cohorts AS cohorts
          JOIN trainings ON trainings.id = cohorts.training_id
          JOIN batches ON batches.cohort_id = cohorts.id
          JOIN training_sessions AS sessions ON sessions.id = batches.training_session_id
-        WHERE trainings.is_deleted = 0 AND SUBSTR(cohorts.start_date, 1, 4) = ?
+        WHERE trainings.is_deleted = 0 AND SUBSTR(cohorts.start_date, 1, 4) = ? AND cohorts.funding_source=?
         ORDER BY cohorts.name COLLATE NOCASE, cohorts.id`,
-    ).bind(yearText).all<{ id: string; training_id: string; name: string }>(),
+    ).bind(yearText, fundingSource).all<{ id: string; training_id: string; name: string }>(),
   ]);
   return {
     trainings: trainings.results,
@@ -109,12 +113,14 @@ export async function getParticipantResult(
   year?: number,
   batchId?: string,
   sessionId?: string,
+  fundingSource?: "RUPIAH_MURNI" | "PNBP",
 ) {
   const contextSql = `${batchId ? " AND batches.id = ?" : ""}${sessionId ? " AND sessions.id = ?" : ""}`;
   const bindings: unknown[] = [participantId, participantId];
   if (year) bindings.push(String(year));
   if (batchId) bindings.push(batchId);
   if (sessionId) bindings.push(sessionId);
+  if (fundingSource) bindings.push(fundingSource);
   return database.prepare(
     `SELECT COALESCE(participants.id, profiles.id) AS id, participants.id AS participant_id,
       profiles.id AS profile_id, COALESCE(participants.name, profiles.name) AS name, profiles.normalized_name,
@@ -131,7 +137,7 @@ export async function getParticipantResult(
       JOIN trainings ON trainings.id = sessions.training_id
       JOIN training_materials AS materials ON materials.id = sessions.material_id
       JOIN training_cohorts AS cohorts ON cohorts.id = batches.cohort_id
-      WHERE (participants.id = ? OR profiles.id = ?)${year ? " AND SUBSTR(cohorts.start_date, 1, 4) = ?" : ""}${contextSql} LIMIT 1`,
+      WHERE (participants.id = ? OR profiles.id = ?)${year ? " AND SUBSTR(cohorts.start_date, 1, 4) = ?" : ""}${contextSql}${fundingSource ? " AND cohorts.funding_source = ?" : ""} LIMIT 1`,
   ).bind(...bindings).first<{
     id: string; participant_id: string | null; profile_id: string; name: string; normalized_name: string; batch_id: string; batch_name: string;
     training_session_id: string;
@@ -170,6 +176,7 @@ export async function getManualScoreContext(
   referenceId: string,
   batchId: string,
   sessionId: string,
+  fundingSource?: "RUPIAH_MURNI" | "PNBP",
 ) {
   return database.prepare(
     `SELECT profiles.id AS profile_id, participants.id AS participant_id,
@@ -184,8 +191,9 @@ export async function getManualScoreContext(
        LEFT JOIN participants
          ON participants.profile_id = profiles.id AND participants.batch_id = batches.id
       WHERE profiles.is_active = 1 AND (profiles.id = ? OR participants.id = ?)
+        AND (? IS NULL OR EXISTS (SELECT 1 FROM training_cohorts source_cohort WHERE source_cohort.id=profiles.cohort_id AND source_cohort.funding_source=?))
       LIMIT 1`,
-  ).bind(sessionId, batchId, referenceId, referenceId).first<ManualScoreContext>();
+  ).bind(sessionId, batchId, referenceId, referenceId, fundingSource ?? null, fundingSource ?? null).first<ManualScoreContext>();
 }
 
 export async function listParticipantAttemptDetails(database: D1Database, participantId: string) {

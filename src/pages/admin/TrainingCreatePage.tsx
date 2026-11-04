@@ -8,6 +8,7 @@ import { adminMutation, adminQuery, AdminApiError } from "../../features/admin-a
 import { formatDateTimeForApi } from "../../features/dates/date-format";
 import type { QuestionBankSummary } from "../../features/question-banks/types";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
+import { fundingSourceLabel, useActiveFundingSource } from "../../features/funding-source/ActiveFundingSourceProvider";
 
 type Catalog = {
   trainings: Array<{ id: string; name: string }>;
@@ -30,6 +31,7 @@ const initialDraft: Draft = {
 export function TrainingCreatePage() {
   const navigate = useNavigate();
   const { activeYear } = useActiveYear();
+  const { activeFundingSource } = useActiveFundingSource();
   const [draft, setDraft] = useState(initialDraft);
   const [catalog, setCatalog] = useState<Catalog>({ trainings: [], cohorts: [] });
   const [banks, setBanks] = useState<QuestionBankSummary[]>([]);
@@ -113,7 +115,7 @@ export function TrainingCreatePage() {
       <fieldset className="test-create-section"><legend><span>01</span> Informasi Test</legend><p className="test-create-section__hint">Pilih pelatihan, materi yang memiliki Bank Soal, serta angkatan peserta.</p><div className="form-grid test-create-form__grid">
         <label>Pelatihan<SearchableSelect required value={draft.trainingId} placeholder="Ketik atau pilih pelatihan" options={catalog.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(trainingId) => setDraft((current) => ({ ...current, trainingId, materialId: "", cohortId: "" }))} /></label>
         <label>Materi<SearchableSelect required disabled={!draft.trainingId} value={draft.materialId} placeholder={draft.trainingId ? "Ketik atau pilih materi" : "Pilih pelatihan terlebih dahulu"} options={materials.map((bank) => ({ value: bank.materialId!, label: `${bank.materialName} (${bank.activeQuestionCount + bank.inactiveQuestionCount} soal)` }))} onValueChange={(materialId) => update("materialId", materialId)} /></label>
-        <label>Angkatan<select required disabled={!draft.trainingId} value={draft.cohortId} onChange={(event) => update("cohortId", event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name}</option>)}</select></label>
+        <label>Angkatan<select required disabled={!draft.trainingId} value={draft.cohortId} onChange={(event) => update("cohortId", event.target.value)}><option value="">Pilih angkatan</option>{cohorts.map((cohort) => <option key={cohort.id} value={cohort.id}>{cohort.name} · {fundingSourceLabel(activeFundingSource)}</option>)}</select></label>
         <label>Passing Grade<input type="number" min={0} max={100} step="0.01" required value={draft.passingScore} onChange={(event) => update("passingScore", Number(event.target.value))} /></label>
       </div>{draft.trainingId && !materials.length && <p className="form-message is-error">Pelatihan ini belum mempunyai materi dengan Bank Soal.</p>}{draft.trainingId && !cohorts.length && <p className="form-message is-error">Pelatihan ini belum mempunyai angkatan aktif.</p>}</fieldset>
       <div className="fixed-test-rule"><Clock3 /><div><strong>Durasi pengerjaan otomatis</strong><span>7 menit untuk setiap tes. Tambahan waktu maksimal 1 menit.</span></div></div>

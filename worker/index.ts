@@ -13,6 +13,8 @@ import { participantAdminRoutes } from "./routes/admin/participant-admin-routes"
 import { surveyTemplateRoutes } from "./routes/admin/survey-template-routes";
 import { surveyCampaignRoutes } from "./routes/admin/survey-campaign-routes";
 import { surveyEvaluationRoutes } from "./routes/public/survey-evaluation-routes";
+import { participantLinkRoutes } from "./routes/admin/participant-link-routes";
+import { participantPortalRoutes } from "./routes/public/participant-portal-routes";
 import type { AppEnvironment } from "./types";
 
 export const app = new Hono<AppEnvironment>();
@@ -39,7 +41,9 @@ app.route("/api/admin/training", trainingRoutes);
 app.route("/api/admin/results", resultRoutes);
 app.route("/api/admin/dashboard", dashboardRoutes);
 app.route("/api/admin/participants", participantAdminRoutes);
+app.route("/api/admin/participant-links", participantLinkRoutes);
 app.route("/api/public/training", trainingEntryRoutes);
+app.route("/api/public/participants", participantPortalRoutes);
 app.route("/api/public/training/:slug/attempts", attemptRoutes);
 
 app.route("/api/admin/survey-templates", surveyTemplateRoutes);

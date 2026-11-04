@@ -3,6 +3,7 @@ import masterMigration from "../migrations/0003_training_participants_certificat
 import identityMigration from "../migrations/0004_participant_exam_identity.sql?raw";
 import softDeleteMigration from "../migrations/0005_soft_delete_trainings.sql?raw";
 import materialUnitCodeMigration from "../migrations/0020_add_training_material_unit_code.sql?raw";
+import fundingSourceMigration from "../migrations/0023_add_cohort_funding_source.sql?raw";
 
 describe("relasi master data", () => {
   it("mengikat materi ke pelatihan dan satu bank aktif ke satu materi", () => {
@@ -26,6 +27,18 @@ describe("relasi master data", () => {
   it("menghapus pelatihan secara logis agar data historis tetap utuh", () => {
     expect(softDeleteMigration).toContain("is_deleted INTEGER NOT NULL DEFAULT 0");
     expect(softDeleteMigration).not.toContain("DELETE FROM trainings");
+  });
+});
+
+describe("sumber pembiayaan angkatan", () => {
+  it("menetapkan data lama sebagai Rupiah Murni dan membatasi nilai sumber", () => {
+    expect(fundingSourceMigration).toContain("DEFAULT 'RUPIAH_MURNI'");
+    expect(fundingSourceMigration).toContain("funding_source IN ('RUPIAH_MURNI', 'PNBP')");
+  });
+
+  it("mengizinkan nama angkatan yang sama pada sumber berbeda", () => {
+    expect(fundingSourceMigration).toContain("DROP INDEX IF EXISTS uq_training_cohorts_name_year");
+    expect(fundingSourceMigration).toMatch(/CREATE UNIQUE INDEX uq_training_cohorts_name_year_funding[\s\S]*funding_source/iu);
   });
 });
 

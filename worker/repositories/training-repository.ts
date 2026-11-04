@@ -39,6 +39,7 @@ export type BatchRecord = {
 export async function listTrainingSessions(
   database: D1Database,
   activeYear?: number,
+  fundingSource: "RUPIAH_MURNI" | "PNBP" = "RUPIAH_MURNI",
 ): Promise<TrainingSessionRecord[]> {
   const result = await database
     .prepare(
@@ -59,19 +60,20 @@ export async function listTrainingSessions(
          LEFT JOIN trainings ON trainings.id = sessions.training_id
          LEFT JOIN training_materials AS materials ON materials.id = sessions.material_id
         WHERE (? IS NULL OR SUBSTR(sessions.training_start_date, 1, 4) = ?)
+          AND EXISTS (SELECT 1 FROM batches source_batches JOIN training_cohorts source_cohorts ON source_cohorts.id=source_batches.cohort_id WHERE source_batches.training_session_id=sessions.id AND source_cohorts.funding_source=?)
         ORDER BY sessions.created_at DESC`,
     )
-    .bind(activeYear ?? null, activeYear ? String(activeYear) : null)
+    .bind(activeYear ?? null, activeYear ? String(activeYear) : null, fundingSource)
     .all<TrainingSessionRecord>();
   return result.results;
 }
 
 export async function paginateTrainingSessions(
   database: D1Database,
-  input: { year: number; page: number; limit: number; search?: string; trainingId?: string; materialId?: string; cohortId?: string; scheduleStatus?: string },
+  input: { year: number; fundingSource: "RUPIAH_MURNI" | "PNBP"; page: number; limit: number; search?: string; trainingId?: string; materialId?: string; cohortId?: string; scheduleStatus?: string },
 ): Promise<{ rows: TrainingSessionRecord[]; total: number }> {
-  const conditions = ["SUBSTR(sessions.training_start_date, 1, 4) = ?"];
-  const bindings: unknown[] = [String(input.year)];
+  const conditions = ["SUBSTR(sessions.training_start_date, 1, 4) = ?", "EXISTS (SELECT 1 FROM batches source_batches JOIN training_cohorts source_cohorts ON source_cohorts.id=source_batches.cohort_id WHERE source_batches.training_session_id=sessions.id AND source_cohorts.funding_source=?)"];
+  const bindings: unknown[] = [String(input.year), input.fundingSource];
   if (input.trainingId) { conditions.push("sessions.training_id = ?"); bindings.push(input.trainingId); }
   if (input.materialId) { conditions.push("sessions.material_id = ?"); bindings.push(input.materialId); }
   if (input.cohortId) { conditions.push("EXISTS (SELECT 1 FROM batches cohort_batches WHERE cohort_batches.training_session_id=sessions.id AND cohort_batches.cohort_id=?)"); bindings.push(input.cohortId); }
@@ -106,6 +108,7 @@ export async function paginateTrainingSessions(
 export async function findTrainingSession(
   database: D1Database,
   sessionId: string,
+  fundingSource?: "RUPIAH_MURNI" | "PNBP",
 ): Promise<TrainingSessionRecord | null> {
   return database
     .prepare(
@@ -126,9 +129,10 @@ export async function findTrainingSession(
          LEFT JOIN trainings ON trainings.id = sessions.training_id
          LEFT JOIN training_materials AS materials ON materials.id = sessions.material_id
         WHERE sessions.id = ?
+          AND (? IS NULL OR EXISTS (SELECT 1 FROM batches source_batches JOIN training_cohorts source_cohorts ON source_cohorts.id=source_batches.cohort_id WHERE source_batches.training_session_id=sessions.id AND source_cohorts.funding_source=?))
         LIMIT 1`,
     )
-    .bind(sessionId)
+    .bind(sessionId, fundingSource ?? null, fundingSource ?? null)
     .first<TrainingSessionRecord>();
 }
 

@@ -10,6 +10,7 @@ import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { AdminApiError, adminMutation, adminQuery } from "../../features/admin-auth/admin-api";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
+import { useActiveFundingSource, withActiveFundingSource } from "../../features/funding-source/ActiveFundingSourceProvider";
 import { formatDateTimeForApi, formatDateTimeForDisplay } from "../../features/dates/date-format";
 import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
@@ -58,6 +59,7 @@ export function EvaluationDetailPage() {
   const { campaignId = "" } = useParams();
   const navigate = useNavigate();
   const { activeYear } = useActiveYear();
+  const { activeFundingSource } = useActiveFundingSource();
   const [campaign, setCampaign] = useState<Campaign | null>(null);
   const [results, setResults] = useState<Results | null>(null);
   const [cohortId, setCohortId] = useState("");
@@ -194,7 +196,7 @@ export function EvaluationDetailPage() {
   const cohortLabel = formatCohortList(selectedCohortNames);
   const chartTitle = `Hasil Evaluasi Penyelenggaraan Pelatihan Vokasi${cohortLabel ? ` ${cohortLabel}` : ""}`;
   const exportPath = withActiveYear(`/api/admin/survey-campaigns/${campaign.id}/export`, activeYear);
-  const exportUrl = cohortId ? `${exportPath}&cohortId=${encodeURIComponent(cohortId)}` : exportPath;
+  const exportUrl = withActiveFundingSource(cohortId ? `${exportPath}&cohortId=${encodeURIComponent(cohortId)}` : exportPath, activeFundingSource);
 
   return <>
     <header className="admin-page-header"><div><Link className="back-link" to="/admin/evaluasi">← Evaluasi</Link><h1>{campaign.training.name}</h1><p>{campaign.cohorts.map((item) => item.name).join(" & ")} · {campaign.template.name} Versi {campaign.template.version}</p><ActiveYearIndicator /></div><div className="page-header-actions evaluation-result-actions"><span className={`status-badge evaluation-status-${campaign.status.toLowerCase()}`}>{statusLabels[campaign.status]}</span><button className="button button--secondary" type="button" onClick={() => void downloadChart(chartFileName(selectedCohortNames))}><Download /> Download Chart</button><a className="button" href={exportUrl} download><Download /> Export Hasil Evaluasi</a></div></header>

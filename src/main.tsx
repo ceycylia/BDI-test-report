@@ -4,6 +4,7 @@ import { BrowserRouter } from "react-router-dom";
 import { AppRouter } from "./app/router";
 import { AuthProvider } from "./features/admin-auth/AuthProvider";
 import { ActiveYearProvider } from "./features/active-year/ActiveYearProvider";
+import { ActiveFundingSourceProvider } from "./features/funding-source/ActiveFundingSourceProvider";
 import { DownloadManagerProvider } from "./features/downloads/DownloadManager";
 import "@fontsource/inter/400.css";
 import "@fontsource/inter/500.css";
@@ -22,11 +23,13 @@ createRoot(root).render(
   <StrictMode>
     <BrowserRouter>
       <AuthProvider>
-        <ActiveYearProvider>
-          <DownloadManagerProvider>
-            <AppRouter />
-          </DownloadManagerProvider>
-        </ActiveYearProvider>
+        <ActiveFundingSourceProvider>
+          <ActiveYearProvider>
+            <DownloadManagerProvider>
+              <AppRouter />
+            </DownloadManagerProvider>
+          </ActiveYearProvider>
+        </ActiveFundingSourceProvider>
       </AuthProvider>
     </BrowserRouter>
   </StrictMode>,

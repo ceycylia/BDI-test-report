@@ -17,19 +17,21 @@ const PLOT_LEFT = 214;
 const PLOT_TOP = 32;
 const PLOT_WIDTH = 686;
 const PLOT_HEIGHT = 394;
-const AXIS_MIN = 90;
 const AXIS_MAX = 101;
-const TICKS = [90, 92, 94, 96, 98, 100];
 
-function chartX(value: number) {
-  const bounded = Math.max(AXIS_MIN, Math.min(100, value));
-  return PLOT_LEFT + ((bounded - AXIS_MIN) / (AXIS_MAX - AXIS_MIN)) * PLOT_WIDTH;
+function chartX(value: number, axisMin: number) {
+  const bounded = Math.max(axisMin, Math.min(100, value));
+  return PLOT_LEFT + ((bounded - axisMin) / (AXIS_MAX - axisMin)) * PLOT_WIDTH;
 }
 
 export const EvaluationReportChart = forwardRef<SVGSVGElement, EvaluationReportChartProps>(
   function EvaluationReportChart({ title, sections }, ref) {
     const plotPaddingY = 55;
     const barHeight = 75;
+    const lowestValue = Math.min(80, ...sections.map((section) => section.value ?? 80));
+    const axisMin = Math.max(0, Math.floor(lowestValue / 10) * 10);
+    const tickInterval = axisMin < 80 ? 10 : 5;
+    const ticks = Array.from({ length: (100 - axisMin) / tickInterval + 1 }, (_, index) => axisMin + index * tickInterval);
 
     return (
       <svg
@@ -61,8 +63,8 @@ export const EvaluationReportChart = forwardRef<SVGSVGElement, EvaluationReportC
           strokeWidth="1.2"
         />
 
-        {TICKS.map((tick) => {
-          const x = chartX(tick);
+        {ticks.map((tick) => {
+          const x = chartX(tick, axisMin);
           return (
             <g key={tick}>
               <line x1={x} y1={PLOT_TOP + PLOT_HEIGHT} x2={x} y2={PLOT_TOP + PLOT_HEIGHT + 6} stroke="#111111" strokeWidth="1" />
@@ -78,8 +80,8 @@ export const EvaluationReportChart = forwardRef<SVGSVGElement, EvaluationReportC
             ? PLOT_TOP + PLOT_HEIGHT / 2
             : PLOT_TOP + plotPaddingY + ((PLOT_HEIGHT - plotPaddingY * 2) / (sections.length - 1)) * index;
           const barY = centerY - barHeight / 2;
-          const numericValue = section.value ?? AXIS_MIN;
-          const endX = chartX(numericValue);
+          const numericValue = section.value ?? axisMin;
+          const endX = chartX(numericValue, axisMin);
           const barWidth = Math.max(0, endX - PLOT_LEFT);
 
           return (

@@ -16,6 +16,7 @@ import {
 import { getSurveyTemplateDetail } from "../../repositories/survey-repository";
 import type { AppEnvironment } from "../../types";
 import { paginationMeta, parsePagination } from "../../http/pagination";
+import { activeFundingSource, type FundingSource } from "../../domain/funding-source";
 
 export const surveyCampaignRoutes = new Hono<AppEnvironment>();
 surveyCampaignRoutes.use("*", requireAdmin);
@@ -65,15 +66,17 @@ function scheduleOf(campaign: SurveyCampaignRecord) {
   };
 }
 
-async function requireCampaignInYear(database: D1Database, campaignId: string, year: number) {
+async function requireCampaignInYear(database: D1Database, campaignId: string, year: number, fundingSource: FundingSource) {
   const row = await database.prepare(
-    `SELECT 1 AS found
+    `SELECT cohorts.funding_source, SUBSTR(cohorts.start_date,1,4) AS cohort_year
      FROM survey_campaign_cohorts links
      JOIN training_cohorts cohorts ON cohorts.id = links.cohort_id
-     WHERE links.survey_campaign_id = ? AND SUBSTR(cohorts.start_date, 1, 4) = ?
+     WHERE links.survey_campaign_id = ?
      LIMIT 1`,
-  ).bind(campaignId, String(year)).first<{ found: number }>();
+  ).bind(campaignId).first<{ funding_source: FundingSource; cohort_year: string }>();
   if (!row) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", `Pelaksanaan Evaluasi tidak ditemukan pada Tahun Aktif ${year}.`);
+  if (row.funding_source !== fundingSource) throw new HttpError(409, `FUNDING_SOURCE_CONTEXT_${row.funding_source}`, `Evaluasi ini berada pada sumber pembiayaan ${row.funding_source === "PNBP" ? "PNBP" : "Rupiah Murni"}. Ubah Sumber Aktif untuk melanjutkan.`);
+  if (row.cohort_year !== String(year)) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", `Pelaksanaan Evaluasi tidak ditemukan pada Tahun Aktif ${year}.`);
 }
 
 async function mapCampaign(database: D1Database, campaign: SurveyCampaignRecord) {
@@ -101,20 +104,21 @@ async function mapCampaign(database: D1Database, campaign: SurveyCampaignRecord)
 surveyCampaignRoutes.get("/catalog", async (context) => {
   const year = activeYear(context.req.query("year"));
   const yearText = String(year);
+  const fundingSource = activeFundingSource(context);
   const [trainings, cohorts, templates] = await Promise.all([
     context.env.DB.prepare(
       `SELECT DISTINCT trainings.id, trainings.name
        FROM trainings JOIN training_cohorts cohorts ON cohorts.training_id = trainings.id
-       WHERE trainings.is_deleted = 0 AND SUBSTR(cohorts.start_date, 1, 4) = ?
+       WHERE trainings.is_deleted = 0 AND SUBSTR(cohorts.start_date, 1, 4) = ? AND cohorts.funding_source=?
        ORDER BY trainings.name COLLATE NOCASE ASC`,
-    ).bind(yearText).all<{ id: string; name: string }>(),
+    ).bind(yearText, fundingSource).all<{ id: string; name: string }>(),
     context.env.DB.prepare(
       `SELECT cohorts.id, cohorts.training_id, cohorts.name, cohorts.start_date, cohorts.end_date,
               EXISTS(SELECT 1 FROM survey_campaign_cohorts links WHERE links.cohort_id = cohorts.id) AS has_campaign
        FROM training_cohorts cohorts JOIN trainings ON trainings.id = cohorts.training_id
-       WHERE trainings.is_deleted = 0 AND SUBSTR(cohorts.start_date, 1, 4) = ?
+       WHERE trainings.is_deleted = 0 AND SUBSTR(cohorts.start_date, 1, 4) = ? AND cohorts.funding_source=?
        ORDER BY cohorts.start_date ASC, cohorts.name COLLATE NOCASE ASC`,
-    ).bind(yearText).all<{ id: string; training_id: string; name: string; start_date: string; end_date: string; has_campaign: number }>(),
+    ).bind(yearText, fundingSource).all<{ id: string; training_id: string; name: string; start_date: string; end_date: string; has_campaign: number }>(),
     context.env.DB.prepare(
       `SELECT templates.id, templates.name, templates.version FROM survey_templates templates
        WHERE templates.status = 'PUBLISHED' AND templates.is_active = 1
@@ -139,7 +143,7 @@ surveyCampaignRoutes.get("/catalog", async (context) => {
 surveyCampaignRoutes.get("/", async (context) => {
   const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
   const result = await paginateSurveyCampaigns(context.env.DB, {
-    year: activeYear(context.req.query("year")), page: pagination.page, limit: pagination.limit,
+    year: activeYear(context.req.query("year")), fundingSource: activeFundingSource(context), page: pagination.page, limit: pagination.limit,
     search: context.req.query("search"), trainingId: context.req.query("trainingId"), cohortId: context.req.query("cohortId"), status: context.req.query("status"),
   });
   return context.json({ campaigns: await Promise.all(result.rows.map((campaign) => mapCampaign(context.env.DB, campaign))), pagination: paginationMeta(pagination, result.total) });
@@ -177,7 +181,7 @@ surveyCampaignRoutes.post("/", requireSameOrigin, requireCsrf, async (context) =
              AND (questions.scale_min <> 1 OR questions.scale_max <> 4)
          )`,
     ).bind(input.templateId).first(),
-    context.env.DB.prepare(`SELECT id, training_id, start_date FROM training_cohorts WHERE id IN (${placeholders})`).bind(...cohortIds).all<{ id: string; training_id: string; start_date: string }>(),
+    context.env.DB.prepare(`SELECT id, training_id, start_date, funding_source FROM training_cohorts WHERE id IN (${placeholders})`).bind(...cohortIds).all<{ id: string; training_id: string; start_date: string; funding_source: FundingSource }>(),
     context.env.DB.prepare(`SELECT cohort_id FROM survey_campaign_cohorts WHERE cohort_id IN (${placeholders}) LIMIT 1`).bind(...cohortIds).first<{ cohort_id: string }>(),
   ]);
   if (!template) throw new HttpError(422, "SURVEY_TEMPLATE_NOT_PUBLISHED", "Pilih Template Evaluasi Published dengan skala 1–4.");
@@ -186,6 +190,10 @@ surveyCampaignRoutes.post("/", requireSameOrigin, requireCsrf, async (context) =
   }
   if (cohorts.results.some((cohort) => cohort.start_date.slice(0, 4) !== String(input.activeYear))) {
     throw new HttpError(422, "YEAR_MISMATCH", `Angkatan harus berada pada Tahun Aktif ${input.activeYear}.`);
+  }
+  const sourceMismatch = cohorts.results.find((cohort) => cohort.funding_source !== activeFundingSource(context));
+  if (sourceMismatch) {
+    throw new HttpError(409, `FUNDING_SOURCE_CONTEXT_${sourceMismatch.funding_source}`, "Angkatan harus sesuai dengan Sumber Aktif.");
   }
   if (occupied) throw new HttpError(409, "SURVEY_COHORT_ALREADY_USED", "Salah satu Angkatan sudah memiliki Pelaksanaan Evaluasi.");
 
@@ -222,7 +230,7 @@ const scheduleSchema = z.discriminatedUnion("status", [
 surveyCampaignRoutes.put("/:campaignId/schedule", requireSameOrigin, requireCsrf, async (context) => {
   const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
   if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
-  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
+  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")), activeFundingSource(context));
   const parsed = scheduleSchema.safeParse(await context.req.json().catch(() => null));
   if (!parsed.success) throw new HttpError(422, "SURVEY_SCHEDULE_INVALID", parsed.error.issues[0]?.message ?? "Pengaturan jadwal tidak valid.");
   const input = parsed.data;
@@ -250,7 +258,7 @@ surveyCampaignRoutes.put("/:campaignId/schedule", requireSameOrigin, requireCsrf
 surveyCampaignRoutes.delete("/:campaignId", requireSameOrigin, requireCsrf, async (context) => {
   const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
   if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
-  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
+  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")), activeFundingSource(context));
 
   const deleted = await deleteSurveyCampaignIfUnused(context.env.DB, campaign.id);
   if (!deleted) {
@@ -344,28 +352,85 @@ function buildEvaluationRespondentSheet(
   };
 }
 
-function buildEvaluationSummarySheet(
+export function buildEvaluationSummarySheet(
   title: string,
-  indicators: Array<{ no: number; indicator: string; value: number | null }>,
+  indicators: Array<{ sectionCode: string; sectionTitle: string; indicator: string; value: number | null; distribution: Array<{ value: number; count: number }> }>,
+  singleChoice: Array<{ sectionTitle: string; question: string; options: Array<{ label: string; count: number; percentage: number; otherTexts: string[] }> }> = [],
 ): WorkbookSheet {
-  const dataRows = indicators.map((indicator) => [
-    indicator.no,
-    indicator.indicator,
-    indicator.value === null ? "-" : `${indicator.value.toFixed(2).replace(".", ",")}%`,
-  ]);
-  const rowStyles: NonNullable<WorkbookSheet["rowStyles"]> = { 0: "title", 2: "header" };
-  const rowHeights: NonNullable<WorkbookSheet["rowHeights"]> = { 0: 24, 2: 22.5 };
-  dataRows.forEach((_, index) => { rowStyles[index + 3] = "data"; rowHeights[index + 3] = 22.5; });
+  const rows: WorkbookSheet["rows"] = [
+    [title, null, null, null, null, null],
+    [null],
+    ["Indikator Penilaian", "Nilai", "Distribusi", null, null, null],
+    [null, null, 1, 2, 3, 4],
+  ];
+  const rowStyles: NonNullable<WorkbookSheet["rowStyles"]> = { 0: "title", 2: "header", 3: "header" };
+  const rowHeights: NonNullable<WorkbookSheet["rowHeights"]> = { 0: 28, 2: 26, 3: 22 };
+  const merges = ["A1:F1", "A3:A4", "B3:B4", "C3:F3"];
+  indicators.forEach((item, index) => {
+    if (index === 0 || indicators[index - 1]?.sectionCode !== item.sectionCode) {
+      const sectionRow = rows.length;
+      rows.push([`${item.sectionCode}. ${item.sectionTitle}`, null, null, null, null, null]);
+      rowStyles[sectionRow] = "section";
+      rowHeights[sectionRow] = 25;
+      merges.push(`A${sectionRow + 1}:F${sectionRow + 1}`);
+    }
+    const dataRow = rows.length;
+    rows.push([
+      item.indicator,
+      item.value === null ? "-" : item.value / 100,
+      ...[1, 2, 3, 4].map((score) => item.distribution.find((entry) => entry.value === score)?.count ?? 0),
+    ]);
+    rowStyles[dataRow] = "data";
+    rowHeights[dataRow] = 30;
+  });
+  singleChoice.forEach((group) => {
+    rows.push([null]); // Satu baris pemisah dari tabel sebelumnya.
+    const sectionRow = rows.length;
+    rows.push([group.sectionTitle, null, null, null, null, null]);
+    rowStyles[sectionRow] = "choice-label";
+    rowHeights[sectionRow] = 22;
+    merges.push(`A${sectionRow + 1}:F${sectionRow + 1}`);
+
+    const questionRow = rows.length;
+    rows.push([group.question, null, null, null, null, null]);
+    rowStyles[questionRow] = "choice-title";
+    rowHeights[questionRow] = 30;
+    merges.push(`A${questionRow + 1}:F${questionRow + 1}`);
+
+    const headerRow = rows.length;
+    rows.push(["Pilihan", null, null, null, "Jumlah", "Persentase"]);
+    rowStyles[headerRow] = "header";
+    rowHeights[headerRow] = 26;
+    merges.push(`A${headerRow + 1}:D${headerRow + 1}`);
+
+    for (const option of group.options) {
+      const optionRow = rows.length;
+      rows.push([option.label, null, null, null, option.count, option.percentage / 100]);
+      rowStyles[optionRow] = "choice-data";
+      rowHeights[optionRow] = 25;
+      merges.push(`A${optionRow + 1}:D${optionRow + 1}`);
+      for (const answer of option.otherTexts) {
+        if (!answer.trim()) continue;
+        const answerRow = rows.length;
+        rows.push([`•  ${answer}`, null, null, null, null, null]);
+        rowStyles[answerRow] = "choice-answer";
+        rowHeights[answerRow] = 25;
+        merges.push(`A${answerRow + 1}:D${answerRow + 1}`);
+      }
+    }
+  });
   return {
     name: "Ringkasan",
-    rows: [[title], [null], ["No.", "Indikator Penilaian", "Nilai"], ...dataRows],
-    variant: "test-results",
+    rows,
+    variant: "evaluation-summary",
     rowStyles,
     rowHeights,
-    centerColumns: [0, 2],
-    columnWidths: [10, 70, 16],
-    freezeRows: 3,
-    autoFilterRange: `A3:C${Math.max(3, dataRows.length + 3)}`,
+    merges,
+    percentageColumns: [1],
+    centerColumns: [1, 2, 3, 4, 5],
+    columnWidths: [78, 16, 10, 10, 10, 10],
+    freezeRows: 4,
+    autoFilter: false,
   };
 }
 
@@ -494,7 +559,7 @@ async function resultData(database: D1Database, campaign: SurveyCampaignRecord, 
 surveyCampaignRoutes.get("/:campaignId/results", async (context) => {
   const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
   if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
-  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
+  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")), activeFundingSource(context));
   const pagination = parsePagination({ page: context.req.query("participantPage"), limit: context.req.query("participantLimit") });
   const commentPagination = parsePagination({ page: context.req.query("commentPage"), limit: context.req.query("commentLimit") });
   const data = await resultData(context.env.DB, campaign, context.req.query("cohortId") || undefined, {
@@ -507,7 +572,7 @@ surveyCampaignRoutes.get("/:campaignId/results", async (context) => {
 surveyCampaignRoutes.get("/:campaignId/export", async (context) => {
   const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
   if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
-  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
+  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")), activeFundingSource(context));
   const cohortId = context.req.query("cohortId") || undefined;
   const data = await resultData(context.env.DB, campaign, cohortId);
   const selectedCohortNames = (cohortId ? data.cohorts.filter((item) => item.id === cohortId) : data.cohorts).map((item) => item.name);
@@ -517,7 +582,7 @@ surveyCampaignRoutes.get("/:campaignId/export", async (context) => {
   const title = `Tabel. Rincian Nilai Per Indikator pada Penyelenggaraan Diklat ${campaign.training_name}${cohortLabel ? ` ${cohortLabel}` : ""}`;
   const workbook = createXlsx([
     buildEvaluationRespondentSheet(data.template, exportAnswers),
-    buildEvaluationSummarySheet(title, data.indicators),
+    buildEvaluationSummarySheet(title, data.indicators, data.singleChoice),
   ]);
   return new Response(workbook.slice().buffer as ArrayBuffer, { headers: {
     "Content-Type": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -529,6 +594,6 @@ surveyCampaignRoutes.get("/:campaignId/export", async (context) => {
 surveyCampaignRoutes.get("/:campaignId", async (context) => {
   const campaign = await findSurveyCampaignById(context.env.DB, context.req.param("campaignId"));
   if (!campaign) throw new HttpError(404, "SURVEY_CAMPAIGN_NOT_FOUND", "Pelaksanaan Evaluasi tidak ditemukan.");
-  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")));
+  await requireCampaignInYear(context.env.DB, campaign.id, activeYear(context.req.query("year")), activeFundingSource(context));
   return context.json({ campaign: await mapCampaign(context.env.DB, campaign) });
 });

@@ -9,6 +9,7 @@ import { manualScoreFields } from "../../domain/attempts/admin-attempt-managemen
 import { createXlsx } from "../../export/xlsx";
 import type { AppEnvironment } from "../../types";
 import { paginationMeta, parsePagination } from "../../http/pagination";
+import { activeFundingSource, requireParticipantReferenceInFundingSource } from "../../domain/funding-source";
 
 export const resultRoutes = new Hono<AppEnvironment>();
 resultRoutes.use("*", requireAdmin);
@@ -22,6 +23,7 @@ function activeYear(value: string | undefined) {
 resultRoutes.get("/", async (context) => {
   const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
   const results = await listResultSummaries(context.env.DB, {
+    fundingSource: activeFundingSource(context),
     year: activeYear(context.req.query("year")),
     trainingId: context.req.query("trainingId"), materialId: context.req.query("materialId"),
     cohortId: context.req.query("cohortId"),
@@ -33,7 +35,7 @@ resultRoutes.get("/", async (context) => {
 });
 
 resultRoutes.get("/options", async (context) => {
-  return context.json(await listResultFilterOptions(context.env.DB, activeYear(context.req.query("year"))));
+  return context.json(await listResultFilterOptions(context.env.DB, activeYear(context.req.query("year")), activeFundingSource(context)));
 });
 
 export type ExportRow = Record<string, string | number | null>;
@@ -330,6 +332,7 @@ resultRoutes.get("/export", async (context) => {
   if (!trainingId) throw new HttpError(422, "TRAINING_REQUIRED", "Pilih pelatihan terlebih dahulu.");
 
   const summaries = await listResultSummaries(context.env.DB, {
+    fundingSource: activeFundingSource(context),
     year: activeYear(context.req.query("year")),
     trainingId,
     materialId: context.req.query("materialId"),
@@ -359,12 +362,14 @@ resultRoutes.get("/export", async (context) => {
 });
 
 resultRoutes.get("/participants/:participantId", async (context) => {
+  await requireParticipantReferenceInFundingSource(context.env.DB, context.req.param("participantId"), activeFundingSource(context));
   const participant = await getParticipantResult(
     context.env.DB,
     context.req.param("participantId"),
     activeYear(context.req.query("year")),
     context.req.query("batchId"),
     context.req.query("trainingSessionId"),
+    activeFundingSource(context),
   );
   if (!participant) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
   const details = await listParticipantAttemptDetails(context.env.DB, participant.id);
@@ -380,8 +385,8 @@ const manualScoreSchema = z.object({
   })).min(1).max(4),
 });
 
-async function manualScorePlan(context: Parameters<typeof getManualScoreContext>[0], referenceId: string, batchId: string, sessionId: string) {
-  const target = await getManualScoreContext(context, referenceId, batchId, sessionId);
+async function manualScorePlan(context: Parameters<typeof getManualScoreContext>[0], referenceId: string, batchId: string, sessionId: string, fundingSource: "RUPIAH_MURNI" | "PNBP") {
+  const target = await getManualScoreContext(context, referenceId, batchId, sessionId, fundingSource);
   if (!target) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta atau pelaksanaan tes tidak ditemukan.");
   const attempts = target.participant_id
     ? (await listParticipantAttemptDetails(context, target.participant_id)).attempts
@@ -390,10 +395,11 @@ async function manualScorePlan(context: Parameters<typeof getManualScoreContext>
 }
 
 resultRoutes.get("/participants/:participantId/manual-score-plan", async (context) => {
+  await requireParticipantReferenceInFundingSource(context.env.DB, context.req.param("participantId"), activeFundingSource(context));
   const batchId = context.req.query("batchId") ?? "";
   const sessionId = context.req.query("trainingSessionId") ?? "";
   if (!batchId || !sessionId) throw new HttpError(422, "MANUAL_SCORE_CONTEXT_INVALID", "Data pelaksanaan tes tidak lengkap.");
-  const plan = await manualScorePlan(context.env.DB, context.req.param("participantId"), batchId, sessionId);
+  const plan = await manualScorePlan(context.env.DB, context.req.param("participantId"), batchId, sessionId, activeFundingSource(context));
   return context.json({ fields: plan.fields });
 });
 
@@ -401,7 +407,8 @@ resultRoutes.put("/participants/:participantId/name", requireSameOrigin, require
   const parsed = z.object({ name: z.string().trim().min(2).max(150) }).safeParse(await context.req.json().catch(() => null));
   if (!parsed.success) throw new HttpError(422, "NAME_INVALID", "Nama peserta tidak valid.");
   const participantId = context.req.param("participantId");
-  if (!(await getParticipantResult(context.env.DB, participantId))) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
+  await requireParticipantReferenceInFundingSource(context.env.DB, participantId, activeFundingSource(context));
+  if (!(await getParticipantResult(context.env.DB, participantId, undefined, undefined, undefined, activeFundingSource(context)))) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
   try { await updateParticipantName(context.env.DB, participantId, parsed.data.name); }
   catch (error) {
     if (String(error).includes("UNIQUE")) throw new HttpError(409, "PARTICIPANT_NAME_DUPLICATE", "Nama yang sama sudah ada pada angkatan ini. Pastikan kedua peserta dapat dibedakan.");
@@ -412,12 +419,16 @@ resultRoutes.put("/participants/:participantId/name", requireSameOrigin, require
 
 resultRoutes.post("/participants/:participantId/attempts/:attemptId/reset", requireSameOrigin, requireCsrf, async (context) => {
   const participantId = context.req.param("participantId");
+  await requireParticipantReferenceInFundingSource(context.env.DB, participantId, activeFundingSource(context));
   const body = z.object({
     batchId: z.string().min(1),
     trainingSessionId: z.string().min(1),
     reason: z.string().trim().max(500).nullable().optional(),
   }).safeParse(await context.req.json().catch(() => null));
   if (!body.success) throw new HttpError(422, "RESET_CONTEXT_INVALID", "Data mata diklat untuk reset tidak lengkap.");
+  if (!(await getParticipantResult(context.env.DB, participantId, undefined, body.data.batchId, body.data.trainingSessionId, activeFundingSource(context)))) {
+    throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta atau pelaksanaan tes tidak ditemukan pada Sumber Aktif.");
+  }
   const detail = await listParticipantAttemptDetails(context.env.DB, participantId);
   const attempt = detail.attempts.find((item) => item.id === context.req.param("attemptId"));
   if (!attempt) throw new HttpError(404, "ATTEMPT_NOT_FOUND", "Attempt tidak ditemukan.");
@@ -441,7 +452,8 @@ resultRoutes.put("/participants/:participantId/manual-scores", requireSameOrigin
   const parsed = manualScoreSchema.safeParse(await context.req.json().catch(() => null));
   if (!parsed.success) throw new HttpError(422, "SCORE_INVALID", "Nilai harus berada di antara 0 dan 100.");
   const referenceId = context.req.param("participantId");
-  const plan = await manualScorePlan(context.env.DB, referenceId, parsed.data.batchId, parsed.data.trainingSessionId);
+  await requireParticipantReferenceInFundingSource(context.env.DB, referenceId, activeFundingSource(context));
+  const plan = await manualScorePlan(context.env.DB, referenceId, parsed.data.batchId, parsed.data.trainingSessionId, activeFundingSource(context));
   const expectedStages = plan.fields.map((field) => field.stage);
   const submittedStages = parsed.data.scores.map((score) => score.stage);
   if (

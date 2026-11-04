@@ -16,6 +16,8 @@ const ResultsPage = lazy(() => import("../pages/admin/ResultsPage").then((m) => 
 const ParticipantResultDetailPage = lazy(() => import("../pages/admin/ParticipantResultDetailPage").then((m) => ({ default: m.ParticipantResultDetailPage })));
 const NotFoundPage = lazy(() => import("../pages/NotFoundPage").then((m) => ({ default: m.NotFoundPage })));
 const PublicHomePage = lazy(() => import("../pages/participant/PublicHomePage").then((m) => ({ default: m.PublicHomePage })));
+const ParticipantRegistrationPage = lazy(() => import("../pages/participant/ParticipantRegistrationPage").then((m) => ({ default: m.ParticipantRegistrationPage })));
+const ParticipantPortalPage = lazy(() => import("../pages/participant/ParticipantPortalPage").then((m) => ({ default: m.ParticipantPortalPage })));
 const TrainingEntryFoundationPage = lazy(() => import("../pages/participant/TrainingEntryFoundationPage").then((m) => ({ default: m.TrainingEntryFoundationPage })));
 const AttemptPage = lazy(() => import("../pages/participant/AttemptPage").then((m) => ({ default: m.AttemptPage })));
 const ParticipantsPage = lazy(() => import("../pages/admin/ParticipantsPage").then((m) => ({ default: m.ParticipantsPage })));
@@ -29,6 +31,8 @@ export function AppRouter() {
   return <Suspense fallback={<div className="route-loading" role="status">Memuat halaman…</div>}>
     <Routes>
       <Route path="/" element={<PublicHomePage />} />
+      <Route path="/daftar/:token" element={<ParticipantRegistrationPage />} />
+      <Route path="/peserta" element={<ParticipantPortalPage />} />
       <Route path="/t/:slug" element={<TrainingEntryFoundationPage />} />
       <Route path="/t/:slug/attempt/:attemptId" element={<AttemptPage />} />
       <Route path="/e/:slug" element={<EvaluationParticipantPage />} />

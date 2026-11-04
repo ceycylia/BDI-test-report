@@ -40,6 +40,7 @@ import {
 } from "../../domain/certificates/download";
 import type { AppEnvironment } from "../../types";
 import { paginationMeta, parsePagination } from "../../http/pagination";
+import { activeFundingSource, requireCohortInFundingSource, requireParticipantReferenceInFundingSource, type FundingSource } from "../../domain/funding-source";
 
 export const participantAdminRoutes = new Hono<AppEnvironment>();
 participantAdminRoutes.use("*", requireAdmin);
@@ -301,6 +302,7 @@ async function readParticipantPhotoArchive(
 }
 
 type ParticipantListFilters = {
+  fundingSource: FundingSource;
   year?: string;
   trainingId?: string;
   cohortId?: string;
@@ -309,8 +311,8 @@ type ParticipantListFilters = {
 };
 
 function participantListWhere(filters: ParticipantListFilters) {
-  const conditions: string[] = [];
-  const bindings: Array<string | number> = [];
+  const conditions: string[] = ["cohorts.funding_source=?"];
+  const bindings: Array<string | number> = [filters.fundingSource];
 
   if (filters.year && /^\d{4}$/u.test(filters.year)) {
     conditions.push("SUBSTR(cohorts.start_date,1,4)=?");
@@ -350,8 +352,10 @@ function validationError(parsed: { success: false; error: z.ZodError }) {
 async function requireMatchingCohort(
   database: D1Database,
   trainingId: string,
-  cohortId: string
+  cohortId: string,
+  fundingSource: FundingSource,
 ) {
+  await requireCohortInFundingSource(database, cohortId, fundingSource);
   const cohort = await database
     .prepare(`SELECT id FROM training_cohorts WHERE id = ? AND training_id = ?`)
     .bind(cohortId, trainingId)
@@ -365,9 +369,10 @@ async function requireMatchingCohort(
 }
 
 participantAdminRoutes.get("/catalog", async (c) => {
+  const fundingSource = activeFundingSource(c);
   const requestedYear = c.req.query("year");
   const year = requestedYear && /^\d{4}$/u.test(requestedYear) ? requestedYear : null;
-  const cohortQuery = `SELECT cohorts.*, trainings.name training_name, (SELECT COUNT(*) FROM participant_profiles WHERE cohort_id=cohorts.id) participant_count FROM training_cohorts cohorts JOIN trainings ON trainings.id=cohorts.training_id WHERE trainings.is_deleted=0${year ? " AND SUBSTR(cohorts.start_date,1,4)=?" : ""} ORDER BY cohorts.created_at DESC, cohorts.rowid DESC`;
+  const cohortQuery = `SELECT cohorts.*, trainings.name training_name, (SELECT COUNT(*) FROM participant_profiles WHERE cohort_id=cohorts.id) participant_count FROM training_cohorts cohorts JOIN trainings ON trainings.id=cohorts.training_id WHERE trainings.is_deleted=0 AND cohorts.funding_source=?${year ? " AND SUBSTR(cohorts.start_date,1,4)=?" : ""} ORDER BY cohorts.created_at DESC, cohorts.rowid DESC`;
   const cohortStatement = c.env.DB.prepare(cohortQuery);
   const [trainings, materials, cohorts] = await Promise.all([
     c.env.DB.prepare(
@@ -382,7 +387,7 @@ participantAdminRoutes.get("/catalog", async (c) => {
         WHERE trainings.is_deleted=0
         ORDER BY trainings.created_at DESC, materials.sort_order ASC`
     ).all(),
-    (year ? cohortStatement.bind(year) : cohortStatement).all(),
+    (year ? cohortStatement.bind(fundingSource, year) : cohortStatement.bind(fundingSource)).all(),
   ]);
   return c.json({
     trainings: trainings.results,
@@ -435,10 +440,11 @@ participantAdminRoutes.get("/catalog/materials", async (c) => {
 });
 
 participantAdminRoutes.get("/catalog/cohorts", async (c) => {
+  const fundingSource = activeFundingSource(c);
   const pagination = parsePagination({ page: c.req.query("page"), limit: c.req.query("limit"), pageSize: c.req.query("pageSize") });
   const year = c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!) ? c.req.query("year")! : null;
-  const bindings: unknown[] = [];
-  const where = year ? "WHERE trainings.is_deleted=0 AND SUBSTR(cohorts.start_date,1,4)=?" : "WHERE trainings.is_deleted=0";
+  const bindings: unknown[] = [fundingSource];
+  const where = year ? "WHERE trainings.is_deleted=0 AND cohorts.funding_source=? AND SUBSTR(cohorts.start_date,1,4)=?" : "WHERE trainings.is_deleted=0 AND cohorts.funding_source=?";
   if (year) bindings.push(year);
   const base = `FROM training_cohorts cohorts JOIN trainings ON trainings.id=cohorts.training_id ${where}`;
   const [count, rows] = await Promise.all([
@@ -910,6 +916,7 @@ participantAdminRoutes.post(
   requireSameOrigin,
   requireCsrf,
   async (c) => {
+    const fundingSource = activeFundingSource(c);
     const parsed = cohortInput.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     if (parsed.data.activeYear && parsed.data.startDate.slice(0, 4) !== String(parsed.data.activeYear)) {
@@ -918,7 +925,7 @@ participantAdminRoutes.post(
     const id = crypto.randomUUID();
     try {
       await c.env.DB.prepare(
-        `INSERT INTO training_cohorts(id,training_id,name,start_date,end_date,status) VALUES(?,?,?,?,?,?)`
+        `INSERT INTO training_cohorts(id,training_id,name,start_date,end_date,status,funding_source) VALUES(?,?,?,?,?,?,?)`
       )
         .bind(
           id,
@@ -926,7 +933,8 @@ participantAdminRoutes.post(
           parsed.data.name,
           parsed.data.startDate,
           parsed.data.endDate,
-          parsed.data.status
+          parsed.data.status,
+          fundingSource,
         )
         .run();
     } catch (e) {
@@ -946,6 +954,7 @@ participantAdminRoutes.post(
   requireSameOrigin,
   requireCsrf,
   async (c) => {
+    const fundingSource = activeFundingSource(c);
     const parsed = bulkCohortInput.safeParse(
       await c.req.json().catch(() => null)
     );
@@ -983,11 +992,13 @@ participantAdminRoutes.post(
         "Pelatihan tidak ditemukan."
       );
     const existing = await c.env.DB.prepare(
-      `SELECT name FROM training_cohorts WHERE training_id=? AND lower(name) IN (SELECT lower(value) FROM json_each(?)) ORDER BY name`
+      `SELECT name FROM training_cohorts WHERE training_id=? AND funding_source=? AND lower(name) IN (SELECT lower(value) FROM json_each(?)) AND SUBSTR(start_date,1,4)=? ORDER BY name`
     )
       .bind(
         parsed.data.trainingId,
-        JSON.stringify(parsed.data.cohorts.map((cohort) => cohort.name.trim()))
+        fundingSource,
+        JSON.stringify(parsed.data.cohorts.map((cohort) => cohort.name.trim())),
+        String(parsed.data.activeYear ?? parsed.data.cohorts[0]?.startDate.slice(0, 4)),
       )
       .all<{ name: string }>();
     if (existing.results.length)
@@ -1000,14 +1011,15 @@ participantAdminRoutes.post(
       );
     const statements = parsed.data.cohorts.map((cohort) =>
       c.env.DB.prepare(
-        `INSERT INTO training_cohorts(id,training_id,name,start_date,end_date,status) VALUES(?,?,?,?,?,?)`
+        `INSERT INTO training_cohorts(id,training_id,name,start_date,end_date,status,funding_source) VALUES(?,?,?,?,?,?,?)`
       ).bind(
         crypto.randomUUID(),
         parsed.data.trainingId,
         cohort.name.trim(),
         cohort.startDate,
         cohort.endDate,
-        cohort.status
+        cohort.status,
+        fundingSource,
       )
     );
     try {
@@ -1029,6 +1041,7 @@ participantAdminRoutes.put(
   requireSameOrigin,
   requireCsrf,
   async (c) => {
+    const fundingSource = activeFundingSource(c);
     const parsed = cohortInput.safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     if (parsed.data.activeYear && parsed.data.startDate.slice(0, 4) !== String(parsed.data.activeYear)) {
@@ -1036,12 +1049,14 @@ participantAdminRoutes.put(
     }
     const id = c.req.param("id");
     const current = await c.env.DB.prepare(
-      `SELECT training_id,(EXISTS(SELECT 1 FROM participant_profiles WHERE cohort_id=training_cohorts.id) OR EXISTS(SELECT 1 FROM batches WHERE cohort_id=training_cohorts.id)) AS in_use FROM training_cohorts WHERE id=?`
+      `SELECT training_id,funding_source,(EXISTS(SELECT 1 FROM participant_profiles WHERE cohort_id=training_cohorts.id) OR EXISTS(SELECT 1 FROM batches WHERE cohort_id=training_cohorts.id)) AS in_use FROM training_cohorts WHERE id=?`
     )
       .bind(id)
-      .first<{ training_id: string; in_use: number }>();
+      .first<{ training_id: string; funding_source: FundingSource; in_use: number }>();
     if (!current)
       throw new HttpError(404, "COHORT_NOT_FOUND", "Angkatan tidak ditemukan.");
+    if (current.funding_source !== fundingSource)
+      throw new HttpError(409, `FUNDING_SOURCE_CONTEXT_${current.funding_source}`, `Angkatan ini berada pada sumber pembiayaan ${current.funding_source === "PNBP" ? "PNBP" : "Rupiah Murni"}.`);
     if (current.in_use && current.training_id !== parsed.data.trainingId)
       throw new HttpError(
         409,
@@ -1078,18 +1093,21 @@ participantAdminRoutes.delete(
   requireSameOrigin,
   requireCsrf,
   async (c) => {
+    const fundingSource = activeFundingSource(c);
     const id = c.req.param("id");
     const cohort = await c.env.DB.prepare(
-      `SELECT id,
+      `SELECT id,funding_source,
         (EXISTS(SELECT 1 FROM participant_profiles WHERE cohort_id=training_cohorts.id)
           OR EXISTS(SELECT 1 FROM batches WHERE cohort_id=training_cohorts.id)
           OR EXISTS(SELECT 1 FROM certificates WHERE cohort_id=training_cohorts.id)) AS in_use
        FROM training_cohorts WHERE id=?`
     )
       .bind(id)
-      .first<{ id: string; in_use: number }>();
+      .first<{ id: string; funding_source: FundingSource; in_use: number }>();
     if (!cohort)
       throw new HttpError(404, "COHORT_NOT_FOUND", "Angkatan tidak ditemukan.");
+    if (cohort.funding_source !== fundingSource)
+      throw new HttpError(409, `FUNDING_SOURCE_CONTEXT_${cohort.funding_source}`, `Angkatan ini berada pada sumber pembiayaan ${cohort.funding_source === "PNBP" ? "PNBP" : "Rupiah Murni"}.`);
     if (cohort.in_use)
       throw new HttpError(
         409,
@@ -1112,6 +1130,7 @@ participantAdminRoutes.get("/participants", async (c) => {
       ? "profiles.name COLLATE NOCASE DESC, profiles.created_at DESC, profiles.rowid DESC"
       : "profiles.created_at DESC, profiles.rowid DESC";
   const { where, bindings } = participantListWhere({
+    fundingSource: activeFundingSource(c),
     year: c.req.query("year"),
     trainingId: c.req.query("trainingId"),
     cohortId: c.req.query("cohortId"),
@@ -1171,11 +1190,12 @@ participantAdminRoutes.delete(
       const participantIds = [...new Set(parsed.data.participantIds)];
       const idsJson = JSON.stringify(participantIds);
       profiles = await c.env.DB.prepare(
-        `SELECT id,photo_key FROM participant_profiles WHERE id IN (SELECT value FROM json_each(?))`,
-      ).bind(idsJson).all<{ id: string; photo_key: string | null }>();
+        `SELECT profiles.id,profiles.photo_key FROM participant_profiles profiles JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id WHERE profiles.id IN (SELECT value FROM json_each(?)) AND cohorts.funding_source=?`,
+      ).bind(idsJson, activeFundingSource(c)).all<{ id: string; photo_key: string | null }>();
     } else {
       const filters = parsed.data.filters;
       const { where, bindings } = participantListWhere({
+        fundingSource: activeFundingSource(c),
         year: String(filters.year),
         trainingId: filters.trainingId,
         cohortId: filters.cohortId,
@@ -1234,11 +1254,13 @@ participantAdminRoutes.delete(
   }
 );
 participantAdminRoutes.get("/participants/:id", async (c) => {
+  await requireParticipantReferenceInFundingSource(c.env.DB, c.req.param("id"), activeFundingSource(c));
+  const fundingSource = activeFundingSource(c);
   const year = c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!) ? c.req.query("year")! : null;
   const row = await c.env.DB.prepare(
-    `SELECT profiles.*,trainings.name training_name,cohorts.name cohort_name FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id WHERE profiles.id=?${year ? " AND SUBSTR(cohorts.start_date,1,4)=?" : ""}`
+    `SELECT profiles.*,trainings.name training_name,cohorts.name cohort_name,cohorts.funding_source FROM participant_profiles profiles JOIN trainings ON trainings.id=profiles.training_id JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id WHERE profiles.id=? AND cohorts.funding_source=?${year ? " AND SUBSTR(cohorts.start_date,1,4)=?" : ""}`
   )
-    .bind(...(year ? [c.req.param("id"), year] : [c.req.param("id")]))
+    .bind(...(year ? [c.req.param("id"), fundingSource, year] : [c.req.param("id"), fundingSource]))
     .first();
   if (!row)
     throw new HttpError(
@@ -1258,7 +1280,7 @@ participantAdminRoutes.post(
     );
     if (!parsed.success) throw validationError(parsed);
     const d = parsed.data;
-    await requireMatchingCohort(c.env.DB, d.trainingId, d.cohortId);
+    await requireMatchingCohort(c.env.DB, d.trainingId, d.cohortId, activeFundingSource(c));
     const id = crypto.randomUUID();
     try {
       await c.env.DB.prepare(
@@ -1299,7 +1321,7 @@ participantAdminRoutes.put(
     );
     if (!parsed.success) throw validationError(parsed);
     const d = parsed.data;
-    await requireMatchingCohort(c.env.DB, d.trainingId, d.cohortId);
+    await requireMatchingCohort(c.env.DB, d.trainingId, d.cohortId, activeFundingSource(c));
     const profileId = c.req.param("id");
     const existing = await c.env.DB.prepare(
       `SELECT training_id,cohort_id,EXISTS(SELECT 1 FROM participants WHERE profile_id=participant_profiles.id) has_exam FROM participant_profiles WHERE id=?`
@@ -1361,6 +1383,7 @@ participantAdminRoutes.post(
   requireSameOrigin,
   requireCsrf,
   async (c) => {
+    await requireParticipantReferenceInFundingSource(c.env.DB, c.req.param("id"), activeFundingSource(c));
     const form = await c.req.formData();
     const file = form.get("photo");
     const ext =
@@ -1400,6 +1423,7 @@ participantAdminRoutes.post(
   }
 );
 participantAdminRoutes.get("/participants/:id/photo", async (c) => {
+  await requireParticipantReferenceInFundingSource(c.env.DB, c.req.param("id"), activeFundingSource(c));
   const row = await c.env.DB.prepare(
     `SELECT photo_key FROM participant_profiles WHERE id=?`
   )
@@ -1526,7 +1550,7 @@ participantAdminRoutes.post(
       );
     const trainingId = String(form.get("trainingId") ?? "");
     const cohortId = String(form.get("cohortId") ?? "");
-    await requireMatchingCohort(c.env.DB, trainingId, cohortId);
+    await requireMatchingCohort(c.env.DB, trainingId, cohortId, activeFundingSource(c));
     const existingRows = (
       await c.env.DB.prepare(
         `SELECT id,nik FROM participant_profiles WHERE training_id=? AND cohort_id=?`
@@ -1616,7 +1640,7 @@ participantAdminRoutes.post(
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     const data = parsed.data;
-    await requireMatchingCohort(c.env.DB, data.trainingId, data.cohortId);
+    await requireMatchingCohort(c.env.DB, data.trainingId, data.cohortId, activeFundingSource(c));
     const existing = await c.env.DB.prepare(
       `SELECT id,nik FROM participant_profiles WHERE training_id=? AND cohort_id=?`
     )
@@ -1700,7 +1724,7 @@ participantAdminRoutes.post(
       throw new HttpError(422, "FILE_REQUIRED", "Pilih file ZIP foto peserta.");
     const trainingId = String(form.get("trainingId") ?? "");
     const cohortId = String(form.get("cohortId") ?? "");
-    await requireMatchingCohort(c.env.DB, trainingId, cohortId);
+    await requireMatchingCohort(c.env.DB, trainingId, cohortId, activeFundingSource(c));
     const { rows } = await readParticipantPhotoArchive(c.env.DB, file, trainingId, cohortId);
     return c.json({
       rows: rows.map(({ oldPhotoKey: _oldPhotoKey, ...row }) => row),
@@ -1724,7 +1748,7 @@ participantAdminRoutes.post(
       throw new HttpError(422, "FILE_REQUIRED", "Pilih file ZIP foto peserta.");
     const trainingId = String(form.get("trainingId") ?? "");
     const cohortId = String(form.get("cohortId") ?? "");
-    await requireMatchingCohort(c.env.DB, trainingId, cohortId);
+    await requireMatchingCohort(c.env.DB, trainingId, cohortId, activeFundingSource(c));
     const { rows, extracted } = await readParticipantPhotoArchive(c.env.DB, file, trainingId, cohortId);
     const importableRows = rows.filter((row) => row.participantId && (row.status === "READY" || row.status === "REPLACE"));
     let uploaded = 0;
@@ -1776,8 +1800,8 @@ participantAdminRoutes.post(
 participantAdminRoutes.get("/certificates", async (c) => {
   const year = c.req.query("year") && /^\d{4}$/u.test(c.req.query("year")!) ? c.req.query("year")! : null;
   const pagination = parsePagination({ page: c.req.query("page"), limit: c.req.query("limit"), pageSize: c.req.query("pageSize") });
-  const conditions: string[] = [];
-  const bindings: unknown[] = [];
+  const conditions: string[] = ["funding_source = ?"];
+  const bindings: unknown[] = [activeFundingSource(c)];
   if (year) { conditions.push("training_year = ?"); bindings.push(year); }
   if (c.req.query("trainingId")) { conditions.push("training_id = ?"); bindings.push(c.req.query("trainingId")!); }
   if (c.req.query("cohortId")) { conditions.push("cohort_id = ?"); bindings.push(c.req.query("cohortId")!); }
@@ -1793,7 +1817,7 @@ participantAdminRoutes.get("/certificates", async (c) => {
       : "created_at DESC, source_rowid DESC";
   const cte = `${documentEligibilityCte}, certificate_rows AS (
     SELECT profiles.id participant_id,profiles.name,profiles.nik,profiles.training_id,profiles.cohort_id,
-      trainings.name training_name,cohorts.name cohort_name,SUBSTR(cohorts.start_date,1,4) training_year,
+      trainings.name training_name,cohorts.name cohort_name,cohorts.funding_source,SUBSTR(cohorts.start_date,1,4) training_year,
       scores.final_score,scores.passing_score,CASE WHEN ${documentEligibilitySql} THEN 'LULUS' ELSE 'BELUM_LULUS' END graduation_status,
       certificates.id certificate_id,certificates.certificate_number,certificates.status certificate_status,
       completion_letters.id completion_letter_id,completion_letters.completion_letter_number,
@@ -1820,8 +1844,8 @@ participantAdminRoutes.get("/certificates", async (c) => {
   });
 });
 participantAdminRoutes.get("/certificates/numbering-targets", async (c) => {
-  const conditions = ["profiles.is_active=1"];
-  const bindings: unknown[] = [];
+  const conditions = ["profiles.is_active=1", "cohorts.funding_source=?"];
+  const bindings: unknown[] = [activeFundingSource(c)];
   const year = c.req.query("year");
   if (year && /^\d{4}$/u.test(year)) { conditions.push("SUBSTR(cohorts.start_date,1,4)=?"); bindings.push(year); }
   if (c.req.query("trainingId")) { conditions.push("profiles.training_id=?"); bindings.push(c.req.query("trainingId")!); }
@@ -2074,7 +2098,7 @@ async function certificateData(db: D1Database, profileId: string) {
   return db
     .prepare(
       `${documentEligibilityCte}
-       SELECT p.*,t.name training_name,c.name cohort_name,c.start_date,c.end_date,c.end_date AS issue_date,
+       SELECT p.*,t.name training_name,c.name cohort_name,c.funding_source,c.start_date,c.end_date,c.end_date AS issue_date,
               (SELECT COALESCE(SUM(jp),0) FROM training_materials WHERE training_id=t.id) total_jp,
               scores.final_score,scores.passing_score,
               CASE WHEN ${documentEligibilitySql} THEN 1 ELSE 0 END document_eligible,
@@ -2383,6 +2407,10 @@ async function renderCertificate(
   preview = false
 ) {
   const d = await certificateData(c.env.DB, profileId);
+  if (d?.funding_source !== activeFundingSource(c)) {
+    const actual = d?.funding_source === "PNBP" ? "PNBP" : "RUPIAH_MURNI";
+    throw new HttpError(409, `FUNDING_SOURCE_CONTEXT_${actual}`, `Dokumen ini berada pada sumber pembiayaan ${actual === "PNBP" ? "PNBP" : "Rupiah Murni"}.`);
+  }
   if (!d)
     throw new HttpError(
       404,
@@ -2686,6 +2714,10 @@ async function renderCompletionLetter(
   preview = false
 ) {
   const d = await certificateData(c.env.DB, profileId);
+  if (d?.funding_source !== activeFundingSource(c)) {
+    const actual = d?.funding_source === "PNBP" ? "PNBP" : "RUPIAH_MURNI";
+    throw new HttpError(409, `FUNDING_SOURCE_CONTEXT_${actual}`, `Dokumen ini berada pada sumber pembiayaan ${actual === "PNBP" ? "PNBP" : "Rupiah Murni"}.`);
+  }
   if (!d)
     throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Peserta tidak ditemukan.");
   if (Number(d.document_eligible) !== 1)
@@ -2826,6 +2858,10 @@ participantAdminRoutes.put(
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     const d = await certificateData(c.env.DB, c.req.param("participantId"));
+    if (d?.funding_source !== activeFundingSource(c)) {
+      const actual = d?.funding_source === "PNBP" ? "PNBP" : "RUPIAH_MURNI";
+      throw new HttpError(409, `FUNDING_SOURCE_CONTEXT_${actual}`, "Peserta berada pada sumber pembiayaan lain.");
+    }
     if (!d || Number(d.document_eligible) !== 1)
       throw new HttpError(
         409,
@@ -2869,6 +2905,10 @@ participantAdminRoutes.put(
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
     const d = await certificateData(c.env.DB, c.req.param("participantId"));
+    if (d?.funding_source !== activeFundingSource(c)) {
+      const actual = d?.funding_source === "PNBP" ? "PNBP" : "RUPIAH_MURNI";
+      throw new HttpError(409, `FUNDING_SOURCE_CONTEXT_${actual}`, "Peserta berada pada sumber pembiayaan lain.");
+    }
     if (!d || Number(d.document_eligible) !== 1)
       throw new HttpError(409, "NOT_ELIGIBLE", "Nomor surat hanya dapat disimpan untuk peserta yang lulus.");
     assertDocumentConfiguration(d);
@@ -2924,8 +2964,8 @@ participantAdminRoutes.put(
       LEFT JOIN scores ON scores.profile_id=profiles.id
       LEFT JOIN active_material_counts ON active_material_counts.training_id=profiles.training_id
       LEFT JOIN completed_active_material_counts ON completed_active_material_counts.profile_id=profiles.id
-      WHERE profiles.id IN (SELECT value FROM json_each(?))`
-    ).bind(JSON.stringify(participantIds)).all<{
+      WHERE profiles.id IN (SELECT value FROM json_each(?)) AND cohorts.funding_source=?`
+    ).bind(JSON.stringify(participantIds), activeFundingSource(c)).all<{
       id: string;
       training_id: string;
       cohort_id: string;
@@ -3091,6 +3131,7 @@ participantAdminRoutes.post(
       })
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
+    await requireCohortInFundingSource(c.env.DB, parsed.data.cohortId, activeFundingSource(c));
     const rows = await c.env.DB.prepare(
       `SELECT id FROM participant_profiles WHERE training_id=? AND cohort_id=? AND is_active=1`
     )
@@ -3139,6 +3180,7 @@ participantAdminRoutes.post(
       .object({ trainingId: z.string(), cohortId: z.string() })
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
+    await requireCohortInFundingSource(c.env.DB, parsed.data.cohortId, activeFundingSource(c));
     const rows = await c.env.DB.prepare(
       `SELECT id,name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND is_active=1 ORDER BY name`
     )
@@ -3250,10 +3292,12 @@ participantAdminRoutes.get("/certificates/:certificateId/pdf", async (c) => {
   )
     .bind(c.req.param("certificateId"))
     .first<{
+      participant_profile_id: string;
       pdf_key: string | null;
       back_pdf_key: string | null;
       certificate_number: string;
     }>();
+  if (row) await requireParticipantReferenceInFundingSource(c.env.DB, row.participant_profile_id, activeFundingSource(c));
   const key = side === "BACK" ? row?.back_pdf_key : row?.pdf_key;
   if (!key)
     throw new HttpError(404, "PDF_NOT_FOUND", "PDF sertifikat belum dibuat.");
@@ -3285,6 +3329,7 @@ participantAdminRoutes.get(
       .first<{ participant_profile_id: string; certificate_number: string; pdf_key: string | null; back_pdf_key: string | null }>();
     if (!cert)
       throw new HttpError(404, "PDF_NOT_FOUND", "Sertifikat tidak ditemukan.");
+    await requireParticipantReferenceInFundingSource(c.env.DB, cert.participant_profile_id, activeFundingSource(c));
     const stored = cert.pdf_key && cert.back_pdf_key
       ? await Promise.all([c.env.QUESTION_IMAGES.get(cert.pdf_key), c.env.QUESTION_IMAGES.get(cert.back_pdf_key)])
       : [null, null];
@@ -3349,6 +3394,7 @@ participantAdminRoutes.post(
     const parsed = z.object({ trainingId: z.string(), cohortId: z.string() })
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
+    await requireCohortInFundingSource(c.env.DB, parsed.data.cohortId, activeFundingSource(c));
     const rows = await c.env.DB.prepare(
       `SELECT id,name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND is_active=1 ORDER BY name`
     ).bind(parsed.data.trainingId, parsed.data.cohortId).all<{ id: string; name: string }>();
@@ -3381,6 +3427,7 @@ participantAdminRoutes.post(
     const parsed = z.object({ trainingId: z.string(), cohortId: z.string() })
       .safeParse(await c.req.json().catch(() => null));
     if (!parsed.success) throw validationError(parsed);
+    await requireCohortInFundingSource(c.env.DB, parsed.data.cohortId, activeFundingSource(c));
     const rows = await c.env.DB.prepare(
       `SELECT id,name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND is_active=1 ORDER BY name`
     ).bind(parsed.data.trainingId, parsed.data.cohortId).all<{ id: string; name: string }>();

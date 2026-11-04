@@ -60,6 +60,7 @@ export function PublicHomePage() {
           <h1 id="public-title">
             Buka link pelatihan yang dibagikan panitia
           </h1>
+          <Link className="button public-dashboard-link" to="/peserta">Dashboard Peserta →</Link>
 
           <div className="public-training-area">
             {loading && (

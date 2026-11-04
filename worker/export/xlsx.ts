@@ -17,12 +17,13 @@ export type WorkbookSheet = {
    * A compact, report-oriented treatment used by the Test Results export.
    * Other workbook exports keep their existing, neutral styling.
    */
-  variant?: "test-results" | "test-results-reference";
-  rowStyles?: Record<number, "title" | "section" | "header" | "data" | "alternate-data">;
+  variant?: "test-results" | "test-results-reference" | "evaluation-summary";
+  rowStyles?: Record<number, "title" | "section" | "header" | "data" | "alternate-data" | "choice-label" | "choice-title" | "choice-data" | "choice-answer">;
   centerColumns?: number[];
   rowHeights?: Record<number, number>;
   freezeRows?: number;
   autoFilterRange?: string;
+  merges?: string[];
   charts?: Array<{
     type: "bar";
     title: string;
@@ -63,9 +64,16 @@ function sheetXml(sheet: WorkbookSheet, hasDrawing: boolean) {
       const reference = `${columnName(columnIndex)}${rowIndex + 1}`;
       const header = rowIndex === 0 || sheet.headerRows?.includes(rowIndex);
       const bordered = sheet.tableStartRow !== undefined && sheet.tableEndRow !== undefined && rowIndex >= sheet.tableStartRow && rowIndex <= sheet.tableEndRow;
-      const reportStyle = sheet.variant === "test-results" || sheet.variant === "test-results-reference" ? sheet.rowStyles?.[rowIndex] : undefined;
+      const reportStyle = sheet.variant === "test-results" || sheet.variant === "test-results-reference" || sheet.variant === "evaluation-summary" ? sheet.rowStyles?.[rowIndex] : undefined;
       const centered = sheet.centerColumns?.includes(columnIndex);
-      const styleId = sheet.variant === "test-results-reference" && reportStyle === "header" ? 15
+      const styleId = sheet.variant === "evaluation-summary" && reportStyle === "header" ? 17
+        : sheet.variant === "evaluation-summary" && reportStyle === "section" ? 18
+        : sheet.variant === "evaluation-summary" && reportStyle === "data" ? (columnIndex === 1 && typeof value === "number" ? 21 : centered ? 20 : 19)
+        : sheet.variant === "evaluation-summary" && reportStyle === "choice-label" ? 23
+        : sheet.variant === "evaluation-summary" && reportStyle === "choice-title" ? 8
+        : sheet.variant === "evaluation-summary" && reportStyle === "choice-data" ? (columnIndex === 5 ? 22 : centered ? 20 : 19)
+        : sheet.variant === "evaluation-summary" && reportStyle === "choice-answer" ? (columnIndex >= 4 ? 0 : 19)
+        : sheet.variant === "test-results-reference" && reportStyle === "header" ? 15
         : sheet.variant === "test-results-reference" && (reportStyle === "data" || reportStyle === "alternate-data") ? 16
         : reportStyle === "title" ? 8
         : reportStyle === "section" ? 9
@@ -93,12 +101,13 @@ function sheetXml(sheet: WorkbookSheet, hasDrawing: boolean) {
       }).join("")
     : '<col min="1" max="30" width="20" customWidth="1"/>';
   const autoFilter = sheet.autoFilter === false ? "" : `<autoFilter ref="${sheet.autoFilterRange ?? `A1:${endReference}`}"/>`;
+  const merges = sheet.merges?.length ? `<mergeCells count="${sheet.merges.length}">${sheet.merges.map((reference) => `<mergeCell ref="${reference}"/>`).join("")}</mergeCells>` : "";
   const drawing = hasDrawing ? '<drawing r:id="rId1"/>' : "";
   const freezeRows = sheet.freezeRows ?? 1;
   const views = freezeRows > 0
     ? `<sheetViews><sheetView workbookViewId="0"><pane ySplit="${freezeRows}" topLeftCell="A${freezeRows + 1}" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>`
     : '<sheetViews><sheetView workbookViewId="0"/></sheetViews>';
-  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="A1:${endReference}"/>${views}<cols>${columns}</cols><sheetData>${body}</sheetData>${autoFilter}${drawing}</worksheet>`;
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?><worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><dimension ref="A1:${endReference}"/>${views}<cols>${columns}</cols><sheetData>${body}</sheetData>${merges}${autoFilter}${drawing}</worksheet>`;
 }
 
 function sheetFormulaName(name: string) {
@@ -146,8 +155,21 @@ export function createXlsx(sheets: WorkbookSheet[]): Uint8Array {
       .replace('<font><sz val="10"/><name val="Arial"/></font></fonts>', '<font><sz val="10"/><name val="Arial"/></font><font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Arial"/></font></fonts>')
       .replaceAll('fontId="1" fillId="3"', 'fontId="4" fillId="3"')
       .replaceAll('fgColor rgb="FF7030A0"', 'fgColor rgb="FF5B3F8C"')
-      .replace('cellXfs count="15"', 'cellXfs count="17"')
-      .replace('</cellXfs>', '<xf numFmtId="0" fontId="4" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf></cellXfs>'),
+      .replace('<fonts count="5">', '<fonts count="6">')
+      .replace('<font><b/><color rgb="FFFFFFFF"/><sz val="10"/><name val="Arial"/></font></fonts>', '<font><b/><color rgb="FF5B3F8C"/><sz val="10"/><name val="Arial"/></font></fonts>')
+      .replace('<fills count="5">', '<fills count="6">')
+      .replace('</fills>', '<fill><patternFill patternType="solid"><fgColor rgb="FFE8F3FA"/><bgColor indexed="64"/></patternFill></fill></fills>')
+      .replace('cellXfs count="15"', 'cellXfs count="22"')
+      .replace('</cellXfs>', '<xf numFmtId="0" fontId="4" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="3" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="2" fillId="5" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="5" fillId="4" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1"><alignment vertical="center"/></xf><xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment vertical="center" wrapText="1"/></xf><xf numFmtId="0" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="165" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyFill="1" applyBorder="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf></cellXfs>'),
+  );
+  files["xl/styles.xml"] = strToU8(
+    strFromU8(files["xl/styles.xml"]!)
+      .replace('<numFmts count="2">', '<numFmts count="3">')
+      .replace('</numFmts>', '<numFmt numFmtId="166" formatCode="0.0%"/></numFmts>')
+      .replace('<fonts count="6">', '<fonts count="7">')
+      .replace('</fonts>', '<font><b/><color rgb="FF1979B9"/><sz val="10"/><name val="Arial"/></font></fonts>')
+      .replace('cellXfs count="22"', 'cellXfs count="24"')
+      .replace('</cellXfs>', '<xf numFmtId="166" fontId="3" fillId="0" borderId="1" xfId="0" applyFont="1" applyBorder="1" applyNumberFormat="1" applyAlignment="1"><alignment horizontal="center" vertical="center"/></xf><xf numFmtId="0" fontId="6" fillId="0" borderId="0" xfId="0" applyFont="1" applyAlignment="1"><alignment vertical="center"/></xf></cellXfs>'),
   );
   chartNumber = 0;
   sheets.forEach((sheet, index) => {

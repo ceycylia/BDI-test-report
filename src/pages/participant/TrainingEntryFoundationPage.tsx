@@ -139,6 +139,7 @@ export function TrainingEntryFoundationPage() {
       const result = await publicJson<{ attempt: { id: string } }>(`/api/public/training/${slug}/attempts/start`, {
         method: "POST", body: JSON.stringify({ participantId: identity.participant.id, batchId: identity.batch.id, stage }),
       });
+      sessionStorage.removeItem(`bdi-dashboard-return:${slug}`);
       navigate(`/t/${slug}/attempt/${result.attempt.id}`);
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Tes tidak dapat dimulai."); }
     finally { setBusy(false); }

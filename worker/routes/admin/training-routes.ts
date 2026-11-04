@@ -24,6 +24,7 @@ import { NORMAL_TEST_MINUTES } from "../../domain/attempts/timing";
 import { getTestScheduleStatus } from "../../domain/scheduling/test-availability";
 import type { AppEnvironment } from "../../types";
 import { paginationMeta, parsePagination } from "../../http/pagination";
+import { activeFundingSource, requireCohortInFundingSource, requireSessionInFundingSource } from "../../domain/funding-source";
 
 const createStageScheduleSchema = z.discriminatedUnion("status", [
   z.object({
@@ -148,6 +149,14 @@ function editComparableSchedule(schedule: z.infer<typeof stageScheduleSchema>): 
 
 export const trainingRoutes = new Hono<AppEnvironment>();
 trainingRoutes.use("*", requireAdmin);
+trainingRoutes.use("/:sessionId", async (context, next) => {
+  await requireSessionInFundingSource(context.env.DB, context.req.param("sessionId"), activeFundingSource(context));
+  await next();
+});
+trainingRoutes.use("/:sessionId/*", async (context, next) => {
+  await requireSessionInFundingSource(context.env.DB, context.req.param("sessionId"), activeFundingSource(context));
+  await next();
+});
 
 function activeYearInJakarta() {
   return Number(new Intl.DateTimeFormat("en", {
@@ -191,7 +200,7 @@ trainingRoutes.get("/", async (context) => {
     : activeYearInJakarta();
   const pagination = parsePagination({ page: context.req.query("page"), limit: context.req.query("limit"), pageSize: context.req.query("pageSize") });
   const result = await paginateTrainingSessions(context.env.DB, {
-    year: activeYear, page: pagination.page, limit: pagination.limit,
+    year: activeYear, fundingSource: activeFundingSource(context), page: pagination.page, limit: pagination.limit,
     search: context.req.query("search"), trainingId: context.req.query("trainingId"), materialId: context.req.query("materialId"), cohortId: context.req.query("cohortId"), scheduleStatus: context.req.query("scheduleStatus"),
   });
   return context.json({
@@ -225,6 +234,7 @@ trainingRoutes.post("/", requireSameOrigin, requireCsrf, async (context) => {
     throw new HttpError(422, "TRAINING_INVALID", parsed.error.issues[0]?.message ?? "Data pelatihan tidak valid.");
   }
   const input = parsed.data;
+  await requireCohortInFundingSource(context.env.DB, input.cohortId, activeFundingSource(context));
   const selection = await context.env.DB.prepare(
     `SELECT trainings.name AS training_name, materials.name AS material_name,
             cohorts.name AS cohort_name, cohorts.start_date, cohorts.end_date,
@@ -324,7 +334,7 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
   if (!parsed.success) {
     throw new HttpError(422, "QUESTION_COUNT_INVALID", "Jumlah soal per paket minimal 1.");
   }
-  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
+  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"), activeFundingSource(context));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
   if (session.status === "COMPLETED") {
     throw new HttpError(409, "TRAINING_COMPLETED", "Paket tidak dapat dibuat ulang setelah pelaksanaan selesai permanen.");
@@ -379,7 +389,7 @@ trainingRoutes.post("/:sessionId/generate-packages", requireSameOrigin, requireC
 });
 
 trainingRoutes.get("/:sessionId/packages/:batchId/questions", async (context) => {
-  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
+  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"), activeFundingSource(context));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
   const rows = await context.env.DB.prepare(
     `SELECT questions.id,questions.question_text,questions.image_key,
@@ -395,7 +405,7 @@ trainingRoutes.get("/:sessionId/packages/:batchId/questions", async (context) =>
 });
 
 trainingRoutes.post("/:sessionId/activate", requireSameOrigin, requireCsrf, async (context) => {
-  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
+  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"), activeFundingSource(context));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
   if (session.status !== "DRAFT") {
     throw new HttpError(409, "TRAINING_ALREADY_ACTIVE", "Pelatihan sudah diaktifkan.");
@@ -416,7 +426,7 @@ trainingRoutes.post("/:sessionId/manual-stage", requireSameOrigin, requireCsrf, 
   const parsed = z.object({ stage: z.enum(["PRE", "POST"]), open: z.boolean() })
     .safeParse(await context.req.json().catch(() => null));
   if (!parsed.success) throw new HttpError(422, "SCHEDULE_INVALID", "Pengaturan tes tidak valid.");
-  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
+  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"), activeFundingSource(context));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
   if (session.status !== "ACTIVE") throw new HttpError(409, "TRAINING_NOT_ACTIVE", "Aktifkan pelatihan terlebih dahulu.");
   const mode = parsed.data.stage === "PRE" ? session.pre_mode : session.post_mode;
@@ -428,7 +438,7 @@ trainingRoutes.post("/:sessionId/manual-stage", requireSameOrigin, requireCsrf, 
 trainingRoutes.put("/:sessionId/schedule", requireSameOrigin, requireCsrf, async (context) => {
   const parsed = stageScheduleSchema.safeParse(await context.req.json().catch(() => null));
   if (!parsed.success) throw new HttpError(422, "SCHEDULE_INVALID", parsed.error.issues[0]?.message ?? "Jadwal Test tidak valid.");
-  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
+  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"), activeFundingSource(context));
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan.");
 
   const input = parsed.data;
@@ -487,7 +497,7 @@ trainingRoutes.delete("/:sessionId", requireSameOrigin, requireCsrf, async (cont
 });
 
 trainingRoutes.get("/:sessionId", async (context) => {
-  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"));
+  const session = await findTrainingSession(context.env.DB, context.req.param("sessionId"), activeFundingSource(context));
   const year = Number(context.req.query("year"));
   if (!session || (Number.isInteger(year) && String(year) !== session.training_start_date.slice(0, 4))) throw new HttpError(404, "TRAINING_NOT_FOUND", "Pelatihan tidak ditemukan pada Tahun Aktif ini.");
   const [batches, packageRows, availableQuestionCount] = await Promise.all([

@@ -17,6 +17,7 @@ import {
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import { AppMark } from "../components/ui/AppMark";
 import { useAdminAuth } from "../features/admin-auth/AuthProvider";
+import { fundingSourceLabel, useActiveFundingSource } from "../features/funding-source/ActiveFundingSourceProvider";
 
 const primaryNavigation = [
   { label: "Dashboard", to: "/admin", end: true, icon: LayoutDashboard },
@@ -40,6 +41,7 @@ export function AdminLayout() {
   const { admin, logout } = useAdminAuth();
   const navigate = useNavigate();
   const location = useLocation();
+  const { activeFundingSource, setActiveFundingSource } = useActiveFundingSource();
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem("bdi-sidebar-collapsed") === "true"
   );
@@ -132,6 +134,13 @@ export function AdminLayout() {
             <ClipboardCheck />
             <span>Sistem Tes Pelatihan BDI Medan</span>
           </div>
+          <label className="funding-source-select">
+            <span>Sumber Aktif</span>
+            <select value={activeFundingSource} onChange={(event) => setActiveFundingSource(event.target.value as "RUPIAH_MURNI" | "PNBP")}>
+              <option value="RUPIAH_MURNI">{fundingSourceLabel("RUPIAH_MURNI")}</option>
+              <option value="PNBP">{fundingSourceLabel("PNBP")}</option>
+            </select>
+          </label>
           <div className="admin-user-menu">
             <button
               type="button"
@@ -168,7 +177,9 @@ export function AdminLayout() {
           </div>
         </header>
         <main className="admin-content">
-          <Outlet />
+          <div key={activeFundingSource} className="admin-context-page">
+            <Outlet />
+          </div>
         </main>
       </div>
     </div>

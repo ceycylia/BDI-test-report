@@ -1,4 +1,5 @@
 import type { AdminUser, ApiErrorPayload } from "./types";
+import { FUNDING_SOURCE_STORAGE_KEY, type FundingSource } from "../funding-source/funding-source";
 
 export class AdminApiError extends Error {
   readonly status: number;
@@ -38,6 +39,25 @@ async function parseError(response: Response): Promise<AdminApiError> {
     response.status,
     payload.error?.code,
   );
+}
+
+function activeFundingSource(): FundingSource {
+  return window.localStorage.getItem(FUNDING_SOURCE_STORAGE_KEY) === "PNBP" ? "PNBP" : "RUPIAH_MURNI";
+}
+
+function withFundingContext(path: string, override?: FundingSource) {
+  if (!path.startsWith("/api/admin/")) return path;
+  const url = new URL(path, window.location.origin);
+  if (!url.searchParams.has("fundingSource")) url.searchParams.set("fundingSource", override ?? activeFundingSource());
+  return `${url.pathname}${url.search}${url.hash}`;
+}
+
+function switchFundingContextFrom(error: AdminApiError) {
+  const source = error.code?.replace("FUNDING_SOURCE_CONTEXT_", "");
+  if (source !== "RUPIAH_MURNI" && source !== "PNBP") return null;
+  window.localStorage.setItem(FUNDING_SOURCE_STORAGE_KEY, source);
+  window.dispatchEvent(new CustomEvent("bdi:funding-source-change", { detail: source }));
+  return source;
 }
 
 export async function getCurrentAdmin(): Promise<AdminUser | null> {
@@ -105,7 +125,7 @@ export async function adminMutation<T>(
     headers.set("X-CSRF-Token", csrfToken);
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(withFundingContext(path), {
     ...init,
     credentials: "same-origin",
     headers,
@@ -113,6 +133,7 @@ export async function adminMutation<T>(
 
   if (!response.ok) {
     const error = await parseError(response);
+    switchFundingContextFrom(error);
     throw error;
   }
 
@@ -120,14 +141,22 @@ export async function adminMutation<T>(
 }
 
 export async function adminQuery<T>(path: string): Promise<T> {
-  const response = await fetch(path, {
+  let response = await fetch(withFundingContext(path), {
     credentials: "same-origin",
     cache: "no-store",
     headers: { Accept: "application/json" },
   });
 
   if (!response.ok) {
-    throw await parseError(response);
+    const error = await parseError(response);
+    const switched = switchFundingContextFrom(error);
+    if (!switched) throw error;
+    response = await fetch(withFundingContext(path, switched), {
+      credentials: "same-origin",
+      cache: "no-store",
+      headers: { Accept: "application/json" },
+    });
+    if (!response.ok) throw await parseError(response);
   }
 
   return (await response.json()) as T;
@@ -140,7 +169,7 @@ export async function adminUpload<T>(path: string, body: FormData): Promise<T> {
     headers.set("X-CSRF-Token", csrfToken);
   }
 
-  const response = await fetch(path, {
+  const response = await fetch(withFundingContext(path), {
     method: "POST",
     credentials: "same-origin",
     headers,
@@ -149,6 +178,7 @@ export async function adminUpload<T>(path: string, body: FormData): Promise<T> {
 
   if (!response.ok) {
     const error = await parseError(response);
+    switchFundingContextFrom(error);
     throw error;
   }
 
@@ -161,9 +191,10 @@ export async function adminDownload(path: string, init: RequestInit): Promise<Bl
   headers.set("Accept", "application/zip");
   headers.set("Content-Type", "application/json");
   if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
-  const response = await fetch(path, { ...init, credentials: "same-origin", headers });
+  const response = await fetch(withFundingContext(path), { ...init, credentials: "same-origin", headers });
   if (!response.ok) {
     const error = await parseError(response);
+    switchFundingContextFrom(error);
     throw error;
   }
   return response.blob();

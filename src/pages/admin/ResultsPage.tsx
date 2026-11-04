@@ -8,6 +8,7 @@ import { SearchableSelect } from "../../components/ui/SearchableSelect";
 import { SearchInput } from "../../components/ui/SearchInput";
 import { useAutoDismiss } from "../../components/ui/useAutoDismiss";
 import { ActiveYearIndicator, useActiveYear, withActiveYear } from "../../features/active-year/ActiveYearProvider";
+import { fundingSourceLabel, useActiveFundingSource } from "../../features/funding-source/ActiveFundingSourceProvider";
 import { ADMIN_PAGE_SIZE, Pagination, type PaginationMeta } from "../../components/ui/Pagination";
 
 type ResultRow = {
@@ -83,6 +84,7 @@ function resultDetailUrl(row: ResultRow) {
 export function ResultsPage() {
   const navigate = useNavigate();
   const { activeYear } = useActiveYear();
+  const { activeFundingSource } = useActiveFundingSource();
   const [rows, setRows] = useState<ResultRow[]>([]);
   const [filterOptions, setFilterOptions] = useState<FilterOptions>({ trainings: [], materials: [], cohorts: [] });
   const [search, setSearch] = useState("");
@@ -260,7 +262,7 @@ export function ResultsPage() {
   return <>
     <header className="admin-page-header"><div><p className="section-label">Tes & Hasil</p><h1>Hasil peserta</h1><ActiveYearIndicator /></div><div className="page-header-actions">{trainingId ? <button className="button" type="button" disabled={exporting} onClick={() => void exportResults()}>{exporting ? "Menyiapkan…" : "Export Hasil Tes"}</button> : <span title="Pilih pelatihan terlebih dahulu."><button className="button" type="button" disabled aria-disabled="true">Export Hasil Tes</button></span>}{!trainingId && <small className="muted">Pilih pelatihan terlebih dahulu.</small>}</div></header>
     <nav className="catalog-tabs test-result-tabs" aria-label="Bagian tes dan hasil"><Link to="/admin/pelatihan">Pelaksanaan Tes</Link><Link className="is-active" to="/admin/hasil" aria-current="page">Lihat Hasil</Link></nav>
-    <section className="panel result-filters"><label>Cari nama<SearchInput value={search} onValueChange={setSearch} placeholder="Nama peserta" /></label><label>Pelatihan<SearchableSelect value={trainingId} placeholder="Semua pelatihan" options={filterOptions.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setMaterialId(""); setCohortId(""); }} /></label><label>Materi<SearchableSelect disabled={!trainingId} value={materialId} placeholder={trainingId ? "Semua materi" : "Pilih pelatihan terlebih dahulu"} options={materials.map((material) => ({ value: material.id, label: material.name }))} onValueChange={setMaterialId} /></label><label>Angkatan<SearchableSelect disabled={!trainingId} value={cohortId} placeholder={trainingId ? "Semua angkatan" : "Pilih pelatihan terlebih dahulu"} options={cohorts.map((cohort) => ({ value: cohort.id, label: cohort.name }))} onValueChange={setCohortId} /></label><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">Semua</option><option value="LULUS">Lulus</option><option value="BELUM_LULUS">Belum lulus</option><option value="BELUM_POST">Belum mulai Post-Test</option><option value="BELUM_PRE">Belum mulai Pre-Test</option><option value="SEDANG_MENGERJAKAN">Sedang mengerjakan</option></select></label></section>
+    <section className="panel result-filters"><label>Cari nama<SearchInput value={search} onValueChange={setSearch} placeholder="Nama peserta" /></label><label>Pelatihan<SearchableSelect value={trainingId} placeholder="Semua pelatihan" options={filterOptions.trainings.map((training) => ({ value: training.id, label: training.name }))} onValueChange={(value) => { setTrainingId(value); setMaterialId(""); setCohortId(""); }} /></label><label>Materi<SearchableSelect disabled={!trainingId} value={materialId} placeholder={trainingId ? "Semua materi" : "Pilih pelatihan terlebih dahulu"} options={materials.map((material) => ({ value: material.id, label: material.name }))} onValueChange={setMaterialId} /></label><label>Angkatan<SearchableSelect disabled={!trainingId} value={cohortId} placeholder={trainingId ? "Semua angkatan" : "Pilih pelatihan terlebih dahulu"} options={cohorts.map((cohort) => ({ value: cohort.id, label: `${cohort.name} · ${fundingSourceLabel(activeFundingSource)}` }))} onValueChange={setCohortId} /></label><label>Status<select value={status} onChange={(event) => setStatus(event.target.value)}><option value="">Semua</option><option value="LULUS">Lulus</option><option value="BELUM_LULUS">Belum lulus</option><option value="BELUM_POST">Belum mulai Post-Test</option><option value="BELUM_PRE">Belum mulai Pre-Test</option><option value="SEDANG_MENGERJAKAN">Sedang mengerjakan</option></select></label></section>
     {error && <p className="form-message is-error" role="alert">{error}</p>}
     <div className="results-table-wrap">
       <table className="results-table">

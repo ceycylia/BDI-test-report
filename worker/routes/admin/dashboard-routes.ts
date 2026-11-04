@@ -1,6 +1,7 @@
 import { Hono } from "hono";
 import { requireAdmin } from "../../middleware/admin-auth";
 import type { AppEnvironment } from "../../types";
+import { activeFundingSource } from "../../domain/funding-source";
 
 export const dashboardRoutes = new Hono<AppEnvironment>();
 dashboardRoutes.use("*", requireAdmin);
@@ -28,6 +29,7 @@ dashboardRoutes.get("/years", async (context) => {
 dashboardRoutes.get("/", async (context) => {
   const year = requestedYear(context.req.query("year"));
   const yearText = String(year);
+  const fundingSource = activeFundingSource(context);
   const [metrics, activityResult] = await Promise.all([
     context.env.DB.prepare(
     `WITH final_scores AS (
@@ -37,20 +39,20 @@ dashboardRoutes.get("/", async (context) => {
       JOIN training_sessions AS sessions ON sessions.id = batches.training_session_id
       JOIN training_cohorts AS cohorts ON cohorts.id = batches.cohort_id
       LEFT JOIN attempts ON attempts.participant_id = participants.id AND attempts.status <> 'RESET'
-      WHERE SUBSTR(cohorts.start_date, 1, 4) = ?
+      WHERE SUBSTR(cohorts.start_date, 1, 4) = ? AND cohorts.funding_source = ?
       GROUP BY participants.id
     ) SELECT
       (SELECT COUNT(*) FROM question_banks) AS banks,
       (SELECT COUNT(*) FROM questions) AS questions,
-      (SELECT COUNT(DISTINCT training_id) FROM training_sessions WHERE SUBSTR(training_start_date, 1, 4) = ?) AS trainings,
-      (SELECT COUNT(*) FROM training_sessions WHERE SUBSTR(training_start_date, 1, 4) = ?) AS tests,
-      (SELECT COUNT(*) FROM training_sessions WHERE status = 'ACTIVE' AND SUBSTR(training_start_date, 1, 4) = ?) AS active_trainings,
-      (SELECT COUNT(*) FROM participant_profiles AS profiles JOIN training_cohorts AS c ON c.id = profiles.cohort_id WHERE SUBSTR(c.start_date, 1, 4) = ?) AS participants,
-      (SELECT COUNT(*) FROM participant_profiles AS profiles JOIN training_cohorts AS c ON c.id = profiles.cohort_id WHERE profiles.created_at >= datetime('now', 'start of day') AND SUBSTR(c.start_date, 1, 4) = ?) AS participants_today,
-      (SELECT COUNT(*) FROM certificates JOIN participant_profiles AS profiles ON profiles.id = certificates.participant_profile_id JOIN training_cohorts AS c ON c.id = profiles.cohort_id WHERE SUBSTR(c.start_date, 1, 4) = ?) AS certificates,
+      (SELECT COUNT(DISTINCT training_id) FROM training_sessions sessions WHERE SUBSTR(training_start_date, 1, 4) = ? AND EXISTS (SELECT 1 FROM batches b JOIN training_cohorts c ON c.id=b.cohort_id WHERE b.training_session_id=sessions.id AND c.funding_source=?)) AS trainings,
+      (SELECT COUNT(*) FROM training_sessions sessions WHERE SUBSTR(training_start_date, 1, 4) = ? AND EXISTS (SELECT 1 FROM batches b JOIN training_cohorts c ON c.id=b.cohort_id WHERE b.training_session_id=sessions.id AND c.funding_source=?)) AS tests,
+      (SELECT COUNT(*) FROM training_sessions sessions WHERE status = 'ACTIVE' AND SUBSTR(training_start_date, 1, 4) = ? AND EXISTS (SELECT 1 FROM batches b JOIN training_cohorts c ON c.id=b.cohort_id WHERE b.training_session_id=sessions.id AND c.funding_source=?)) AS active_trainings,
+      (SELECT COUNT(*) FROM participant_profiles AS profiles JOIN training_cohorts AS c ON c.id = profiles.cohort_id WHERE SUBSTR(c.start_date, 1, 4) = ? AND c.funding_source=?) AS participants,
+      (SELECT COUNT(*) FROM participant_profiles AS profiles JOIN training_cohorts AS c ON c.id = profiles.cohort_id WHERE profiles.created_at >= datetime('now', 'start of day') AND SUBSTR(c.start_date, 1, 4) = ? AND c.funding_source=?) AS participants_today,
+      (SELECT COUNT(*) FROM certificates JOIN participant_profiles AS profiles ON profiles.id = certificates.participant_profile_id JOIN training_cohorts AS c ON c.id = profiles.cohort_id WHERE SUBSTR(c.start_date, 1, 4) = ? AND c.funding_source=?) AS certificates,
       (SELECT COUNT(*) FROM final_scores WHERE final_score >= passing_score) AS passed,
       (SELECT COUNT(*) FROM final_scores WHERE final_score IS NOT NULL AND final_score < passing_score) AS not_passed`,
-    ).bind(yearText, yearText, yearText, yearText, yearText, yearText, yearText).first<Record<string, number>>(),
+    ).bind(yearText, fundingSource, yearText, fundingSource, yearText, fundingSource, yearText, fundingSource, yearText, fundingSource, yearText, fundingSource, yearText, fundingSource).first<Record<string, number>>(),
     context.env.DB.prepare(
       `SELECT event_type, subject, detail, occurred_at FROM (
         SELECT
@@ -62,7 +64,8 @@ dashboardRoutes.get("/", async (context) => {
         JOIN participants ON participants.id = attempts.participant_id
         JOIN training_sessions AS sessions ON sessions.id = attempts.training_session_id
         JOIN batches ON batches.id = attempts.batch_id
-        WHERE SUBSTR(sessions.training_start_date, 1, 4) = ?
+        JOIN training_cohorts cohorts ON cohorts.id=batches.cohort_id
+        WHERE SUBSTR(sessions.training_start_date, 1, 4) = ? AND cohorts.funding_source=?
 
         UNION ALL
 
@@ -75,20 +78,22 @@ dashboardRoutes.get("/", async (context) => {
         JOIN participants ON participants.id = attempts.participant_id
         JOIN training_sessions AS sessions ON sessions.id = attempts.training_session_id
         JOIN batches ON batches.id = attempts.batch_id
+        JOIN training_cohorts cohorts ON cohorts.id=batches.cohort_id
         WHERE attempts.status = 'SUBMITTED' AND attempts.submitted_at IS NOT NULL
-          AND SUBSTR(sessions.training_start_date, 1, 4) = ?
+          AND SUBSTR(sessions.training_start_date, 1, 4) = ? AND cohorts.funding_source=?
 
         UNION ALL
 
         SELECT 'TRAINING_ACTIVATED', name, 'Pelatihan telah diaktifkan', activated_at
         FROM training_sessions
         WHERE activated_at IS NOT NULL AND SUBSTR(training_start_date, 1, 4) = ?
+          AND EXISTS (SELECT 1 FROM batches b JOIN training_cohorts c ON c.id=b.cohort_id WHERE b.training_session_id=training_sessions.id AND c.funding_source=?)
       )
       WHERE occurred_at IS NOT NULL
         AND date(occurred_at, '+7 hours') = date('now', '+7 hours')
       ORDER BY occurred_at DESC
       LIMIT 6`,
-    ).bind(yearText, yearText, yearText).all<{ event_type: string; subject: string; detail: string; occurred_at: string }>(),
+    ).bind(yearText, fundingSource, yearText, fundingSource, yearText, fundingSource).all<{ event_type: string; subject: string; detail: string; occurred_at: string }>(),
   ]);
   return context.json({
     year,
