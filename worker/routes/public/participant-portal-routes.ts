@@ -5,14 +5,11 @@ import { normalizeNik } from "../../domain/participants/normalize-nik";
 import { isTestOpen } from "../../domain/scheduling/test-availability";
 import { HttpError } from "../../http/errors";
 import { requireSameOrigin } from "../../middleware/admin-auth";
-import { findOrCreateExamParticipant, listParticipantAttempts } from "../../repositories/participant-repository";
 import type { AppEnvironment } from "../../types";
 
 export const participantPortalRoutes = new Hono<AppEnvironment>();
 
 const identitySchema = z.object({
-  trainingId: z.string().uuid(),
-  cohortId: z.string().uuid(),
   name: z.string().trim().min(2).max(150),
   nik: z.string().trim().min(3).max(40).regex(/^\d+$/u),
 });
@@ -50,6 +47,18 @@ participantPortalRoutes.get("/catalog", async (context) => {
      ORDER BY trainings.name COLLATE NOCASE, cohorts.start_date DESC, cohorts.name COLLATE NOCASE`,
   ).all<{ id: string; training_id: string; name: string; funding_source: string; training_name: string }>();
   return context.json({ cohorts: cohorts.results });
+});
+
+participantPortalRoutes.get("/registrations", async (context) => {
+  const links = await context.env.DB.prepare(
+    `SELECT links.id, links.token, trainings.name AS training_name, cohorts.name AS cohort_name
+     FROM participant_registration_links links
+     JOIN training_cohorts cohorts ON cohorts.id=links.cohort_id
+     JOIN trainings ON trainings.id=cohorts.training_id
+     WHERE links.revoked_at IS NULL AND trainings.is_deleted=0
+     ORDER BY trainings.name COLLATE NOCASE, cohorts.name COLLATE NOCASE`,
+  ).all<{ id: string; token: string; training_name: string; cohort_name: string }>();
+  return context.json({ registrations: links.results });
 });
 
 participantPortalRoutes.get("/registration/:token", async (context) => {
@@ -106,54 +115,137 @@ participantPortalRoutes.post("/registration/:token", requireSameOrigin, async (c
   return context.json({ participant: { id: profile.id, name: profile.name, nik }, registration });
 });
 
-type DashboardSession = {
-  id: string; slug: string; name: string; material_name: string | null; batch_id: string;
-  question_count: number; duration_minutes: number; passing_score: number; status: string;
+type DashboardRow = {
+  profile_id: string; profile_name: string; nik: string;
+  training_id: string; training_name: string; cohort_id: string; cohort_name: string;
+  session_id: string | null; slug: string | null; session_name: string | null;
+  material_name: string | null; batch_id: string | null; participant_id: string | null;
+  question_count: number | null; duration_minutes: number | null; passing_score: number | null; status: string | null;
   pre_mode: "MANUAL" | "SCHEDULED"; pre_start_at: string | null; pre_end_at: string | null; pre_manual_open: number;
   post_mode: "MANUAL" | "SCHEDULED"; post_start_at: string | null; post_end_at: string | null; post_manual_open: number;
+  attempt_stage: string | null;
+  attempt_status: string | null; attempt_score: number | null;
+};
+
+type DashboardTestPayload = {
+  sessionId: string; slug: string; materialName: string; profileId: string;
+  participantId: string | null; batchId: string; questionCount: number;
+  durationMinutes: number; passingScore: number;
+  attempts: Array<{ stage: "PRE" | "POST" | "REMEDIAL_1" | "REMEDIAL_2"; status: string; score: number | null }>;
+  preOpen: boolean; postOpen: boolean; postMode: "MANUAL" | "SCHEDULED"; postStartAt: string | null;
+};
+
+type DashboardGroupPayload = {
+  profileId: string; participantName: string;
+  training: { id: string; name: string }; cohort: { id: string; name: string };
+  tests: DashboardTestPayload[];
 };
 
 participantPortalRoutes.post("/dashboard", requireSameOrigin, async (context) => {
   const parsed = identitySchema.safeParse(await context.req.json().catch(() => null));
-  if (!parsed.success) throw new HttpError(422, "PARTICIPANT_INVALID", "Isi Nama Lengkap, NIK, Pelatihan, dan Angkatan yang valid.");
-  const { trainingId, cohortId } = parsed.data;
-  const profile = await context.env.DB.prepare(
-    `SELECT profiles.id,profiles.name,profiles.normalized_name,profiles.nik,
-            cohorts.name AS cohort_name,trainings.name AS training_name
+  if (!parsed.success) throw new HttpError(422, "PARTICIPANT_INVALID", "Isi Nama Lengkap dan NIK yang valid.");
+  const rows = await context.env.DB.prepare(
+    `SELECT profiles.id AS profile_id, profiles.name AS profile_name, profiles.nik,
+            profiles.training_id, trainings.name AS training_name,
+            profiles.cohort_id, cohorts.name AS cohort_name,
+            sessions.id AS session_id, sessions.slug, sessions.name AS session_name,
+            materials.name AS material_name, batches.id AS batch_id,
+            participants.id AS participant_id,
+            sessions.question_count, sessions.duration_minutes, sessions.passing_score, sessions.status,
+            sessions.pre_mode, sessions.pre_start_at, sessions.pre_end_at, sessions.pre_manual_open,
+            sessions.post_mode, sessions.post_start_at, sessions.post_end_at, sessions.post_manual_open,
+            attempts.stage AS attempt_stage, attempts.status AS attempt_status, attempts.score AS attempt_score
      FROM participant_profiles profiles
      JOIN training_cohorts cohorts ON cohorts.id=profiles.cohort_id
      JOIN trainings ON trainings.id=cohorts.training_id
-     WHERE profiles.training_id=? AND profiles.cohort_id=? AND profiles.nik=?
-       AND profiles.is_active=1 AND trainings.is_deleted=0 LIMIT 1`,
-  ).bind(trainingId, cohortId, normalizeNik(parsed.data.nik))
-    .first<{ id: string; name: string; normalized_name: string; nik: string; cohort_name: string; training_name: string }>();
-  if (!profile) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Data peserta tidak ditemukan. Periksa NIK dan Angkatan yang dipilih.");
-  const sessions = await context.env.DB.prepare(
-    `SELECT sessions.id,sessions.slug,sessions.name,materials.name AS material_name,
-            batches.id AS batch_id,sessions.question_count,sessions.duration_minutes,
-            sessions.passing_score,sessions.status,sessions.pre_mode,sessions.pre_start_at,
-            sessions.pre_end_at,sessions.pre_manual_open,sessions.post_mode,sessions.post_start_at,
-            sessions.post_end_at,sessions.post_manual_open
-     FROM batches JOIN training_sessions sessions ON sessions.id=batches.training_session_id
+     LEFT JOIN batches ON batches.cohort_id=profiles.cohort_id
+     LEFT JOIN training_sessions sessions
+       ON sessions.id=batches.training_session_id AND sessions.training_id=profiles.training_id
      LEFT JOIN training_materials materials ON materials.id=sessions.material_id
-     WHERE batches.cohort_id=? AND sessions.training_id=?
-     ORDER BY materials.sort_order, sessions.name COLLATE NOCASE`,
-  ).bind(cohortId, trainingId).all<DashboardSession>();
-  const tests = await Promise.all(sessions.results.map(async (session) => {
-    const participant = await findOrCreateExamParticipant(context.env.DB, {
-      profileId: profile.id, batchId: session.batch_id, name: profile.name, normalizedName: profile.normalized_name,
-    });
-    const attempts = await listParticipantAttempts(context.env.DB, participant.id);
-    return {
-      sessionId: session.id, slug: session.slug, materialName: session.material_name ?? session.name,
-      participantId: participant.id, batchId: session.batch_id,
-      questionCount: session.question_count, durationMinutes: session.duration_minutes,
-      passingScore: session.passing_score, attempts,
-      preOpen: session.status === "ACTIVE" && isTestOpen({ mode: session.pre_mode, manualOpen: session.pre_manual_open === 1, startAt: session.pre_start_at, endAt: session.pre_end_at }),
-      postOpen: session.status === "ACTIVE" && isTestOpen({ mode: session.post_mode, manualOpen: session.post_manual_open === 1, startAt: session.post_start_at, endAt: session.post_end_at }),
-      postMode: session.post_mode, postStartAt: session.post_start_at,
-    };
-  }));
-  return context.json({ participant: { id: profile.id, name: profile.name, nik: profile.nik },
-    training: { id: trainingId, name: profile.training_name }, cohort: { id: cohortId, name: profile.cohort_name }, tests });
+     LEFT JOIN participants
+       ON participants.profile_id=profiles.id AND participants.batch_id=batches.id
+     LEFT JOIN attempts
+       ON attempts.participant_id=participants.id AND attempts.status<>'RESET'
+     WHERE profiles.nik=? AND profiles.is_active=1 AND trainings.is_deleted=0
+     ORDER BY trainings.name COLLATE NOCASE, cohorts.start_date DESC, cohorts.name COLLATE NOCASE,
+              materials.sort_order, sessions.name COLLATE NOCASE, attempts.created_at`,
+  ).bind(normalizeNik(parsed.data.nik)).all<DashboardRow>();
+  if (!rows.results.length) {
+    throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "NIK tidak terdaftar atau data peserta sudah tidak aktif.");
+  }
+
+  const groupMap = new Map<string, DashboardGroupPayload>();
+  const testMaps = new Map<string, Map<string, DashboardTestPayload>>();
+  const refreshCandidates = new Set<string>();
+  const now = Date.now();
+
+  for (const row of rows.results) {
+    let group = groupMap.get(row.profile_id);
+    if (!group) {
+      group = {
+        profileId: row.profile_id,
+        participantName: row.profile_name,
+        training: { id: row.training_id, name: row.training_name },
+        cohort: { id: row.cohort_id, name: row.cohort_name },
+        tests: [],
+      };
+      groupMap.set(row.profile_id, group);
+      testMaps.set(row.profile_id, new Map());
+    }
+    if (!row.session_id || !row.slug || !row.batch_id || row.question_count === null
+      || row.duration_minutes === null || row.passing_score === null || !row.status) continue;
+
+    const tests = testMaps.get(row.profile_id)!;
+    let test = tests.get(row.session_id);
+    if (!test) {
+      test = {
+        sessionId: row.session_id,
+        slug: row.slug,
+        materialName: row.material_name ?? row.session_name ?? "Mata Diklat",
+        profileId: row.profile_id,
+        participantId: row.participant_id,
+        batchId: row.batch_id,
+        questionCount: row.question_count,
+        durationMinutes: row.duration_minutes,
+        passingScore: row.passing_score,
+        attempts: [],
+        preOpen: row.status === "ACTIVE" && isTestOpen({
+          mode: row.pre_mode, manualOpen: row.pre_manual_open === 1,
+          startAt: row.pre_start_at, endAt: row.pre_end_at,
+        }),
+        postOpen: row.status === "ACTIVE" && isTestOpen({
+          mode: row.post_mode, manualOpen: row.post_manual_open === 1,
+          startAt: row.post_start_at, endAt: row.post_end_at,
+        }),
+        postMode: row.post_mode,
+        postStartAt: row.post_start_at,
+      };
+      tests.set(row.session_id, test);
+      group.tests.push(test);
+      if (row.status === "ACTIVE") {
+        for (const boundary of [row.pre_start_at, row.pre_end_at, row.post_start_at, row.post_end_at]) {
+          if (boundary && Date.parse(boundary) > now) refreshCandidates.add(boundary);
+        }
+      }
+    }
+    const attemptStage = row.attempt_stage;
+    if (attemptStage && ["PRE", "POST", "REMEDIAL_1", "REMEDIAL_2"].includes(attemptStage)
+      && row.attempt_status
+      && !test.attempts.some((attempt) => attempt.stage === row.attempt_stage && attempt.status === row.attempt_status)) {
+      test.attempts.push({
+        stage: attemptStage as DashboardTestPayload["attempts"][number]["stage"],
+        status: row.attempt_status,
+        score: row.attempt_score,
+      });
+    }
+  }
+
+  const groups = [...groupMap.values()];
+  const nextRefreshAt = [...refreshCandidates]
+    .sort((left, right) => Date.parse(left) - Date.parse(right))[0] ?? null;
+  return context.json({
+    participant: { name: groups[0]!.participantName, nik: rows.results[0]!.nik },
+    groups,
+    nextRefreshAt,
+  });
 });

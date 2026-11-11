@@ -47,6 +47,23 @@ function registrationBody(name: string, nik: string, extra: Record<string, strin
 }
 
 describe("pendaftaran peserta dengan D1 lokal", () => {
+  it("menampilkan hanya link pendaftaran aktif di halaman publik dan menghilangkannya setelah dicabut", async () => {
+    const { sqlite, env } = localDb();
+    const first = await app.request("http://localhost/api/public/participants/registrations", {}, env);
+    expect(first.status).toBe(200);
+    expect((await first.json() as { registrations: Array<{ token: string; training_name: string; cohort_name: string }> }).registrations)
+      .toMatchObject([
+        { token: "token-one", training_name: "Plate Welding", cohort_name: "Angkatan 1" },
+        { token: "token-two", training_name: "Plate Welding", cohort_name: "Angkatan 1" },
+      ]);
+
+    sqlite.exec("UPDATE participant_registration_links SET revoked_at='2026-11-05' WHERE id='l1'");
+    const afterRevocation = await app.request("http://localhost/api/public/participants/registrations", {}, env);
+    expect((await afterRevocation.json() as { registrations: Array<{ token: string }> }).registrations)
+      .toMatchObject([{ token: "token-two" }]);
+    sqlite.close();
+  });
+
   it("membuat satu profil pada angkatan yang tepat, mengulang tanpa duplikat, dan menampilkan nama resmi", async () => {
     const { sqlite, env } = localDb();
     const headers = { Origin: "http://localhost" };
@@ -57,8 +74,9 @@ describe("pendaftaran peserta dengan D1 lokal", () => {
     expect((await repeated.json() as { participant: { name: string } }).participant.name).toBe("Cici");
     expect(sqlite.prepare("SELECT COUNT(*) n FROM participant_profiles WHERE cohort_id='c1'").get()).toMatchObject({ n: 1 });
     expect(sqlite.prepare("SELECT birth_place,address FROM participant_profiles WHERE cohort_id='c1'").get()).toMatchObject({ birth_place: "Medan", address: "Alamat baru" });
-    const dashboard = await app.request("http://localhost/api/public/participants/dashboard", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ trainingId: "t", cohortId: "c1", name: "Nama Salah", nik: "2171128" }) }, env);
-    expect(dashboard.status).toBe(422); // Invalid non-UUID IDs are rejected before lookup.
+    const dashboard = await app.request("http://localhost/api/public/participants/dashboard", { method: "POST", headers: { ...headers, "Content-Type": "application/json" }, body: JSON.stringify({ name: "Nama Salah", nik: "2171128" }) }, env);
+    expect(dashboard.status).toBe(200);
+    expect((await dashboard.json() as { participant: { name: string } }).participant.name).toBe("Cici");
     sqlite.close();
   });
 
@@ -80,10 +98,22 @@ describe("pendaftaran peserta dengan D1 lokal", () => {
     await app.request("http://localhost/api/public/participants/registration/token-one", { method: "POST", headers, body: registrationBody("Cici RM", "2171128") }, env);
     await app.request("http://localhost/api/public/participants/registration/token-two", { method: "POST", headers, body: registrationBody("Cici PNBP", "2171128") }, env);
     expect(sqlite.prepare("SELECT cohort_id,name FROM participant_profiles ORDER BY cohort_id").all()).toMatchObject([{ cohort_id: "c1", name: "Cici RM" }, { cohort_id: "c2", name: "Cici PNBP" }]);
+    const dashboard = await app.request("http://localhost/api/public/participants/dashboard", {
+      method: "POST",
+      headers: { ...headers, "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Nama bebas", nik: "2171128" }),
+    }, env);
+    const payload = await dashboard.json() as { groups: Array<{ cohort: { id: string }; tests: Array<{ batchId: string }> }> };
+    expect(payload.groups).toHaveLength(2);
+    expect(payload.groups.map((group) => ({ cohortId: group.cohort.id, batchIds: group.tests.map((test) => test.batchId) })))
+      .toEqual([
+        { cohortId: "c1", batchIds: ["b1"] },
+        { cohortId: "c2", batchIds: ["b2"] },
+      ]);
     sqlite.close();
   });
 
-  it("dashboard menemukan peserta menurut NIK dan Angkatan serta membaca attempt yang nyata", async () => {
+  it("dashboard universal tidak membuat peserta dan tetap membaca attempt yang nyata", async () => {
     const { sqlite, env } = localDb();
     const trainingId = "11111111-1111-4111-8111-111111111111";
     const cohortId = "22222222-2222-4222-8222-222222222222";
@@ -95,18 +125,46 @@ describe("pendaftaran peserta dengan D1 lokal", () => {
       .run("s2", "las-test", "Tes Las", "m", trainingId, 10, 30, 70, "ACTIVE", "MANUAL", null, null, 1, "MANUAL", null, null, 0);
     sqlite.prepare("INSERT INTO batches VALUES(?,?,?)").run("b3", "s2", cohortId);
     const headers = { Origin: "http://localhost", "Content-Type": "application/json" };
-    const body = JSON.stringify({ trainingId, cohortId, name: "Nama Salah", nik: "2171128" });
+    const body = JSON.stringify({ name: "Nama Salah", nik: "2171128" });
     const first = await app.request("http://localhost/api/public/participants/dashboard", { method: "POST", headers, body }, env);
     expect(first.status).toBe(200);
-    const firstPayload = await first.json() as { participant: { name: string }; tests: Array<{ participantId: string; attempts: unknown[]; preOpen: boolean; postOpen: boolean }> };
+    const firstPayload = await first.json() as { participant: { name: string }; groups: Array<{ tests: Array<{ profileId: string; participantId: string | null; attempts: unknown[]; preOpen: boolean; postOpen: boolean }> }> };
     expect(firstPayload.participant.name).toBe("Nama Resmi");
-    expect(firstPayload.tests).toHaveLength(1);
-    expect(firstPayload.tests[0]).toMatchObject({ preOpen: true, postOpen: false, attempts: [] });
-    sqlite.prepare("INSERT INTO attempts VALUES(?,?,?,?,?,?,?)").run("a1", firstPayload.tests[0]!.participantId, "PRE", "SUBMITTED", 80, null, "2026-11-04");
+    expect(firstPayload.groups[0]?.tests).toHaveLength(1);
+    expect(firstPayload.groups[0]?.tests[0]).toMatchObject({ profileId: "p1", participantId: null, preOpen: true, postOpen: false, attempts: [] });
+    expect(sqlite.prepare("SELECT COUNT(*) n FROM participants WHERE profile_id='p1' AND batch_id='b3'").get()).toMatchObject({ n: 0 });
+    sqlite.prepare("INSERT INTO participants VALUES(?,?,?,?,?)").run("exam-p1", "b3", "Nama Resmi", "nama resmi", "p1");
+    sqlite.prepare("INSERT INTO attempts VALUES(?,?,?,?,?,?,?)").run("a1", "exam-p1", "PRE", "SUBMITTED", 80, null, "2026-11-04");
     const second = await app.request("http://localhost/api/public/participants/dashboard", { method: "POST", headers, body }, env);
-    const secondPayload = await second.json() as { tests: Array<{ attempts: Array<{ stage: string; status: string }> }> };
-    expect(secondPayload.tests[0]?.attempts).toMatchObject([{ stage: "PRE", status: "SUBMITTED" }]);
+    const secondPayload = await second.json() as { groups: Array<{ tests: Array<{ participantId: string | null; attempts: Array<{ stage: string; status: string }> }> }> };
+    expect(secondPayload.groups[0]?.tests[0]).toMatchObject({ participantId: "exam-p1" });
+    expect(secondPayload.groups[0]?.tests[0]?.attempts).toMatchObject([{ stage: "PRE", status: "SUBMITTED" }]);
     expect(sqlite.prepare("SELECT COUNT(*) n FROM participants WHERE profile_id='p1' AND batch_id='b3'").get()).toMatchObject({ n: 1 });
+    sqlite.exec("UPDATE attempts SET status='RESET' WHERE id='a1'");
+    const afterReset = await app.request("http://localhost/api/public/participants/dashboard", { method: "POST", headers, body }, env);
+    const resetPayload = await afterReset.json() as { groups: Array<{ tests: Array<{ attempts: unknown[] }> }> };
+    expect(resetPayload.groups[0]?.tests[0]?.attempts).toEqual([]);
+    sqlite.close();
+  });
+
+  it("tetap membuka dashboard dengan pesan kosong ketika angkatan belum memiliki tes", async () => {
+    const { sqlite, env } = localDb();
+    sqlite.exec(`
+      INSERT INTO trainings VALUES('empty-training','Pelatihan Tanpa Tes',0);
+      INSERT INTO training_cohorts VALUES('empty-cohort','empty-training','Angkatan Kosong','RUPIAH_MURNI','2026-01-01');
+      INSERT INTO participant_profiles(id,training_id,cohort_id,name,normalized_name,nik,birth_place,birth_date,address,is_active)
+      VALUES('empty-profile','empty-training','empty-cohort','Peserta Kosong','peserta kosong','991122','','','',1);
+    `);
+    const response = await app.request("http://localhost/api/public/participants/dashboard", {
+      method: "POST",
+      headers: { Origin: "http://localhost", "Content-Type": "application/json" },
+      body: JSON.stringify({ name: "Nama salah tidak masalah", nik: "991122" }),
+    }, env);
+    expect(response.status).toBe(200);
+    expect(await response.json()).toMatchObject({
+      participant: { name: "Peserta Kosong", nik: "991122" },
+      groups: [{ training: { name: "Pelatihan Tanpa Tes" }, cohort: { name: "Angkatan Kosong" }, tests: [] }],
+    });
     sqlite.close();
   });
 });

@@ -188,7 +188,7 @@ export async function adminUpload<T>(path: string, body: FormData): Promise<T> {
 export async function adminDownload(path: string, init: RequestInit): Promise<Blob> {
   const csrfToken = readCookie("bdi_admin_csrf");
   const headers = new Headers(init.headers);
-  headers.set("Accept", "application/zip");
+  if (!headers.has("Accept")) headers.set("Accept", "application/zip");
   headers.set("Content-Type", "application/json");
   if (csrfToken) headers.set("X-CSRF-Token", csrfToken);
   const response = await fetch(withFundingContext(path), { ...init, credentials: "same-origin", headers });

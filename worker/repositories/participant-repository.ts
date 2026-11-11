@@ -51,6 +51,21 @@ export async function findRegisteredProfile(database:D1Database,input:{trainingI
   return database.prepare(`SELECT id,name,normalized_name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND nik=? AND is_active=1 LIMIT 1`).bind(input.trainingId,input.cohortId,input.nik).first<{id:string;name:string;normalized_name:string}>();
 }
 
+export async function findProfileForSessionBatch(
+  database: D1Database,
+  input: { profileId: string; batchId: string; sessionId: string },
+) {
+  return database.prepare(
+    `SELECT profiles.id, profiles.name, profiles.normalized_name
+     FROM participant_profiles profiles
+     JOIN batches ON batches.cohort_id=profiles.cohort_id
+     JOIN training_sessions sessions
+       ON sessions.id=batches.training_session_id AND sessions.training_id=profiles.training_id
+     WHERE profiles.id=? AND profiles.is_active=1 AND batches.id=? AND sessions.id=? LIMIT 1`,
+  ).bind(input.profileId, input.batchId, input.sessionId)
+    .first<{ id: string; name: string; normalized_name: string }>();
+}
+
 export async function findOrCreateExamParticipant(database:D1Database,input:{profileId:string;batchId:string;name:string;normalizedName:string}){
   const found=await database.prepare(`SELECT id,batch_id,name,normalized_name,profile_id FROM participants WHERE profile_id=? AND batch_id=? LIMIT 1`).bind(input.profileId,input.batchId).first<ParticipantRecord & {profile_id:string|null}>();
   if(found)return found;

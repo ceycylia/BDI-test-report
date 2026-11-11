@@ -1,4 +1,5 @@
 import { PDFDocument } from "pdf-lib";
+import { zipSync } from "fflate";
 
 export async function combinePdfDocuments(documents: Uint8Array[]) {
   const combined = await PDFDocument.create();
@@ -8,6 +9,19 @@ export async function combinePdfDocuments(documents: Uint8Array[]) {
     pages.forEach((page) => combined.addPage(page));
   }
   return combined.save();
+}
+
+export async function buildCertificatePrintArchive(
+  frontParts: Uint8Array[],
+  back: Uint8Array,
+) {
+  const fronts = await combinePdfDocuments(frontParts);
+  return new Blob([
+    zipSync({
+      "Sertifikat Depan.pdf": fronts,
+      "Sertifikat Belakang.pdf": back,
+    }, { level: 6 }),
+  ], { type: "application/zip" });
 }
 
 function safeParticipantName(value: string) {

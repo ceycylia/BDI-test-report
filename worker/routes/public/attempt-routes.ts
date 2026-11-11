@@ -14,12 +14,19 @@ import {
   getLayoutQuestions, listAttemptSnapshots, nextResetSequence, saveAttemptDraft, submitAttempt,
   type AttemptRecord, type AttemptStage, type OriginalOptionKey, type SnapshotRecord,
 } from "../../repositories/attempt-repository";
-import { findPublicTraining } from "../../repositories/participant-repository";
+import { findOrCreateExamParticipant, findProfileForSessionBatch, findPublicTraining } from "../../repositories/participant-repository";
 import type { AppEnvironment } from "../../types";
 
 const optionKeySchema = z.enum(["A", "B", "C", "D"]);
 const answersSchema = z.record(z.string().uuid(), optionKeySchema);
-const startSchema = z.object({ participantId: z.string().uuid(), batchId: z.string().uuid(), stage: z.enum(["PRE", "POST", "REMEDIAL_1", "REMEDIAL_2"]) });
+const startSchema = z.object({
+  participantId: z.string().uuid().optional(),
+  profileId: z.string().uuid().optional(),
+  batchId: z.string().uuid(),
+  stage: z.enum(["PRE", "POST", "REMEDIAL_1", "REMEDIAL_2"]),
+}).refine((value) => Boolean(value.participantId || value.profileId), {
+  message: "Identitas peserta wajib tersedia.",
+});
 const draftSchema = z.object({ participantId: z.string().uuid(), revision: z.number().int().positive(), answers: answersSchema });
 const submitSchema = z.object({ participantId: z.string().uuid(), mode: z.enum(["NORMAL", "TIMEOUT"]), answers: answersSchema });
 
@@ -59,7 +66,7 @@ function publicAttempt(attempt: AttemptRecord, snapshots: SnapshotRecord[], serv
       id: attempt.id, stage: attempt.stage, status: attempt.status, startedAt: attempt.started_at,
       deadlineAt: attempt.deadline_at, normalDeadlineAt,
       serverNow, revision: attempt.draft_revision, answers: draft,
-      score: attempt.score, passingScore,
+      score: attempt.score, passingScore, participantId: attempt.participant_id,
     },
     questions: snapshots.map((snapshot) => {
       const texts: Record<OriginalOptionKey, string> = {
@@ -101,25 +108,39 @@ attemptRoutes.post("/start", requireSameOrigin, async (context) => {
   if (!parsed.success) throw new HttpError(422, "ATTEMPT_START_INVALID", "Data untuk memulai tes tidak valid.");
   const session = await findPublicTraining(context.env.DB, context.req.param("slug") ?? "");
   if (!session) throw new HttpError(404, "TRAINING_NOT_FOUND", "Link pelatihan tidak ditemukan.");
-  if (!(await findParticipantContext(context.env.DB, parsed.data.participantId, parsed.data.batchId, session.id))) {
-    throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Data peserta tidak ditemukan pada angkatan ini.");
+  let participantId = parsed.data.participantId ?? null;
+  if (participantId) {
+    const participant = await findParticipantContext(context.env.DB, participantId, parsed.data.batchId, session.id);
+    if (!participant || (parsed.data.profileId && participant.profile_id !== parsed.data.profileId)) {
+      throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Data peserta tidak ditemukan pada angkatan ini.");
+    }
+  } else {
+    const profile = await findProfileForSessionBatch(context.env.DB, {
+      profileId: parsed.data.profileId!, batchId: parsed.data.batchId, sessionId: session.id,
+    });
+    if (!profile) throw new HttpError(404, "PARTICIPANT_NOT_FOUND", "Data peserta tidak ditemukan pada angkatan ini.");
+    const participant = await findOrCreateExamParticipant(context.env.DB, {
+      profileId: profile.id, batchId: parsed.data.batchId,
+      name: profile.name, normalizedName: profile.normalized_name,
+    });
+    participantId = participant.id;
   }
   let stage: AttemptStage = parsed.data.stage;
-  let attempt = await findAttempt(context.env.DB, parsed.data.participantId, stage);
+  let attempt = await findAttempt(context.env.DB, participantId, stage);
   if (attempt?.status === "SUBMITTED") throw new HttpError(409, "STAGE_ALREADY_COMPLETED", `${parsed.data.stage === "PRE" ? "Pre-Test" : "Post-Test"} sudah pernah diselesaikan.`);
   if (!attempt) {
     if (!stageIsOpen(session, stage)) throw new HttpError(409, "TEST_CLOSED", `${stage === "PRE" ? "Pre-Test" : "Post-Test"} belum dibuka atau sudah ditutup.`);
     if (stage !== "PRE") {
-      const preAttempt = await findAttempt(context.env.DB, parsed.data.participantId, "PRE");
+      const preAttempt = await findAttempt(context.env.DB, participantId, "PRE");
       if (preAttempt?.status !== "SUBMITTED") throw new HttpError(409, "PRE_REQUIRED", "Selesaikan Pre-Test terlebih dahulu.");
       const postAttempts = (await Promise.all(
         (["POST", "REMEDIAL_1", "REMEDIAL_2"] as const)
-          .map((stage) => findAttempt(context.env.DB, parsed.data.participantId, stage)),
+          .map((stage) => findAttempt(context.env.DB, participantId, stage)),
       )).filter((item): item is AttemptRecord => item !== null);
       const expected = nextPostStage(postAttempts, session.passing_score);
       if (!expected) throw new HttpError(409, "STAGE_NOT_AVAILABLE", "Tidak ada remedial yang tersedia.");
       stage = expected;
-      attempt = await findAttempt(context.env.DB, parsed.data.participantId, stage);
+      attempt = await findAttempt(context.env.DB, participantId, stage);
       if (attempt?.status === "SUBMITTED") throw new HttpError(409, "STAGE_ALREADY_COMPLETED", "Tahap tes ini sudah pernah diselesaikan.");
       if (attempt) return context.json(publicAttempt(attempt, await listAttemptSnapshots(context.env.DB, attempt.id), new Date().toISOString(), session.passing_score, session.slug), 201);
     }
@@ -130,11 +151,11 @@ attemptRoutes.post("/start", requireSameOrigin, async (context) => {
     const startedAt = now.toISOString();
     const deadlineAt = attemptDeadlines(startedAt, durationForAttempt(stage, session.duration_minutes)).hardDeadlineAt;
     await createAttemptWithSnapshots(context.env.DB, {
-        id: crypto.randomUUID(), participantId: parsed.data.participantId, batchId: parsed.data.batchId,
+        id: crypto.randomUUID(), participantId, batchId: parsed.data.batchId,
         sessionId: session.id, stage, attemptNumber: attemptNumberForStage(stage),
-        resetSequence: await nextResetSequence(context.env.DB, parsed.data.participantId, stage), startedAt, deadlineAt, snapshots,
+        resetSequence: await nextResetSequence(context.env.DB, participantId, stage), startedAt, deadlineAt, snapshots,
     });
-    attempt = await findAttempt(context.env.DB, parsed.data.participantId, stage);
+    attempt = await findAttempt(context.env.DB, participantId, stage);
   }
   if (!attempt) throw new HttpError(500, "ATTEMPT_CREATE_FAILED", "Tes tidak dapat dimulai. Silakan coba kembali.");
   const snapshots = await listAttemptSnapshots(context.env.DB, attempt.id);

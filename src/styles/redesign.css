@@ -2706,6 +2706,13 @@ textarea:focus-visible {
   transform: translateY(-1px);
 }
 
+.public-training-link--registration strong {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
 .public-training-empty,
 .public-training-loading {
   padding: .9rem 1rem;
@@ -4461,6 +4468,7 @@ textarea:focus-visible {
 
 .certificate-workspace__footer--documents {
   align-items: flex-start;
+  justify-content: flex-end;
 }
 
 .certificate-autosave {
@@ -4690,6 +4698,8 @@ textarea:focus-visible {
 
 .date-picker-control__trigger .is-placeholder {
   color: #8396a7;
+  font-size: .72rem;
+  white-space: nowrap;
 }
 
 .date-picker-popover {
@@ -4887,6 +4897,17 @@ textarea:focus-visible {
   font-weight: 700;
 }
 
+.date-picker-popover__days button.is-today {
+  box-shadow: inset 0 0 0 1px var(--blue-700);
+  color: var(--blue-700);
+  font-weight: 750;
+}
+
+.date-picker-popover__days button.is-selected.is-today {
+  box-shadow: inset 0 0 0 2px #fff;
+  color: #fff;
+}
+
 .date-picker-popover__days button.is-outside {
   color: #acbac5;
 }
@@ -4939,7 +4960,7 @@ textarea:focus-visible {
 
 .date-time-picker {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) minmax(170px, .72fr);
+  grid-template-columns: minmax(0, 1fr) minmax(132px, .58fr);
   gap: .65rem;
 }
 
@@ -8350,9 +8371,16 @@ select:not([multiple]):disabled {
 .participant-registration-form label:has(textarea),.participant-portal-form label:first-child,.participant-registration-form .participant-primary-button,.participant-portal-form .participant-primary-button{grid-column:1/-1}
 .participant-registration-form textarea,.participant-portal-form select{width:100%;min-width:0}
 .public-dashboard-link{display:inline-flex;margin:0 0 20px;text-decoration:none}
+.participant-registration-cohort{color:var(--color-text)}
+.participant-login-heading h1{max-width:330px;margin-inline:auto;line-height:1.2}
+.participant-dashboard-card{width:min(900px,100%)}
+.participant-dashboard-guide{margin:8px 0 0;color:#5d738d;line-height:1.55}
 .participant-dashboard-results{margin-top:24px;border-top:1px solid #d8e5f0;padding-top:18px}
-.participant-dashboard-results h2{margin:0 0 5px}
-.participant-dashboard-results>p{margin:0 0 18px;color:#5d738d}
+.participant-dashboard-group+.participant-dashboard-group{margin-top:28px}
+.participant-dashboard-group__header{margin-bottom:6px}
+.participant-dashboard-group__header h2{margin:0 0 5px;font-size:1.15rem;color:var(--color-text)}
+.participant-dashboard-group__header p,.participant-dashboard-empty{margin:0;color:#5d738d}
+.participant-dashboard-empty{padding:14px 0}
 .participant-dashboard-material{padding:15px 0;border-top:1px solid #d8e5f0}
 .participant-dashboard-material h3{margin:0 0 12px;font-size:1rem}
 .participant-dashboard-stages{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:10px}

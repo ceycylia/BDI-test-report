@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { PDFDocument } from "pdf-lib";
+import { unzipSync } from "fflate";
 import {
+  buildCertificatePrintArchive,
   combinePdfDocuments,
   participantCertificateFileName,
 } from "../worker/domain/certificates/download";
@@ -29,5 +31,24 @@ describe("download semua sertifikat", () => {
     expect(participantCertificateFileName("Syahli Kurniawan", usedNames)).toBe("Syahli Kurniawan.pdf");
     expect(participantCertificateFileName("Syahli Kurniawan", usedNames)).toBe("Syahli Kurniawan (2).pdf");
     expect(participantCertificateFileName("Nama: Peserta/Baru", usedNames)).toBe("Nama Peserta Baru.pdf");
+  });
+
+  it("membuat ZIP berisi satu PDF seluruh halaman depan dan satu PDF halaman belakang", async () => {
+    const firstFront = await onePagePdf(842, 595);
+    const nextFronts = await combinePdfDocuments([
+      await onePagePdf(842, 595),
+      await onePagePdf(842, 595),
+    ]);
+    const back = await onePagePdf(842, 595);
+
+    const archive = await buildCertificatePrintArchive([firstFront, nextFronts], back);
+    const files = unzipSync(new Uint8Array(await archive.arrayBuffer()));
+
+    expect(Object.keys(files).sort()).toEqual([
+      "Sertifikat Belakang.pdf",
+      "Sertifikat Depan.pdf",
+    ]);
+    expect((await PDFDocument.load(files["Sertifikat Depan.pdf"]!)).getPageCount()).toBe(3);
+    expect((await PDFDocument.load(files["Sertifikat Belakang.pdf"]!)).getPageCount()).toBe(1);
   });
 });

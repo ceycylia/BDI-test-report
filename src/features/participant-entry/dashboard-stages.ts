@@ -2,7 +2,8 @@ import type { AttemptStage } from "../../../worker/domain/attempts/progression";
 import { participantTestStatus, type EntryAttempt } from "./test-entry-status";
 
 export type DashboardTest = {
-  sessionId: string; slug: string; materialName: string; participantId: string; batchId: string;
+  sessionId: string; slug: string; materialName: string; profileId: string;
+  participantId: string | null; batchId: string;
   questionCount: number; durationMinutes: number; passingScore: number;
   attempts: EntryAttempt[]; preOpen: boolean; postOpen: boolean;
   postMode: "MANUAL" | "SCHEDULED"; postStartAt: string | null;

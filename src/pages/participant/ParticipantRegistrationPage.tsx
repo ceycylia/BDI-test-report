@@ -43,19 +43,19 @@ export function ParticipantRegistrationPage() {
       const payload = await response.json() as { participant?: { name: string; nik: string }; error?: { message?: string } };
       if (!response.ok || !payload.participant) throw new Error(payload.error?.message ?? "Pendaftaran tidak dapat disimpan.");
       rememberParticipant(window.localStorage, { name: payload.participant.name, nik: payload.participant.nik, cohortId: registration.cohort_id });
-      navigate("/peserta", { replace: true, state: {
-        trainingId: registration.training_id, cohortId: registration.cohort_id,
-        name: payload.participant.name, nik: payload.participant.nik, autoOpen: true,
-      } });
+      navigate("/peserta", {
+        replace: true,
+        state: { prefill: { name: payload.participant.name, nik: payload.participant.nik } },
+      });
     } catch (reason) { setError(reason instanceof Error ? reason.message : "Pendaftaran tidak dapat disimpan."); }
     finally { setBusy(false); }
   }
 
   return <PublicLayout><section className="entry-card participant-registration-card" aria-labelledby="registration-title">
-    <Link className="participant-home-back" to="/peserta">← Dashboard Peserta</Link>
+    <Link className="participant-home-back" to="/">← Halaman utama</Link>
     <p className="entry-card__eyebrow">Pendaftaran peserta</p>
     <h1 id="registration-title">{registration?.training_name ?? "Pendaftaran Peserta"}</h1>
-    {registration && <p className="entry-card__lead">{registration.cohort_name}</p>}
+    {registration && <p className="entry-card__lead participant-registration-cohort"><strong>{registration.cohort_name}</strong></p>}
     {loading && <p>Memuat pendaftaran…</p>}
     {error && <p className="form-message is-error" role="alert">{error}</p>}
     {registration && <form className="participant-entry-form participant-registration-form" onSubmit={(event) => void submit(event)}>

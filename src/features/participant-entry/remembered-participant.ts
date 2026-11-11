@@ -5,7 +5,7 @@ export const REMEMBERED_PARTICIPANT_KEY = "bdi-remembered-participant-v1";
 export type RememberedParticipant = {
   name: string;
   nik: string;
-  cohortId: string;
+  cohortId?: string;
 };
 
 type KeyValueStorage = Pick<Storage, "getItem" | "setItem">;
@@ -17,8 +17,7 @@ function validRememberedParticipant(value: unknown): value is RememberedParticip
     && candidate.name.trim().length > 0
     && typeof candidate.nik === "string"
     && /^\d{3,40}$/u.test(normalizeNik(candidate.nik))
-    && typeof candidate.cohortId === "string"
-    && candidate.cohortId.length > 0;
+    && (candidate.cohortId === undefined || (typeof candidate.cohortId === "string" && candidate.cohortId.length > 0));
 }
 
 export function readRememberedParticipant(storage: KeyValueStorage): RememberedParticipant | null {
@@ -30,7 +29,7 @@ export function readRememberedParticipant(storage: KeyValueStorage): RememberedP
     return {
       name: parsed.name.trim(),
       nik: normalizeNik(parsed.nik),
-      cohortId: parsed.cohortId,
+      ...(parsed.cohortId ? { cohortId: parsed.cohortId } : {}),
     };
   } catch {
     return null;
@@ -41,7 +40,7 @@ export function rememberParticipant(storage: KeyValueStorage, participant: Remem
   const normalized = {
     name: participant.name.trim(),
     nik: normalizeNik(participant.nik),
-    cohortId: participant.cohortId,
+    ...(participant.cohortId ? { cohortId: participant.cohortId } : {}),
   };
   if (!validRememberedParticipant(normalized)) return false;
   try {

@@ -122,6 +122,12 @@ describe("identitas peserta yang diingat browser", () => {
     });
   });
 
+  it("mengingat login universal tanpa mewajibkan cohort", () => {
+    const storage = new MemoryStorage();
+    expect(rememberParticipant(storage, { name: "Cici Resmi", nik: "2171128282828001" })).toBe(true);
+    expect(readRememberedParticipant(storage)).toEqual({ name: "Cici Resmi", nik: "2171128282828001" });
+  });
+
   it("memetakan cohort yang sama ke batch berbeda pada link mata diklat berikutnya", () => {
     const remembered = { name: "Cici", nik: "2171128282828001", cohortId: "cohort-a" };
     expect(rememberedBatchId([

@@ -36,7 +36,6 @@ import {
 } from "../../domain/certificates/print-layout";
 import {
   combinePdfDocuments,
-  participantCertificateFileName,
 } from "../../domain/certificates/download";
 import type { AppEnvironment } from "../../types";
 import { paginationMeta, parsePagination } from "../../http/pagination";
@@ -3172,7 +3171,7 @@ participantAdminRoutes.post(
   }
 );
 participantAdminRoutes.post(
-  "/certificates/download-all",
+  "/certificates/download-plan",
   requireSameOrigin,
   requireCsrf,
   async (c) => {
@@ -3182,58 +3181,96 @@ participantAdminRoutes.post(
     if (!parsed.success) throw validationError(parsed);
     await requireCohortInFundingSource(c.env.DB, parsed.data.cohortId, activeFundingSource(c));
     const rows = await c.env.DB.prepare(
-      `SELECT id,name FROM participant_profiles WHERE training_id=? AND cohort_id=? AND is_active=1 ORDER BY name`
+      `${documentEligibilityCte}
+       SELECT profiles.id
+       FROM participant_profiles profiles
+       JOIN scores ON scores.profile_id=profiles.id
+       LEFT JOIN active_material_counts ON active_material_counts.training_id=profiles.training_id
+       LEFT JOIN completed_active_material_counts ON completed_active_material_counts.profile_id=profiles.id
+       JOIN certificates ON certificates.participant_profile_id=profiles.id
+         AND TRIM(COALESCE(certificates.certificate_number,'')) <> ''
+       WHERE profiles.training_id=? AND profiles.cohort_id=? AND profiles.is_active=1
+         AND ${documentEligibilitySql}
+       ORDER BY profiles.name COLLATE NOCASE ASC, profiles.created_at DESC, profiles.rowid DESC`
     )
       .bind(parsed.data.trainingId, parsed.data.cohortId)
-      .all<{ id: string; name: string }>();
-    const files: Record<string, Uint8Array> = {};
-    const usedFileNames = new Set<string>();
-    for (const row of rows.results) {
-      try {
-        const [front, back] = await Promise.all([
-          renderCertificate(c, row.id, "FRONT"),
-          renderCertificate(c, row.id, "BACK"),
-        ]);
-        files[participantCertificateFileName(row.name, usedFileNames)] =
-          await combinePdfDocuments([front.bytes, back.bytes]);
-        for (const [side, result] of [
-          ["FRONT", front],
-          ["BACK", back],
-        ] as const) {
-          const key = `certificates/${row.id}/${side.toLowerCase()}.pdf`;
-          await c.env.QUESTION_IMAGES.put(key, result.bytes, {
-            httpMetadata: { contentType: "application/pdf" },
-          });
-          await c.env.DB.prepare(
-            `UPDATE certificates SET ${
-              side === "FRONT" ? "pdf_key" : "back_pdf_key"
-            }=?,updated_at=CURRENT_TIMESTAMP WHERE id=?`
-          )
-            .bind(key, result.certificateId)
-            .run();
-        }
-      } catch (error) {
-        if (
-          !(
-            error instanceof HttpError &&
-            (error.code === "NOT_ELIGIBLE" ||
-              error.code === "CERTIFICATE_NUMBER_REQUIRED")
-          )
-        )
-          throw error;
-      }
-    }
-    if (!Object.keys(files).length)
+      .all<{ id: string }>();
+    if (!rows.results.length)
       throw new HttpError(
         409,
         "CERTIFICATE_NUMBER_REQUIRED",
         "Belum ada peserta lulus dengan nomor sertifikat resmi pada angkatan ini."
       );
-    const archive = zipSync(files, { level: 6 });
-    return new Response(archive, {
+    return c.json({ participantIds: rows.results.map((row) => row.id) });
+  }
+);
+
+const certificateDownloadBatchInput = z.object({
+  trainingId: z.string().min(1),
+  cohortId: z.string().min(1),
+  participantIds: z.array(z.string().min(1)).min(1).max(5)
+    .refine((ids) => new Set(ids).size === ids.length, "ID peserta tidak boleh berulang."),
+});
+
+participantAdminRoutes.post(
+  "/certificates/download-fronts",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const parsed = certificateDownloadBatchInput.safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw validationError(parsed);
+    await requireCohortInFundingSource(c.env.DB, parsed.data.cohortId, activeFundingSource(c));
+    const matching = await c.env.DB.prepare(
+      `SELECT id FROM participant_profiles
+       WHERE training_id=? AND cohort_id=? AND is_active=1
+         AND id IN (SELECT value FROM json_each(?))`
+    ).bind(
+      parsed.data.trainingId,
+      parsed.data.cohortId,
+      JSON.stringify(parsed.data.participantIds),
+    ).all<{ id: string }>();
+    if (matching.results.length !== parsed.data.participantIds.length) {
+      throw new HttpError(422, "PARTICIPANT_SELECTION_INVALID", "Pilihan peserta tidak sesuai dengan pelatihan dan angkatan.");
+    }
+
+    const fronts: Uint8Array[] = [];
+    for (const participantId of parsed.data.participantIds) {
+      fronts.push((await renderCertificate(c, participantId, "FRONT")).bytes);
+    }
+    const bytes = await combinePdfDocuments(fronts);
+    return new Response(bytes.slice().buffer, {
       headers: {
-        "Content-Type": "application/zip",
-        "Content-Disposition": `attachment; filename="sertifikat-${parsed.data.cohortId}.zip"`,
+        "Content-Type": "application/pdf",
+        "Cache-Control": "private, no-store, max-age=0",
+      },
+    });
+  }
+);
+
+participantAdminRoutes.post(
+  "/certificates/download-back",
+  requireSameOrigin,
+  requireCsrf,
+  async (c) => {
+    const parsed = z.object({
+      trainingId: z.string().min(1),
+      cohortId: z.string().min(1),
+      participantId: z.string().min(1),
+    }).safeParse(await c.req.json().catch(() => null));
+    if (!parsed.success) throw validationError(parsed);
+    await requireCohortInFundingSource(c.env.DB, parsed.data.cohortId, activeFundingSource(c));
+    const participant = await c.env.DB.prepare(
+      `SELECT id FROM participant_profiles
+       WHERE id=? AND training_id=? AND cohort_id=? AND is_active=1`
+    ).bind(parsed.data.participantId, parsed.data.trainingId, parsed.data.cohortId).first<{ id: string }>();
+    if (!participant) {
+      throw new HttpError(422, "PARTICIPANT_SELECTION_INVALID", "Peserta tidak sesuai dengan pelatihan dan angkatan.");
+    }
+    const back = await renderCertificate(c, parsed.data.participantId, "BACK");
+    return new Response(back.bytes.slice().buffer, {
+      headers: {
+        "Content-Type": "application/pdf",
+        "Cache-Control": "private, no-store, max-age=0",
       },
     });
   }

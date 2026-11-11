@@ -2,10 +2,12 @@ import { describe, expect, it } from "vitest";
 import { dashboardStageCards, type DashboardTest } from "../src/features/participant-entry/dashboard-stages";
 import registrationMigration from "../migrations/0024_participant_registration_links.sql?raw";
 import portalRoutes from "../worker/routes/public/participant-portal-routes.ts?raw";
+import attemptRoutes from "../worker/routes/public/attempt-routes.ts?raw";
+import portalPage from "../src/pages/participant/ParticipantPortalPage.tsx?raw";
 import adminRoutes from "../worker/routes/admin/participant-link-routes.ts?raw";
 
 const base: DashboardTest = {
-  sessionId: "s", slug: "test", materialName: "Materi", participantId: "p", batchId: "b",
+  sessionId: "s", slug: "test", materialName: "Materi", profileId: "profile", participantId: "p", batchId: "b",
   questionCount: 10, durationMinutes: 30, passingScore: 70, attempts: [],
   preOpen: false, postOpen: false, postMode: "MANUAL", postStartAt: null,
 };
@@ -40,6 +42,12 @@ describe("batas data link peserta", () => {
     expect(portalRoutes).toContain("ON CONFLICT(cohort_id,nik) DO UPDATE SET");
     expect(portalRoutes).toContain("CASE WHEN participant_profiles.birth_place='' THEN excluded.birth_place ELSE participant_profiles.birth_place END");
     expect(portalRoutes).toContain("links.revoked_at IS NULL AND cohorts.id=?");
-    expect(portalRoutes).toContain("profiles.cohort_id=? AND profiles.nik=?");
+    expect(portalRoutes).toContain("profiles.nik=? AND profiles.is_active=1");
+    expect(portalRoutes).toContain("attempts.status<>'RESET'");
+    expect(portalRoutes).not.toContain("findOrCreateExamParticipant");
+    expect(attemptRoutes).toContain("findOrCreateExamParticipant");
+    expect(portalPage).toContain('document.addEventListener("visibilitychange", refresh)');
+    expect(portalPage).toContain("window.setTimeout");
+    expect(portalPage).not.toContain("window.setInterval");
   });
 });

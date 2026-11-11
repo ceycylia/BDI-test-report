@@ -17,10 +17,10 @@ export type SnapshotRecord = {
 
 export async function findParticipantContext(database: D1Database, participantId: string, batchId: string, sessionId: string) {
   return database.prepare(
-    `SELECT participants.id, participants.name FROM participants
+    `SELECT participants.id, participants.name, participants.profile_id FROM participants
       JOIN batches ON batches.id = participants.batch_id
       WHERE participants.id = ? AND participants.batch_id = ? AND batches.training_session_id = ? LIMIT 1`,
-  ).bind(participantId, batchId, sessionId).first<{ id: string; name: string }>();
+  ).bind(participantId, batchId, sessionId).first<{ id: string; name: string; profile_id: string | null }>();
 }
 
 export async function findAttempt(database: D1Database, participantId: string, stage: AttemptStage) {

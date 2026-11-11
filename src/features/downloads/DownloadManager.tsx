@@ -23,9 +23,15 @@ type StartDownloadInput = {
   key: string;
   label: string;
   fileName: string;
+} & ({
   path: string;
   init: RequestInit;
-};
+  prepare?: never;
+} | {
+  path?: never;
+  init?: never;
+  prepare: () => Promise<Blob>;
+});
 
 type DownloadManagerValue = {
   jobs: Record<string, DownloadJob>;
@@ -70,7 +76,9 @@ export function DownloadManagerProvider({ children }: { children: ReactNode }) {
     }));
 
     try {
-      const archive = await adminDownload(input.path, input.init);
+      const archive = input.prepare
+        ? await input.prepare()
+        : await adminDownload(input.path, input.init);
       const url = URL.createObjectURL(archive);
       const link = document.createElement("a");
       link.href = url;
